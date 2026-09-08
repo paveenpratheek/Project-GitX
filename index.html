@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitX — Agentic Swarm & Lakehouse</title>
+  <!-- Ter-Manager Plugin Host SDK -->
+  <script src="/plugin-host.js"></script>
+  <!-- GitX Styling -->
+  <link rel="stylesheet" href="css/gitx.css">
+</head>
+<body>
+
+  <!-- Top Header Bar -->
+  <header class="gitx-header">
+    <div class="gitx-logo">
+      <span class="logo-icon">⎇</span>
+      <span class="logo-text">GitX</span>
+      <span class="badge">Agentic Swarm</span>
+    </div>
+    <div class="gitx-status-bar">
+      <div class="status-indicator">
+        <span class="status-dot" id="broker-status-dot"></span>
+        <span id="broker-status-text">Connecting Broker...</span>
+      </div>
+      <button type="button" class="btn-header" id="btn-new-issue">+ New Task / Prompt</button>
+    </div>
+  </header>
+
+  <!-- 3-Column Main Grid -->
+  <main class="gitx-container">
+
+    <!-- Column 1: Active Agent Swarm Deck -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="panel-title">
+          <span class="panel-icon">🤖</span> Agent Swarm Deck
+        </span>
+      </div>
+      <div class="panel-body" id="swarm-agents-list">
+        <!-- Populated dynamically by app.js -->
+      </div>
+    </section>
+
+    <!-- Column 2: Lakehouse Commit Stream (Gold -> Silver -> Bronze) -->
+    <section class="panel main-panel">
+      <div class="panel-head">
+        <span class="panel-title">
+          <span class="panel-icon">🏛️</span> Lakehouse Commit Stream
+        </span>
+      </div>
+      <div class="panel-body lakehouse-container">
+        
+        <!-- Gold: Curated Features -->
+        <div class="lakehouse-section-title gold">
+          <span>Gold Layer</span> &bull; Curated Features
+        </div>
+        <div id="lakehouse-gold" class="lakehouse-slot"></div>
+
+        <!-- Silver: Linked Feature Streams -->
+        <div class="lakehouse-section-title silver">
+          <span>Silver Layer</span> &bull; Feature Lineage Threads
+        </div>
+        <div id="lakehouse-silver" class="lakehouse-slot"></div>
+
+        <!-- Bronze: Raw Chronological Commits -->
+        <div class="lakehouse-section-title bronze">
+          <span>Bronze Layer</span> &bull; 4-Layer Chronicle Feed
+        </div>
+        <div id="lakehouse-bronze" class="lakehouse-slot"></div>
+
+      </div>
+    </section>
+
+    <!-- Column 3: Issue & Prompt Queue -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="panel-title">
+          <span class="panel-icon">📋</span> Issue &amp; Prompt Queue
+        </span>
+      </div>
+      <div class="panel-body" id="issues-list">
+        <!-- Populated dynamically by app.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Bottom 4-Layer Search Deck -->
+  <footer class="gitx-search-deck">
+    <div class="layer-toggle-group">
+      <button type="button" class="btn-layer-toggle active" data-layer="1">L1: Motive</button>
+      <button type="button" class="btn-layer-toggle" data-layer="2">L2: Architecture</button>
+      <button type="button" class="btn-layer-toggle" data-layer="3">L3: Code Manifest</button>
+      <button type="button" class="btn-layer-toggle" data-layer="4">L4: Lines &amp; Proof</button>
+    </div>
+    <div class="search-input-wrapper">
+      <input type="text" class="search-input" id="layer-search-input" placeholder="Search commit chronicle layer (token-frugal query)..." autocomplete="off" spellcheck="false">
+    </div>
+  </footer>
+
+  <!-- Modal for Creating New Task / Prompt Issue -->
+  <div class="modal-backdrop" id="issue-modal" hidden>
+    <div class="modal-card">
+      <div class="modal-title">Create Task Issue &amp; Feature Branch</div>
+      <div class="form-group">
+        <label for="input-issue-title">Task Title</label>
+        <input type="text" class="form-input" id="input-issue-title" placeholder="e.g. Customizable UI for Paint App">
+      </div>
+      <div class="form-group">
+        <label for="input-issue-branch">Feature Branch Name</label>
+        <input type="text" class="form-input" id="input-issue-branch" placeholder="e.g. feat/customizable-ui">
+      </div>
+      <div class="form-group">
+        <label for="input-issue-prompt">Prompt Specification (Instructions for Assigned Agent)</label>
+        <textarea class="form-textarea" id="input-issue-prompt" placeholder="Detail the exact requirements, files, inputs, and behavior the agent must build..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn-secondary" id="modal-cancel-btn">Cancel</button>
+        <button type="button" class="btn-primary" id="modal-submit-btn">Spawn Issue &amp; Branch</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

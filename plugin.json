@@ -1,0 +1,13 @@
+{
+  "id": "gitx",
+  "name": "GitX",
+  "hostApi": "1",
+  "view": "index.html",
+  "sidebar": {
+    "label": "GitX",
+    "hint": "Agentic Git & Swarm"
+  },
+  "needs": [
+    "git"
+  ]
+}

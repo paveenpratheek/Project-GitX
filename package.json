@@ -1,0 +1,23 @@
+{
+  "name": "project-gitx",
+  "version": "1.0.0",
+  "description": "GitX (Git Xtra) - Agentic Git & Swarm Coordinator Plugin for Ter-Manager",
+  "type": "module",
+  "main": "index.html",
+  "scripts": {
+    "broker": "node mcp/broker.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "git",
+    "agents",
+    "mcp",
+    "ter-manager",
+    "lakehouse"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

@@ -1,0 +1,8 @@
+﻿{
+  "mcpServers": {
+    "gitx": {
+      "command": "node",
+      "args": ["E:\\Coding CLI\\Project GitX\\mcp\\server.js"]
+    }
+  }
+}
