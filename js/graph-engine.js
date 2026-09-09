@@ -12,6 +12,7 @@ let state = {
 
 let lastKnownRepo = '';
 let simulationActive = true;
+let simAlpha = 1.0;
 let searchQuery = '';
 let visibleLayers = { gold: true, silver: true, bronze: true };
 
@@ -38,7 +39,30 @@ const ctx = canvas.getContext('2d');
 const viewport = document.getElementById('canvas-viewport');
 const tooltip = document.getElementById('graph-tooltip');
 
-// -------------------------------------------------- Ter-Manager Session & Theme Sync
+// -------------------------------------------------- Canvas Dynamic Resizing
+function ensureCanvasDimensions() {
+  const rect = viewport.getBoundingClientRect();
+  const w = rect.width > 50 ? rect.width : (window.innerWidth || 1000);
+  const h = rect.height > 50 ? rect.height : ((window.innerHeight - 52) || 680);
+
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+    return true;
+  }
+  return false;
+}
+
+if (window.ResizeObserver) {
+  const ro = new ResizeObserver(() => {
+    if (ensureCanvasDimensions() && nodes.length > 0) {
+      autoFitView();
+    }
+  });
+  ro.observe(viewport);
+}
+
+// -------------------------------------------------- Ter-Manager Session Sync
 function normPath(p) {
   if (!p) return '';
   return String(p).replace(/[\\/]+$/, '').toLowerCase();
@@ -83,6 +107,9 @@ function initSessionSync() {
   window.addEventListener('message', (e) => {
     if (e.data && (e.data.__gitx_refresh || e.data.type === 'GITX_REFRESH')) {
       checkActiveSession();
+      ensureCanvasDimensions();
+      simAlpha = 0.8;
+      autoFitView();
     }
   });
   setInterval(checkActiveSession, 1000);
@@ -130,9 +157,9 @@ function updateHeaderBadge() {
 
 // -------------------------------------------------- Lakehouse Data to Interconnected Network
 function buildGraphData() {
-  const chronicles = state.chronicles || [];
-  const streams = state.streams || {};
+  ensureCanvasDimensions();
 
+  const chronicles = state.chronicles || [];
   const newNodes = [];
   const newLinks = [];
   const nodeMap = new Map();
@@ -141,7 +168,7 @@ function buildGraphData() {
   let silverCount = 0;
   let bronzeCount = 0;
 
-  // 1. Group commits by stream
+  // Group commits by stream
   const streamMap = new Map();
   for (const c of chronicles) {
     const sName = c.stream || 'Core';
@@ -153,28 +180,27 @@ function buildGraphData() {
     (c.filesManifest || []).forEach(f => sObj.files.add(f));
   }
 
-  // 2. Create GOLD Hub Nodes
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
   const streamKeys = Array.from(streamMap.keys());
   const angleStep = (2 * Math.PI) / (streamKeys.length || 1);
-  const hubRadius = 140;
+  const hubRadius = Math.min(180, Math.max(90, streamKeys.length * 45));
 
-  streamKeys.forEach((sName, idx) => {
+  streamKeys.forEach((sName, sIdx) => {
     const sObj = streamMap.get(sName);
     const latest = sObj.commits[0] || {};
     const isStable = sObj.commits.length >= 2 && latest.verification && !latest.verification.includes('No verification');
 
     const goldId = 'gold_' + sName;
-    const gx = canvas.width / 2 + hubRadius * Math.cos(idx * angleStep);
-    const gy = canvas.height / 2 + hubRadius * Math.sin(idx * angleStep);
+    const gx = cx + hubRadius * Math.cos(sIdx * angleStep);
+    const gy = cy + hubRadius * Math.sin(sIdx * angleStep);
 
-    // Keep existing position if node already existed
-    const existing = nodes.find(n => n.id === goldId);
-
+    // 1. Create GOLD Hub Node
     const goldNode = {
       id: goldId,
       name: sName,
       type: 'gold',
-      radius: 28,
+      radius: 26,
       color: '#e3b341',
       borderColor: '#ffffff',
       status: isStable ? 'STABLE' : 'ACTIVE',
@@ -183,8 +209,8 @@ function buildGraphData() {
       latestMotive: latest.motive || '',
       latestArch: latest.architecture || '',
       files: Array.from(sObj.files),
-      x: existing ? existing.x : gx,
-      y: existing ? existing.y : gy,
+      x: gx,
+      y: gy,
       vx: 0,
       vy: 0
     };
@@ -193,24 +219,24 @@ function buildGraphData() {
     nodeMap.set(goldId, goldNode);
     goldCount++;
 
-    // 3. Create SILVER Lineage Nodes
+    // 2. Create SILVER Lineage Node
     const silverId = 'silver_' + sName;
-    const exSilver = nodes.find(n => n.id === silverId);
-    const sx = goldNode.x + (Math.random() - 0.5) * 60;
-    const sy = goldNode.y + (Math.random() - 0.5) * 60;
+    const silverDist = 65;
+    const sx = gx + silverDist * Math.cos(sIdx * angleStep + 0.3);
+    const sy = gy + silverDist * Math.sin(sIdx * angleStep + 0.3);
 
     const silverNode = {
       id: silverId,
-      name: 'Thread: ' + sName,
+      name: 'Stream: ' + sName,
       type: 'silver',
-      radius: 19,
+      radius: 18,
       color: '#58a6ff',
       borderColor: '#ffffff',
       parentGold: goldId,
       commitsCount: sObj.commits.length,
       filesCount: sObj.files.size,
-      x: exSilver ? exSilver.x : sx,
-      y: exSilver ? exSilver.y : sy,
+      x: sx,
+      y: sy,
       vx: 0,
       vy: 0
     };
@@ -224,16 +250,19 @@ function buildGraphData() {
       source: goldNode,
       target: silverNode,
       type: 'hierarchy',
-      length: 85,
-      strength: 0.12
+      length: 80,
+      strength: 0.15
     });
 
-    // 4. Create BRONZE Commit Nodes
+    // 3. Create BRONZE Commit Nodes in an expanding golden spiral
+    const goldenAngle = 2.39996; // (3 - Math.sqrt(5)) * Math.PI
     sObj.commits.forEach((c, cIdx) => {
       const bId = 'bronze_' + (c.commitHash || cIdx);
-      const exBronze = nodes.find(n => n.id === bId);
-      const bx = silverNode.x + (Math.random() - 0.5) * 120;
-      const by = silverNode.y + (Math.random() - 0.5) * 120;
+      
+      // Sunflower spiral coordinates prevent overlapping heaps
+      const spiralRadius = 55 + Math.sqrt(cIdx + 1) * 26;
+      const bx = sx + spiralRadius * Math.cos(cIdx * goldenAngle);
+      const by = sy + spiralRadius * Math.sin(cIdx * goldenAngle);
 
       const hasProof = c.verification && !c.verification.includes('No verification');
 
@@ -241,7 +270,7 @@ function buildGraphData() {
         id: bId,
         name: (c.commitHash || '').slice(0, 7) || ('#c' + cIdx),
         type: 'bronze',
-        radius: 12,
+        radius: 11,
         color: hasProof ? '#3fb950' : '#8b949e',
         borderColor: '#ffffff',
         chronicle: c,
@@ -252,8 +281,8 @@ function buildGraphData() {
         verification: c.verification,
         author: c.author || c.agentId || 'Human',
         date: (c.timestamp || '').slice(0, 10),
-        x: exBronze ? exBronze.x : bx,
-        y: exBronze ? exBronze.y : by,
+        x: bx,
+        y: by,
         vx: 0,
         vy: 0
       };
@@ -267,38 +296,49 @@ function buildGraphData() {
         source: silverNode,
         target: bronzeNode,
         type: 'hierarchy',
-        length: 70,
-        strength: 0.15
+        length: 70 + (cIdx % 3) * 20,
+        strength: 0.12
       });
     });
   });
 
-  // 5. Generate SEMANTIC CROSS-LINKS (Overlapping Modified Files in Image 2)
+  // 4. Generate Curated SEMANTIC CROSS-LINKS (Overlapping Modified Files in Image 2)
+  // We cap cross-links to max 3 per node and ignore trivial root files
+  const ignoredFiles = new Set(['package.json', 'package-lock.json', '.gitignore', 'readme.md', 'license']);
   const bronzeNodes = newNodes.filter(n => n.type === 'bronze');
+  const nodeLinkCounts = new Map();
+
   for (let i = 0; i < bronzeNodes.length; i++) {
     for (let j = i + 1; j < bronzeNodes.length; j++) {
       const b1 = bronzeNodes[i];
       const b2 = bronzeNodes[j];
-      const f1 = b1.files || [];
-      const f2 = b2.files || [];
 
-      // Find overlapping touched files
+      const c1 = nodeLinkCounts.get(b1.id) || 0;
+      const c2 = nodeLinkCounts.get(b2.id) || 0;
+      if (c1 >= 3 || c2 >= 3) continue; // limit link density
+
+      const f1 = (b1.files || []).filter(f => !ignoredFiles.has(f.toLowerCase()));
+      const f2 = (b2.files || []).filter(f => !ignoredFiles.has(f.toLowerCase()));
+
       const shared = f1.filter(f => f2.includes(f));
       if (shared.length > 0) {
         newLinks.push({
           source: b1,
           target: b2,
           type: 'semantic',
-          length: 110,
-          strength: 0.08,
+          length: 120,
+          strength: 0.05,
           sharedFiles: shared
         });
+        nodeLinkCounts.set(b1.id, c1 + 1);
+        nodeLinkCounts.set(b2.id, c2 + 1);
       }
     }
   }
 
   nodes = newNodes;
   links = newLinks;
+  simAlpha = 1.0;
 
   // Update counter badges
   const cGold = document.getElementById('count-gold');
@@ -307,33 +347,54 @@ function buildGraphData() {
   if (cGold) cGold.textContent = goldCount;
   if (cSilver) cSilver.textContent = silverCount;
   if (cBronze) cBronze.textContent = bronzeCount;
+
+  autoFitView();
 }
 
-// -------------------------------------------------- Force-Directed Physics Simulation
+// -------------------------------------------------- View Auto-fit
+function autoFitView() {
+  if (nodes.length === 0) return;
+  ensureCanvasDimensions();
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.x > maxX) maxX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.y > maxY) maxY = n.y;
+  }
+
+  const graphW = Math.max(200, maxX - minX + 120);
+  const graphH = Math.max(200, maxY - minY + 120);
+
+  const scaleX = canvas.width / graphW;
+  const scaleY = canvas.height / graphH;
+
+  zoom = Math.min(1.15, Math.max(0.35, Math.min(scaleX, scaleY) * 0.88));
+  panX = canvas.width / 2 - ((minX + maxX) / 2) * zoom;
+  panY = canvas.height / 2 - ((minY + maxY) / 2) * zoom;
+}
+
+// -------------------------------------------------- Stable Force Simulation
 function updatePhysics() {
-  if (!simulationActive) return;
+  if (!simulationActive || simAlpha < 0.02) return;
 
-  const width = canvas.width;
-  const height = canvas.height;
-  const cx = width / 2;
-  const cy = height / 2;
-
-  // 1. Coulomb Repulsion between all pairs of visible nodes
+  const cx = canvas.width / 2;
+  const cy = canvas.height / 2;
   const activeNodes = nodes.filter(isNodeVisible);
   const nLen = activeNodes.length;
 
+  // 1. Coulomb Repulsion (Clamped)
   for (let i = 0; i < nLen; i++) {
     const a = activeNodes[i];
     for (let j = i + 1; j < nLen; j++) {
       const b = activeNodes[j];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
-      const distSq = dx * dx + dy * dy + 0.1;
-      const dist = Math.sqrt(distSq);
+      const dist = Math.max(14, Math.sqrt(dx * dx + dy * dy));
 
-      // Repulsion force
-      if (dist < 420) {
-        const repForce = 1600 / distSq;
+      if (dist < 380) {
+        const repForce = Math.min(30, 900 / (dist * dist)) * simAlpha;
         const fx = (dx / dist) * repForce;
         const fy = (dy / dist) * repForce;
 
@@ -341,8 +402,8 @@ function updatePhysics() {
         if (b !== draggedNode) { b.vx += fx; b.vy += fy; }
       }
 
-      // Hard collision detection
-      const minDist = a.radius + b.radius + 12;
+      // Hard collision prevention
+      const minDist = a.radius + b.radius + 8;
       if (dist < minDist) {
         const overlap = (minDist - dist) * 0.5;
         const nx = (dx / dist) * overlap;
@@ -359,9 +420,9 @@ function updatePhysics() {
 
     const dx = l.target.x - l.source.x;
     const dy = l.target.y - l.source.y;
-    const dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
+    const dist = Math.max(1, Math.sqrt(dx * dx + dy * dy));
     const displacement = dist - l.length;
-    const springForce = displacement * l.strength;
+    const springForce = displacement * l.strength * simAlpha;
 
     const fx = (dx / dist) * springForce;
     const fy = (dy / dist) * springForce;
@@ -370,19 +431,31 @@ function updatePhysics() {
     if (l.target !== draggedNode) { l.target.vx -= fx; l.target.vy -= fy; }
   }
 
-  // 3. Centering Gravitational Pull & Damping
+  // 3. Center Gravity & Damping (With Speed Limit)
+  const maxSpeed = 8.0;
   for (const n of activeNodes) {
     if (n === draggedNode) continue;
 
-    n.vx += (cx - n.x) * 0.005;
-    n.vy += (cy - n.y) * 0.005;
+    n.vx += (cx - n.x) * 0.003 * simAlpha;
+    n.vy += (cy - n.y) * 0.003 * simAlpha;
 
-    n.vx *= 0.86;
-    n.vy *= 0.86;
+    // Friction
+    n.vx *= 0.85;
+    n.vy *= 0.85;
+
+    // Velocity clamp
+    const speed = Math.sqrt(n.vx * n.vx + n.vy * n.vy);
+    if (speed > maxSpeed) {
+      n.vx = (n.vx / speed) * maxSpeed;
+      n.vy = (n.vy / speed) * maxSpeed;
+    }
 
     n.x += n.vx;
     n.y += n.vy;
   }
+
+  // Decay simulation energy gradually
+  simAlpha = Math.max(0.015, simAlpha * 0.988);
 }
 
 function isNodeVisible(n) {
@@ -403,6 +476,8 @@ function isNodeVisible(n) {
 
 // -------------------------------------------------- 60FPS High-DPI Canvas Rendering
 function render() {
+  ensureCanvasDimensions();
+
   ctx.save();
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -419,7 +494,7 @@ function render() {
 
     let alpha = 0.22;
     if (hoveredNode || selectedNode) {
-      alpha = (isConnectedToHover || isConnectedToSelect) ? 0.85 : 0.06;
+      alpha = (isConnectedToHover || isConnectedToSelect) ? 0.85 : 0.05;
     }
 
     ctx.beginPath();
@@ -433,7 +508,7 @@ function render() {
     } else {
       ctx.setLineDash([]);
       ctx.strokeStyle = `rgba(230, 237, 243, ${alpha})`;
-      ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.2 : 1.0;
+      ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.0 : 1.0;
     }
     ctx.stroke();
     ctx.setLineDash([]);
@@ -449,7 +524,7 @@ function render() {
 
     let alpha = 1.0;
     if ((hoveredNode || selectedNode) && !isHovered && !isSelected && !isNeighbor) {
-      alpha = 0.2;
+      alpha = 0.18;
     }
 
     ctx.save();
@@ -458,8 +533,8 @@ function render() {
     // Outer Glow / Ring for Gold & Selected
     if (n.type === 'gold' || isHovered || isSelected) {
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.radius + 7, 0, Math.PI * 2);
-      ctx.fillStyle = n.type === 'gold' ? 'rgba(227, 179, 65, 0.22)' : 'rgba(88, 166, 255, 0.25)';
+      ctx.arc(n.x, n.y, n.radius + 6, 0, Math.PI * 2);
+      ctx.fillStyle = n.type === 'gold' ? 'rgba(227, 179, 65, 0.25)' : 'rgba(88, 166, 255, 0.28)';
       ctx.fill();
     }
 
@@ -468,13 +543,13 @@ function render() {
     ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
     ctx.fillStyle = n.color;
     ctx.fill();
-    ctx.lineWidth = isHovered ? 3 : 2;
+    ctx.lineWidth = isHovered ? 2.8 : 1.8;
     ctx.strokeStyle = isHovered ? '#ffffff' : (n.type === 'gold' ? '#fff8db' : 'rgba(255,255,255,0.7)');
     ctx.stroke();
 
     // Node Center Icon / Text
     ctx.fillStyle = (n.type === 'gold') ? '#000000' : '#ffffff';
-    ctx.font = `bold ${n.type === 'gold' ? '13px' : (n.type === 'silver' ? '11px' : '9.5px')} var(--font-sans)`;
+    ctx.font = `bold ${n.type === 'gold' ? '12px' : (n.type === 'silver' ? '10px' : '9px')} var(--font-sans)`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -486,10 +561,12 @@ function render() {
       ctx.fillText(n.name, n.x, n.y);
     }
 
-    // Node Label underneath
-    ctx.font = `${n.type === 'gold' ? 'bold 12px' : '10.5px'} var(--font-sans)`;
-    ctx.fillStyle = (n.type === 'gold') ? '#e3b341' : (n.type === 'silver' ? '#58a6ff' : '#e6edf3');
-    ctx.fillText(n.name, n.x, n.y + n.radius + 14);
+    // Node Label underneath (only for Gold & Silver by default, or hovered/selected Bronze to prevent clutter)
+    if (n.type !== 'bronze' || isHovered || isSelected || zoom > 0.9) {
+      ctx.font = `${n.type === 'gold' ? 'bold 11.5px' : '10px'} var(--font-sans)`;
+      ctx.fillStyle = (n.type === 'gold') ? '#e3b341' : (n.type === 'silver' ? '#58a6ff' : '#e6edf3');
+      ctx.fillText(n.name, n.x, n.y + n.radius + 12);
+    }
 
     ctx.restore();
   }
@@ -506,7 +583,6 @@ function isConnected(a, b) {
 
 // -------------------------------------------------- User Interactions (Drag, Zoom, Pan, Hover)
 function getNodeAt(x, y) {
-  // Transform screen coords to world coords
   const wx = (x - panX) / zoom;
   const wy = (y - panY) / zoom;
 
@@ -515,7 +591,7 @@ function getNodeAt(x, y) {
     if (!isNodeVisible(n)) continue;
     const dx = wx - n.x;
     const dy = wy - n.y;
-    if (dx * dx + dy * dy <= n.radius * n.radius) {
+    if (dx * dx + dy * dy <= (n.radius + 4) * (n.radius + 4)) {
       return n;
     }
   }
@@ -531,6 +607,7 @@ canvas.addEventListener('mousedown', (e) => {
   if (hit) {
     draggedNode = hit;
     selectedNode = hit;
+    simAlpha = 0.6; // revive simulation on drag
   } else {
     isPanning = true;
     startPanX = e.clientX - panX;
@@ -590,7 +667,6 @@ canvas.addEventListener('wheel', (e) => {
   const zoomFactor = e.deltaY < 0 ? 1.12 : 0.89;
   const newZoom = Math.max(0.2, Math.min(3.5, zoom * zoomFactor));
 
-  // Zoom centered on cursor
   panX = mx - (mx - panX) * (newZoom / zoom);
   panY = my - (my - panY) * (newZoom / zoom);
   zoom = newZoom;
@@ -701,32 +777,24 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// -------------------------------------------------- UI Controls & Window Resize
-function resizeCanvas() {
-  const rect = viewport.getBoundingClientRect();
-  canvas.width = rect.width;
-  canvas.height = rect.height;
-}
-
-window.addEventListener('resize', resizeCanvas);
-
+// -------------------------------------------------- UI Controls
 document.addEventListener('DOMContentLoaded', () => {
-  resizeCanvas();
+  ensureCanvasDimensions();
 
   // Button handlers
   document.getElementById('btn-zoom-in').onclick = () => {
-    zoom = Math.min(3.5, zoom * 1.2);
+    zoom = Math.min(3.5, zoom * 1.25);
   };
   document.getElementById('btn-zoom-out').onclick = () => {
-    zoom = Math.max(0.2, zoom / 1.2);
+    zoom = Math.max(0.2, zoom / 1.25);
   };
   document.getElementById('btn-reset-view').onclick = () => {
-    panX = 0;
-    panY = 0;
-    zoom = 1.0;
+    autoFitView();
+    simAlpha = 0.7;
   };
   document.getElementById('btn-toggle-sim').onclick = () => {
     simulationActive = !simulationActive;
+    if (simulationActive) simAlpha = 0.5;
     document.getElementById('btn-toggle-sim').textContent = simulationActive ? '⏸' : '▶';
   };
 
