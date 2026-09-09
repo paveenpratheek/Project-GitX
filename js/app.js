@@ -3,6 +3,9 @@
 const BROKER_URL = 'ws://127.0.0.1:7771';
 let ws = null;
 let state = {
+  activeRepo: '',
+  activeRepoName: 'Loading...',
+  activeBranch: 'main',
   agents: {},
   issues: [],
   chronicles: [],
@@ -11,9 +14,52 @@ let state = {
 
 let activeSearchLayer = 1;
 let currentSearchQuery = '';
-let selectedStreamFilter = null; // null = all streams, or specific streamName
+let selectedStreamFilter = null;
+let lastKnownRepo = '';
 
-// -------------------------------------------------- Ter-Manager Host Handshake
+// -------------------------------------------------- Ter-Manager Session & Theme Sync
+function initSessionSync() {
+  checkActiveSession();
+
+  // Listen for storage events across same-origin frames
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'gitDashboardCwd') checkActiveSession();
+  });
+
+  // Poll every 2 seconds to catch Ter-Manager session switches instantly
+  setInterval(checkActiveSession, 2000);
+
+  // Check on window focus
+  window.addEventListener('focus', checkActiveSession);
+}
+
+function checkActiveSession() {
+  let cwd = '';
+  try {
+    cwd = localStorage.getItem('gitDashboardCwd') || '';
+  } catch (_) {}
+
+  // Fallback to parent frame if localStorage was unset
+  if (!cwd && window.parent && window.parent !== window) {
+    try {
+      if (typeof window.parent.activeRepo === 'function') {
+        cwd = window.parent.activeRepo() || '';
+      }
+    } catch (_) {}
+  }
+
+  if (cwd && cwd !== lastKnownRepo) {
+    lastKnownRepo = cwd;
+    console.log('[GitX UI] Active Ter-Manager session repository detected:', cwd);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'SET_ACTIVE_REPO',
+        repoPath: cwd
+      }));
+    }
+  }
+}
+
 function initThemeSync() {
   if (window.TerManager && window.TerManager.theme) {
     window.TerManager.theme.onChange((theme) => {
@@ -45,6 +91,13 @@ function connectBroker() {
     ws.onopen = () => {
       if (statusDot) statusDot.classList.add('online');
       if (statusText) statusText.textContent = 'Broker Active (7771)';
+      // Sync current active session immediately upon broker connect
+      if (lastKnownRepo) {
+        ws.send(JSON.stringify({
+          type: 'SET_ACTIVE_REPO',
+          repoPath: lastKnownRepo
+        }));
+      }
     };
 
     ws.onmessage = (event) => {
@@ -102,9 +155,19 @@ function handleBrokerMessage(msg) {
 }
 
 function renderAll() {
+  renderHeaderBadge();
   renderAgents();
   renderIssues();
   renderLakehouse();
+}
+
+function renderHeaderBadge() {
+  const badge = document.getElementById('active-project-badge');
+  if (!badge) return;
+  const repoName = state.activeRepoName || 'Workspace';
+  const branch = state.activeBranch || 'main';
+  badge.innerHTML = `<span class="proj-icon">📁</span> <b>${escapeHtml(repoName)}</b> <span class="branch-pill">[${escapeHtml(branch)}]</span>`;
+  badge.title = state.activeRepo || repoName;
 }
 
 function renderAgents() {
@@ -129,7 +192,7 @@ function renderAgents() {
         <span class="status-dot ${agent.status === 'Online' ? 'online' : ''}"></span>
         ${escapeHtml(agent.name)}
       </div>
-      <div class="agent-status-badge">${agent.status}</div>
+      <div class="agent-status-badge ${agent.status === 'Online' ? 'online' : 'offline'}">${agent.status}</div>
     `;
 
     const meta = document.createElement('div');
@@ -150,7 +213,7 @@ function renderAgents() {
     const select = document.createElement('select');
     select.className = 'agent-branch-select';
     
-    const branches = Array.from(new Set(['main', 'master', ...state.issues.map(i => i.branch)]));
+    const branches = Array.from(new Set([state.activeBranch || 'main', 'main', 'master', ...state.issues.map(i => i.branch)]));
     branches.forEach(b => {
       const opt = document.createElement('option');
       opt.value = b;
@@ -226,7 +289,6 @@ function renderLakehouse() {
 
   const chronicles = state.chronicles || [];
 
-  // Group into streams
   const streamMap = new Map();
   for (const c of chronicles) {
     const sName = c.stream || 'Core';
@@ -238,11 +300,10 @@ function renderLakehouse() {
     (c.filesManifest || []).forEach(f => sObj.files.add(f));
   }
 
-  // 1. GOLD LAYER: Curated Features
   if (goldContainer) {
     goldContainer.innerHTML = '';
     if (streamMap.size === 0) {
-      goldContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No curated features yet.</div>';
+      goldContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No curated features yet for this project.</div>';
     } else {
       for (const [name, sObj] of streamMap.entries()) {
         const latest = sObj.commits[0] || {};
@@ -277,7 +338,6 @@ function renderLakehouse() {
     }
   }
 
-  // 2. SILVER LAYER: Semantic Feature Lineage Streams
   if (silverContainer) {
     silverContainer.innerHTML = '';
     if (streamMap.size === 0) {
@@ -306,17 +366,14 @@ function renderLakehouse() {
     }
   }
 
-  // 3. BRONZE LAYER: Raw Chronological Commits (Filtered by Stream & Search Layer)
   if (bronzeContainer) {
     bronzeContainer.innerHTML = '';
     let filtered = chronicles;
 
-    // Filter by selected stream if any
     if (selectedStreamFilter) {
       filtered = filtered.filter(c => (c.stream || 'Core') === selectedStreamFilter);
     }
 
-    // Filter by layer search query if any
     if (currentSearchQuery) {
       const q = currentSearchQuery.toLowerCase();
       filtered = filtered.filter(c => {
@@ -403,7 +460,7 @@ function initModal() {
           title,
           branch: branch || ('feat/task-' + (state.issues.length + 1)),
           prompt_spec: prompt,
-          source_branch: 'main'
+          source_branch: state.activeBranch || 'main'
         }));
       }
 
@@ -448,6 +505,7 @@ function escapeHtml(str) {
 
 window.addEventListener('DOMContentLoaded', () => {
   initThemeSync();
+  initSessionSync();
   connectBroker();
   initModal();
   initSearch();

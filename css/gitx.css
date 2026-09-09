@@ -1,6 +1,5 @@
 /* GitX (Git Xtra) — Design System & Ter-Manager Host Theme Integration */
 :root {
-  /* Host Palette Variable Mapping (Defaults to Neutral Dark, overrides via host) */
   --bg: var(--pal-bg, #0d1117);
   --surface: var(--pal-raise, #161b22);
   --surface-raised: color-mix(in srgb, var(--pal-fg, #ffffff) 6%, var(--pal-raise, #161b22));
@@ -82,6 +81,31 @@ body {
   border-radius: var(--radius-sm);
   font-size: 11px;
   font-weight: 600;
+}
+
+/* Active Project / Session Badge */
+.active-project-badge {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  cursor: default;
+  transition: all 0.2s ease;
+}
+
+.active-project-badge .proj-icon {
+  font-size: 13px;
+}
+
+.active-project-badge .branch-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .gitx-status-bar {
@@ -225,11 +249,19 @@ body {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: var(--radius-sm);
-  background: var(--success-soft);
-  color: var(--success);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.3px;
+}
+
+.agent-status-badge.online {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.agent-status-badge.offline {
+  background: color-mix(in srgb, var(--text-dim) 15%, transparent);
+  color: var(--text-dim);
 }
 
 .agent-meta {
@@ -584,7 +616,6 @@ body {
   cursor: pointer;
 }
 
-/* Custom Scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

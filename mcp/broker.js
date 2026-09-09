@@ -2,39 +2,53 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { scanGitHistory } from './tools/chronicle-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const ROOT_DIR = path.resolve(__dirname, '..');
-const STATE_FILE = path.join(ROOT_DIR, '.gitx', 'state.json');
+const DEFAULT_ROOT = path.resolve(__dirname, '..');
+const STATE_FILE = path.join(DEFAULT_ROOT, '.gitx', 'state.json');
 const PORT = 7771;
 
 let state = {
+  activeRepo: DEFAULT_ROOT,
+  activeRepoName: path.basename(DEFAULT_ROOT),
+  activeBranch: 'master',
   agents: {},
   issues: [],
   chronicles: [],
   streams: {}
 };
 
-function refreshFromGit() {
-  console.log('[GitX Broker] Scanning real Git history from:', ROOT_DIR);
-  const gitCommits = scanGitHistory(ROOT_DIR, 100);
-
-  // Merge git commits into chronicles without duplicates
-  const existingHashes = new Set((state.chronicles || []).map(c => c.commitHash));
-  for (const gc of gitCommits) {
-    if (!existingHashes.has(gc.commitHash)) {
-      state.chronicles.push(gc);
-      existingHashes.add(gc.commitHash);
-    }
+function getBranch(dir) {
+  try {
+    return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    }).trim();
+  } catch (_) {
+    return 'main';
   }
+}
 
-  // Sort newest first
-  state.chronicles.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+function refreshFromGit(targetDir = null) {
+  const dir = targetDir || state.activeRepo || DEFAULT_ROOT;
+  if (!fs.existsSync(dir)) return;
 
-  // Re-index streams map
+  state.activeRepo = dir;
+  state.activeRepoName = path.basename(dir) || dir;
+  state.activeBranch = getBranch(dir);
+
+  console.log(`[GitX Broker] Scanning Git history for '${state.activeRepoName}' (${dir}) on branch [${state.activeBranch}]`);
+  const gitCommits = scanGitHistory(dir, 100);
+
+  // Replace chronicles with the active repository's commits
+  state.chronicles = gitCommits;
+
+  // Re-index streams map for the active repository
   state.streams = {};
   for (const c of state.chronicles) {
     const sName = c.stream || 'Core';
@@ -43,7 +57,7 @@ function refreshFromGit() {
   }
 
   saveState();
-  console.log(`[GitX Broker] Loaded ${state.chronicles.length} total commits across ${Object.keys(state.streams).length} streams.`);
+  console.log(`[GitX Broker] Loaded ${state.chronicles.length} commits across ${Object.keys(state.streams).length} streams for '${state.activeRepoName}'.`);
 }
 
 function loadState() {
@@ -51,14 +65,13 @@ function loadState() {
     if (fs.existsSync(STATE_FILE)) {
       const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
       state.issues = raw.issues || [];
-      state.chronicles = raw.chronicles || [];
-      state.streams = raw.streams || {};
+      state.activeRepo = raw.activeRepo || DEFAULT_ROOT;
       state.agents = {};
     }
   } catch (err) {
     console.warn('[GitX Broker] Failed to read state.json, starting fresh:', err.message);
   }
-  refreshFromGit();
+  refreshFromGit(state.activeRepo);
 }
 
 function saveState() {
@@ -66,9 +79,8 @@ function saveState() {
     const dir = path.dirname(STATE_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(STATE_FILE, JSON.stringify({
-      issues: state.issues,
-      chronicles: state.chronicles,
-      streams: state.streams
+      activeRepo: state.activeRepo,
+      issues: state.issues
     }, null, 2), 'utf8');
   } catch (err) {
     console.error('[GitX Broker] Failed to persist state.json:', err.message);
@@ -90,7 +102,15 @@ const server = http.createServer((req, res) => {
 
   if (req.url === '/health' || req.url === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, service: 'gitx-broker', port: PORT, agents: Object.keys(state.agents).length }));
+    res.end(JSON.stringify({
+      ok: true,
+      service: 'gitx-broker',
+      port: PORT,
+      activeRepo: state.activeRepo,
+      activeRepoName: state.activeRepoName,
+      activeBranch: state.activeBranch,
+      agents: Object.keys(state.agents).length
+    }));
     return;
   }
 
@@ -98,7 +118,7 @@ const server = http.createServer((req, res) => {
     refreshFromGit();
     broadcast({ type: 'SYNC_STATE', state });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, count: state.chronicles.length }));
+    res.end(JSON.stringify({ ok: true, count: state.chronicles.length, repo: state.activeRepoName }));
     return;
   }
 
@@ -146,15 +166,26 @@ wss.on('connection', (ws) => {
 
 function handleMessage(msg, ws) {
   switch (msg.type) {
+    case 'SET_ACTIVE_REPO': {
+      const newRepo = msg.repoPath;
+      if (newRepo && fs.existsSync(newRepo) && newRepo !== state.activeRepo) {
+        console.log(`[GitX Broker] Switching active project to: ${newRepo}`);
+        refreshFromGit(newRepo);
+        broadcast({ type: 'SYNC_STATE', state });
+      }
+      break;
+    }
+
     case 'REGISTER_AGENT': {
-      const { agentId, name, model, pid } = msg;
+      const { agentId, name, model, pid, repoRoot, branch } = msg;
       ws.agentId = agentId;
       state.agents[agentId] = {
         id: agentId,
         name: name || agentId,
         model: model || 'Unknown Model',
         pid: pid || null,
-        branch: state.agents[agentId]?.branch || 'main',
+        repoRoot: repoRoot || state.activeRepo,
+        branch: branch || state.agents[agentId]?.branch || state.activeBranch || 'main',
         status: 'Online',
         currentTask: null,
         connectedAt: new Date().toISOString(),
@@ -191,8 +222,9 @@ function handleMessage(msg, ws) {
         title: msg.title || ('Untitled Task #' + issueNumber),
         branch: msg.branch || ('feat/task-' + issueNumber),
         prompt_spec: msg.prompt_spec || '',
-        source_branch: msg.source_branch || 'main',
-        worktreePath: msg.worktreePath || ROOT_DIR,
+        source_branch: msg.source_branch || state.activeBranch || 'main',
+        worktreePath: msg.worktreePath || state.activeRepo,
+        repoPath: state.activeRepo,
         status: 'Open',
         assignedTo: null,
         createdAt: new Date().toISOString(),
@@ -209,7 +241,7 @@ function handleMessage(msg, ws) {
       const chronicle = {
         id: 'git-' + (msg.commitHash ? msg.commitHash.slice(0, 12) : Date.now().toString(16)),
         commitHash: msg.commitHash || ('local-' + Date.now().toString(16)),
-        branch: msg.branch || 'main',
+        branch: msg.branch || state.activeBranch || 'main',
         agentId: msg.agentId || 'Unknown',
         stream: msg.stream || 'Core',
         summary: msg.summary || 'feat: update codebase',
@@ -225,7 +257,6 @@ function handleMessage(msg, ws) {
       if (!state.streams[chronicle.stream]) state.streams[chronicle.stream] = [];
       state.streams[chronicle.stream].push(chronicle.commitHash);
 
-      saveState();
       broadcast({ type: 'CHRONICLE_COMMITTED', chronicle, state });
       ws.send(JSON.stringify({ type: 'CHRONICLE_OK', chronicle }));
       break;
@@ -258,6 +289,6 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log('===========================================================');
   console.log('  GitX Local Event Broker running on http://127.0.0.1:' + PORT);
   console.log('  WebSocket endpoint: ws://127.0.0.1:' + PORT);
-  console.log('  State persistence: ' + STATE_FILE);
+  console.log(`  Initial Active Repo: '${state.activeRepoName}' (${state.activeRepo})`);
   console.log('===========================================================');
 });

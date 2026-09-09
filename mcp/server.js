@@ -9,8 +9,15 @@ import { scanPreCommit } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const ROOT_DIR = path.resolve(__dirname, '..');
+function getRepoRoot() {
+  try {
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (_) {
+    return process.cwd();
+  }
+}
+
+const ROOT_DIR = getRepoRoot();
 const BROKER_WS = 'ws://127.0.0.1:7771';
 
 const AGENT_ID = process.env.GITX_AGENT_ID || ('agent-' + process.pid);
