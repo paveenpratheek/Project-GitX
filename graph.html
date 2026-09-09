@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitX Lakehouse Network Graph</title>
+  <!-- Ter-Manager Host SDK -->
+  <script src="/plugin-host.js"></script>
+  <link rel="stylesheet" href="css/graph.css">
+</head>
+<body>
+
+  <!-- Top Navigation / Control Bar -->
+  <header class="graph-header">
+    <div class="header-left">
+      <span class="logo-icon">⎇</span>
+      <span class="logo-title">GitX • Lakehouse Network</span>
+      <div class="active-badge" id="graph-repo-badge">
+        <span class="proj-icon">📁</span>
+        <b id="badge-repo-name">Detecting...</b>
+        <span class="branch-pill" id="badge-branch-name">[main]</span>
+      </div>
+    </div>
+
+    <!-- Search & Filters -->
+    <div class="header-center">
+      <div class="search-box">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="6.5" cy="6.5" r="4.5"/>
+          <path d="M10 10l4 4"/>
+        </svg>
+        <input type="text" id="graph-search" placeholder="Search node, file, or motive..." autocomplete="off">
+      </div>
+
+      <div class="layer-filters">
+        <button type="button" class="btn-layer-filter on gold" data-layer="gold" id="toggle-gold">
+          <span class="dot gold"></span> Gold <span class="count" id="count-gold">0</span>
+        </button>
+        <button type="button" class="btn-layer-filter on silver" data-layer="silver" id="toggle-silver">
+          <span class="dot silver"></span> Silver <span class="count" id="count-silver">0</span>
+        </button>
+        <button type="button" class="btn-layer-filter on bronze" data-layer="bronze" id="toggle-bronze">
+          <span class="dot bronze"></span> Bronze <span class="count" id="count-bronze">0</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="header-right">
+      <div class="sim-controls">
+        <button type="button" class="btn-icon" id="btn-zoom-in" title="Zoom In">+</button>
+        <button type="button" class="btn-icon" id="btn-zoom-out" title="Zoom Out">&minus;</button>
+        <button type="button" class="btn-icon" id="btn-reset-view" title="Reset View">&#x21BA;</button>
+        <button type="button" class="btn-icon" id="btn-toggle-sim" title="Pause / Resume Physics">&#x23EF;</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Canvas Viewport -->
+  <main class="canvas-viewport" id="canvas-viewport">
+    <canvas id="graph-canvas"></canvas>
+
+    <div class="graph-legend">
+      <span class="legend-item"><span class="legend-dot gold"></span> Feature Domain (Gold)</span>
+      <span class="legend-item"><span class="legend-dot silver"></span> Lineage Thread (Silver)</span>
+      <span class="legend-item"><span class="legend-dot bronze"></span> Commit / File (Bronze)</span>
+      <span class="legend-item"><span class="legend-line solid"></span> Lineage Edge</span>
+      <span class="legend-item"><span class="legend-line dashed"></span> Shared File Cross-link</span>
+    </div>
+
+    <div class="canvas-hint">Drag nodes &bull; Scroll to zoom &bull; Drag space to pan &bull; Hover to inspect</div>
+  </main>
+
+  <!-- Interactive Glass Tooltip Card (Chronicle Inspector) -->
+  <div class="graph-tooltip" id="graph-tooltip" hidden></div>
+
+  <script src="js/graph-engine.js"></script>
+</body>
+</html>

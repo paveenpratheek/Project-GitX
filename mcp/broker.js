@@ -167,11 +167,15 @@ wss.on('connection', (ws) => {
 function handleMessage(msg, ws) {
   switch (msg.type) {
     case 'SET_ACTIVE_REPO': {
-      const newRepo = msg.repoPath;
-      if (newRepo && fs.existsSync(newRepo) && newRepo !== state.activeRepo) {
-        console.log(`[GitX Broker] Switching active project to: ${newRepo}`);
-        refreshFromGit(newRepo);
-        broadcast({ type: 'SYNC_STATE', state });
+      const rawRepo = msg.repoPath;
+      if (rawRepo) {
+        const normNew = path.resolve(rawRepo);
+        const normCurrent = state.activeRepo ? path.resolve(state.activeRepo) : '';
+        if (fs.existsSync(normNew) && (msg.force || normNew.toLowerCase() !== normCurrent.toLowerCase())) {
+          console.log(`[GitX Broker] Switching active project to: ${normNew}`);
+          refreshFromGit(normNew);
+          broadcast({ type: 'SYNC_STATE', state });
+        }
       }
       break;
     }

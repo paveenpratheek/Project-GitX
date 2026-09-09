@@ -18,39 +18,69 @@ let selectedStreamFilter = null;
 let lastKnownRepo = '';
 
 // -------------------------------------------------- Ter-Manager Session & Theme Sync
-function initSessionSync() {
-  checkActiveSession();
-
-  // Listen for storage events across same-origin frames
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'gitDashboardCwd') checkActiveSession();
-  });
-
-  // Poll every 2 seconds to catch Ter-Manager session switches instantly
-  setInterval(checkActiveSession, 2000);
-
-  // Check on window focus
-  window.addEventListener('focus', checkActiveSession);
+function normPath(p) {
+  if (!p) return '';
+  return String(p).replace(/[\\/]+$/, '').toLowerCase();
 }
 
-function checkActiveSession() {
-  let cwd = '';
-  try {
-    cwd = localStorage.getItem('gitDashboardCwd') || '';
-  } catch (_) {}
-
-  // Fallback to parent frame if localStorage was unset
-  if (!cwd && window.parent && window.parent !== window) {
+function resolveActiveRepo() {
+  // 1. Direct host function calls on window.parent (Ter-Manager exposes activeSessionPath, repoPath, sessionPath)
+  if (window.parent && window.parent !== window) {
     try {
-      if (typeof window.parent.activeRepo === 'function') {
-        cwd = window.parent.activeRepo() || '';
+      if (typeof window.parent.activeSessionPath === 'function') {
+        const p = window.parent.activeSessionPath();
+        if (p) return p;
+      }
+      if (typeof window.parent.repoPath === 'function') {
+        const p = window.parent.repoPath();
+        if (p) return p;
+      }
+      if (typeof window.parent.sessionPath === 'function') {
+        const p = window.parent.sessionPath();
+        if (p) return p;
+      }
+      if (typeof window.parent.activeSession === 'function') {
+        const s = window.parent.activeSession();
+        if (s && s.path) return s.path;
       }
     } catch (_) {}
   }
 
-  if (cwd && cwd !== lastKnownRepo) {
+  // 2. Direct localStorage gitDashboardCwd (set by setGitRepo in Ter-Manager)
+  try {
+    const cwd = localStorage.getItem('gitDashboardCwd');
+    if (cwd) return cwd;
+  } catch (_) {}
+
+  // 3. Resolve active session from termanager localStorage
+  try {
+    const activeId = localStorage.getItem('termanager.session-active');
+    const rawSessions = localStorage.getItem('termanager.sessions');
+    if (activeId && rawSessions) {
+      const list = JSON.parse(rawSessions);
+      if (Array.isArray(list)) {
+        const found = list.find(s => s.id === activeId);
+        if (found && found.path) return found.path;
+      }
+    }
+  } catch (_) {}
+
+  return '';
+}
+
+function checkActiveSession() {
+  const cwd = resolveActiveRepo();
+  if (cwd && normPath(cwd) !== normPath(lastKnownRepo)) {
     lastKnownRepo = cwd;
     console.log('[GitX UI] Active Ter-Manager session repository detected:', cwd);
+    
+    // Immediate badge feedback
+    const badge = document.getElementById('active-project-badge');
+    if (badge) {
+      const folderName = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || cwd;
+      badge.innerHTML = `<span class="proj-icon">📁</span> <b>${escapeHtml(folderName)}</b> <span class="branch-pill" style="opacity:0.75;">[syncing...]</span>`;
+    }
+
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: 'SET_ACTIVE_REPO',
@@ -58,6 +88,51 @@ function checkActiveSession() {
       }));
     }
   }
+}
+
+function initSessionSync() {
+  // 1. Initial check
+  checkActiveSession();
+
+  // 2. Listen for storage events across same-origin frames
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'gitDashboardCwd' || e.key === 'termanager.session-active' || e.key === 'termanager.sessions') {
+      checkActiveSession();
+    }
+  });
+
+  // 3. Watch when iframe changes visibility or document focus changes
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') checkActiveSession();
+  });
+  window.addEventListener('focus', checkActiveSession);
+
+  // 4. Watch window.frameElement mutations (Ter-Manager sets hidden = false when user switches to GitX)
+  try {
+    if (window.frameElement) {
+      const frameObs = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.attributeName === 'hidden' && !window.frameElement.hidden) {
+            checkActiveSession();
+          }
+        }
+      });
+      frameObs.observe(window.frameElement, { attributes: true, attributeFilter: ['hidden', 'style', 'class'] });
+    }
+  } catch (_) {}
+
+  // 5. Watch parent window clicks & interactions (e.g. clicking session or GitX in sidebar)
+  if (window.parent && window.parent !== window) {
+    try {
+      window.parent.document.addEventListener('click', () => {
+        setTimeout(checkActiveSession, 30);
+        setTimeout(checkActiveSession, 200);
+      }, { passive: true });
+    } catch (_) {}
+  }
+
+  // 6. Fast fallback polling (300ms)
+  setInterval(checkActiveSession, 300);
 }
 
 function initThemeSync() {

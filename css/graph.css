@@ -1,0 +1,365 @@
+/* GitX Lakehouse Network Graph — Design System & Host Theme Integration */
+:root {
+  --bg: var(--pal-bg, #0d1117);
+  --surface: var(--pal-raise, #161b22);
+  --surface-raised: color-mix(in srgb, var(--pal-fg, #ffffff) 6%, var(--pal-raise, #161b22));
+  --border: color-mix(in srgb, var(--pal-fg, #ffffff) 12%, transparent);
+  --border-active: color-mix(in srgb, var(--pal-fg, #ffffff) 24%, transparent);
+  --text: var(--pal-fg, #e6edf3);
+  --text-dim: color-mix(in srgb, var(--pal-fg, #e6edf3) 55%, transparent);
+  --accent: var(--pal-accent, #58a6ff);
+  --accent-soft: color-mix(in srgb, var(--pal-accent, #58a6ff) 14%, transparent);
+  --success: var(--pal-green, #3fb950);
+  --gold: #e3b341;
+  --silver: #58a6ff;
+  --bronze: #8b949e;
+  --font-mono: var(--mono, 'Consolas', 'Monaco', 'Courier New', monospace);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  width: 100vw;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+}
+
+/* Header Bar */
+.graph-header {
+  height: 52px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  flex-shrink: 0;
+  gap: 12px;
+  z-index: 10;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.logo-icon {
+  font-size: 17px;
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.logo-title {
+  font-weight: 700;
+  font-size: 13.5px;
+  letter-spacing: 0.4px;
+}
+
+.active-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface-raised));
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+}
+
+.branch-pill {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+/* Center Search & Filters */
+.header-center {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 12px;
+  width: 220px;
+  transition: width 0.2s ease, border-color 0.2s ease;
+}
+
+.search-box:focus-within {
+  width: 260px;
+  border-color: var(--accent);
+}
+
+.search-box input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 11.5px;
+  width: 100%;
+}
+
+.layer-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-layer-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-layer-filter.on.gold {
+  background: color-mix(in srgb, var(--gold) 15%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--gold) 40%, transparent);
+  color: var(--gold);
+}
+
+.btn-layer-filter.on.silver {
+  background: color-mix(in srgb, var(--silver) 15%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--silver) 40%, transparent);
+  color: var(--silver);
+}
+
+.btn-layer-filter.on.bronze {
+  background: color-mix(in srgb, var(--bronze) 15%, var(--surface-raised));
+  border-color: color-mix(in srgb, var(--bronze) 40%, transparent);
+  color: var(--text);
+}
+
+.btn-layer-filter .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.btn-layer-filter .dot.gold { background: var(--gold); }
+.btn-layer-filter .dot.silver { background: var(--silver); }
+.btn-layer-filter .dot.bronze { background: var(--bronze); }
+
+.btn-layer-filter .count {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+/* Right Controls */
+.header-right {
+  display: flex;
+  align-items: center;
+}
+
+.sim-controls {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-icon {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn-icon:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Canvas Viewport */
+.canvas-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle at center, color-mix(in srgb, var(--surface) 50%, var(--bg)) 0%, var(--bg) 100%);
+  cursor: grab;
+}
+
+.canvas-viewport.dragging {
+  cursor: grabbing;
+}
+
+#graph-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Legend */
+.graph-legend {
+  position: absolute;
+  bottom: 14px;
+  left: 16px;
+  background: color-mix(in srgb, var(--surface) 85%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+}
+.legend-dot.gold { background: var(--gold); }
+.legend-dot.silver { background: var(--silver); }
+.legend-dot.bronze { background: var(--bronze); }
+
+.legend-line {
+  width: 16px;
+  height: 2px;
+}
+.legend-line.solid { background: color-mix(in srgb, var(--text-dim) 50%, transparent); }
+.legend-line.dashed {
+  background: repeating-linear-gradient(90deg, var(--accent) 0, var(--accent) 3px, transparent 3px, transparent 6px);
+}
+
+.canvas-hint {
+  position: absolute;
+  bottom: 14px;
+  right: 16px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: color-mix(in srgb, var(--surface) 75%, transparent);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--border);
+  padding: 5px 11px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* Floating Glass Tooltip Card (Chronicle Inspector) */
+.graph-tooltip {
+  position: fixed;
+  z-index: 1000;
+  width: 320px;
+  max-width: 85vw;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--border-active);
+  border-radius: 12px;
+  padding: 12px 14px;
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: opacity 0.12s ease;
+}
+
+.graph-tooltip[hidden] {
+  display: none !important;
+}
+
+.tooltip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+.tooltip-title {
+  font-weight: 700;
+  font-size: 12.5px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tooltip-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.tooltip-badge.gold { background: color-mix(in srgb, var(--gold) 20%, transparent); color: var(--gold); }
+.tooltip-badge.silver { background: color-mix(in srgb, var(--silver) 20%, transparent); color: var(--silver); }
+.tooltip-badge.bronze { background: color-mix(in srgb, var(--bronze) 20%, transparent); color: var(--bronze); }
+
+.tooltip-body {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  line-height: 1.45;
+}
+
+.tooltip-layer {
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.tooltip-layer-tag {
+  font-weight: 700;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.tooltip-layer-tag.l1 { color: #58a6ff; }
+.tooltip-layer-tag.l2 { color: #bc8cff; }
+.tooltip-layer-tag.l3 { color: #3fb950; }
+.tooltip-layer-tag.l4 { color: #f0883e; }
+
+.tooltip-files {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  word-break: break-all;
+}
