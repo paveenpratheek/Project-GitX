@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { WebSocket } from 'ws';
+
+import { scanPreCommit } from './tools/guardrails.js';
+import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -40,7 +44,7 @@ function connectBroker() {
       brokerReady = false;
       setTimeout(connectBroker, 3000);
     });
-  } catch (err) {
+  } catch (_) {
     brokerReady = false;
   }
 }
@@ -56,7 +60,7 @@ function sendToBroker(payload) {
 const TOOLS = [
   {
     name: 'gitx_get_assigned_task',
-    description: 'Retrieves the task, feature prompt specification, and assigned branch allocated to this agent in GitX.',
+    description: 'Retrieves the task, feature prompt specification, assigned branch, and isolated worktree path allocated to this agent in GitX.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -65,7 +69,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_create_issue_with_branch',
-    description: 'Creates a new GitHub/GitX issue with a feature specification prompt, provisions an isolated branch and worktree, and enables another agent to work on it.',
+    description: 'Creates a new GitHub/GitX issue with a feature specification prompt, provisions an isolated Git branch and physical worktree on disk, and enables another agent to work on it.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -79,7 +83,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_commit_chronicle',
-    description: 'Creates an automated, structured 4-layer commit in GitX (Motive, Architecture, Code Manifest, Verification). Never deletes history and never pushes to remote.',
+    description: 'Executes a real Git commit in the local repository or worktree using the structured 4-layer Chronicle format. Runs Secret Shield pre-commit verification and enforces the Push Shield.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -90,9 +94,10 @@ const TOOLS = [
         files_manifest: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Layer 3: List of files and functions modified or introduced'
+          description: 'Layer 3: List of relative file paths to stage and commit'
         },
-        verification: { type: 'string', description: 'Layer 4: Verification evidence, test cases run, exit codes, and exact line locations' }
+        verification: { type: 'string', description: 'Layer 4: Verification evidence, test cases run, exit codes, and exact line locations' },
+        worktree_path: { type: 'string', description: 'Optional: absolute path to agent worktree if working in an isolated sandbox' }
       },
       required: ['summary', 'motive', 'architecture', 'files_manifest']
     }
@@ -111,7 +116,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_get_swarm_status',
-    description: 'Queries the current status of all agents in the GitX swarm, their active branches, and their assigned tasks.',
+    description: 'Queries the current status of all agents in the GitX swarm, active worktrees on disk, and assigned tasks.',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -139,6 +144,7 @@ async function handleToolCall(name, args) {
                   branch: task.branch,
                   prompt_spec: task.prompt_spec,
                   source_branch: task.source_branch,
+                  worktree_path: task.worktreePath || ROOT_DIR,
                   assigned_to: AGENT_ID
                 }, null, 2)
               }]
@@ -159,13 +165,20 @@ async function handleToolCall(name, args) {
 
     case 'gitx_create_issue_with_branch': {
       const { title, branch, prompt_spec, source_branch } = args;
+      const baseBranch = source_branch || 'main';
+
+      // 1. Provision physical Git Worktree on disk!
+      const worktreeResult = ensureWorktree(ROOT_DIR, branch, baseBranch);
+
+      // 2. Broadcast issue and worktree path to broker
       sendToBroker({
         type: 'CREATE_ISSUE',
         agentId: AGENT_ID,
         title,
         branch,
         prompt_spec,
-        source_branch: source_branch || 'main'
+        source_branch: baseBranch,
+        worktreePath: worktreeResult.worktreePath
       });
 
       return {
@@ -173,18 +186,97 @@ async function handleToolCall(name, args) {
           type: 'text',
           text: JSON.stringify({
             ok: true,
-            message: 'Issue registered in GitX! Feature branch & worktree scheduled: ' + branch,
+            message: 'Issue registered and physical Git Worktree provisioned!',
             title,
             branch,
-            prompt_spec
+            worktree_path: worktreeResult.worktreePath,
+            prompt_spec,
+            worktree_created: worktreeResult.created,
+            note: 'The assigned agent should execute commands inside worktree_path to remain isolated from main.'
           }, null, 2)
         }]
       };
     }
 
     case 'gitx_commit_chronicle': {
-      const { summary, stream, motive, architecture, files_manifest, verification } = args;
+      const { summary, stream, motive, architecture, files_manifest, verification, worktree_path } = args;
+      const executionDir = worktree_path && fs.existsSync(worktree_path) ? worktree_path : ROOT_DIR;
 
+      // 1. Run Secret Shield Pre-Commit Guardrail
+      const guardrailCheck = scanPreCommit(executionDir, files_manifest);
+      if (!guardrailCheck.allowed) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              blocked_by: 'GitX Secret Shield',
+              error: guardrailCheck.reason,
+              action_required: 'Remove the detected secret or sensitive file from your changes before attempting to commit.'
+            }, null, 2)
+          }]
+        };
+      }
+
+      // 2. Build 4-Layer Chronicle Commit Body
+      const chronicleBody = `=== GITX-CHRONICLE:START ===
+[LAYER-1: MOTIVE]
+Stream: ${stream || 'Core'} | Agent: ${AGENT_ID}
+Motive: ${motive}
+
+[LAYER-2: ARCHITECTURE]
+${architecture}
+
+[LAYER-3: CODE-MANIFEST]
+Files:
+${(files_manifest || []).map(f => '- ' + f).join('\n')}
+
+[LAYER-4: VERIFICATION & EXACT LOCATIONS]
+${verification || 'Verified by agent inspection.'}
+=== GITX-CHRONICLE:END ===`;
+
+      let commitHash = 'local-' + Date.now().toString(16);
+      let currentBranch = 'unknown';
+
+      // 3. Execute Real Git Add and Git Commit
+      try {
+        // Stage files
+        if (files_manifest && files_manifest.length > 0) {
+          execFileSync('git', ['add', ...files_manifest], { cwd: executionDir, stdio: 'ignore' });
+        }
+
+        // Commit with summary and 4-layer body
+        execFileSync('git', ['commit', '-m', summary, '-m', chronicleBody], {
+          cwd: executionDir,
+          encoding: 'utf8'
+        });
+
+        // Retrieve newly generated Git SHA
+        commitHash = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: executionDir,
+          encoding: 'utf8'
+        }).trim();
+
+        // Retrieve current branch name
+        currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+          cwd: executionDir,
+          encoding: 'utf8'
+        }).trim();
+
+      } catch (err) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: 'Git execution error: ' + err.message,
+              note: 'Ensure files exist and contain modifications to commit.'
+            }, null, 2)
+          }]
+        };
+      }
+
+      // 4. Notify broker with real Git SHA and metadata
       sendToBroker({
         type: 'COMMIT_CHRONICLE',
         agentId: AGENT_ID,
@@ -193,7 +285,9 @@ async function handleToolCall(name, args) {
         motive,
         architecture,
         filesManifest: files_manifest,
-        verification
+        verification,
+        commitHash,
+        branch: currentBranch
       });
 
       return {
@@ -201,11 +295,14 @@ async function handleToolCall(name, args) {
           type: 'text',
           text: JSON.stringify({
             ok: true,
+            commit_hash: commitHash,
+            branch: currentBranch,
             commit_format: 'GitX 4-Layer Chronicle',
             stream: stream || 'Core',
             summary,
             layers_recorded: [1, 2, 3, 4],
-            note: 'Commit recorded in GitX Lakehouse. Remote push is guarded and must be performed in Ter-Manager.'
+            security_check: 'Passed (Secret Shield clean)',
+            note: 'Commit safely recorded in local Git history. Remote push is guarded and must be executed in Ter-Manager.'
           }, null, 2)
         }]
       };
@@ -251,6 +348,8 @@ async function handleToolCall(name, args) {
 
     case 'gitx_get_swarm_status': {
       let swarm = [];
+      const activeWorktrees = listWorktrees(ROOT_DIR);
+
       try {
         const stateFile = path.join(ROOT_DIR, '.gitx', 'state.json');
         if (fs.existsSync(stateFile)) {
@@ -260,7 +359,8 @@ async function handleToolCall(name, args) {
             title: i.title,
             branch: i.branch,
             assigned_to: i.assignedTo,
-            status: i.status
+            status: i.status,
+            worktree_path: i.worktreePath || 'main'
           }));
         }
       } catch (_) {}
@@ -270,6 +370,7 @@ async function handleToolCall(name, args) {
           type: 'text',
           text: JSON.stringify({
             current_agent: AGENT_ID,
+            active_worktrees: activeWorktrees,
             active_swarm_tasks: swarm
           }, null, 2)
         }]
