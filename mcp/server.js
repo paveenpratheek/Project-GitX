@@ -7,6 +7,7 @@ import { WebSocket } from 'ws';
 
 import { scanPreCommit } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
+import { scanGitHistory } from './tools/chronicle-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
@@ -322,11 +323,18 @@ ${verification || 'Verified by agent inspection.'}
       let matches = [];
 
       try {
+        const chronicles = scanGitHistory(ROOT_DIR);
+        const seen = new Set(chronicles.map(c => c.commitHash));
+
         const stateFile = path.join(ROOT_DIR, '.gitx', 'state.json');
         if (fs.existsSync(stateFile)) {
           const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-          const chronicles = state.chronicles || [];
+          for (const c of state.chronicles || []) {
+            if (!seen.has(c.commitHash)) chronicles.push(c);
+          }
+        }
 
+        {
           matches = chronicles.filter(c => {
             if (l === 1) return (c.motive || '').toLowerCase().includes(q) || (c.stream || '').toLowerCase().includes(q);
             if (l === 2) return (c.architecture || '').toLowerCase().includes(q);
