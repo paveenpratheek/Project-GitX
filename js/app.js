@@ -1,4 +1,4 @@
-/* GitX — Frontend Application & Swarm Controller */
+/* GitX — Frontend Application & Lakehouse Controller */
 
 const BROKER_URL = 'ws://127.0.0.1:7771';
 let ws = null;
@@ -11,6 +11,7 @@ let state = {
 
 let activeSearchLayer = 1;
 let currentSearchQuery = '';
+let selectedStreamFilter = null; // null = all streams, or specific streamName
 
 // -------------------------------------------------- Ter-Manager Host Handshake
 function initThemeSync() {
@@ -149,7 +150,7 @@ function renderAgents() {
     const select = document.createElement('select');
     select.className = 'agent-branch-select';
     
-    const branches = Array.from(new Set(['main', ...state.issues.map(i => i.branch)]));
+    const branches = Array.from(new Set(['main', 'master', ...state.issues.map(i => i.branch)]));
     branches.forEach(b => {
       const opt = document.createElement('option');
       opt.value = b;
@@ -210,7 +211,7 @@ function renderIssues() {
       <div class="issue-prompt">${escapeHtml(issue.prompt_spec)}</div>
       <div class="issue-footer">
         <span>Status: <b>${issue.status}</b></span>
-        <span>Assigned: ${issue.assignedTo ? escapeHtml(issue.assignedTo) : 'Unassigned'}</span>
+        <span>Sandbox: <code>${escapeHtml(issue.worktreePath ? issue.worktreePath.split(/\\|\//).pop() : 'main')}</code></span>
       </div>
     `;
 
@@ -223,77 +224,132 @@ function renderLakehouse() {
   const silverContainer = document.getElementById('lakehouse-silver');
   const bronzeContainer = document.getElementById('lakehouse-bronze');
 
+  const chronicles = state.chronicles || [];
+
+  // Group into streams
+  const streamMap = new Map();
+  for (const c of chronicles) {
+    const sName = c.stream || 'Core';
+    if (!streamMap.has(sName)) {
+      streamMap.set(sName, { name: sName, commits: [], files: new Set() });
+    }
+    const sObj = streamMap.get(sName);
+    sObj.commits.push(c);
+    (c.filesManifest || []).forEach(f => sObj.files.add(f));
+  }
+
+  // 1. GOLD LAYER: Curated Features
   if (goldContainer) {
     goldContainer.innerHTML = '';
-    const streams = Object.keys(state.streams);
-    if (streams.length === 0) {
-      goldContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No curated feature streams yet.</div>';
+    if (streamMap.size === 0) {
+      goldContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No curated features yet.</div>';
     } else {
-      streams.forEach(streamName => {
-        const count = state.streams[streamName].length;
+      for (const [name, sObj] of streamMap.entries()) {
+        const latest = sObj.commits[0] || {};
+        const isStable = sObj.commits.length >= 2 && latest.verification && !latest.verification.includes('No verification');
+        
         const card = document.createElement('div');
         card.className = 'gold-card';
+        card.style.cursor = 'pointer';
+        card.title = 'Click to filter stream in Bronze/Silver';
+        
+        card.onclick = () => {
+          selectedStreamFilter = (selectedStreamFilter === name) ? null : name;
+          renderLakehouse();
+        };
+
+        if (selectedStreamFilter === name) {
+          card.style.borderColor = 'var(--gold)';
+          card.style.boxShadow = '0 0 10px rgba(227, 179, 65, 0.3)';
+        }
+
         card.innerHTML = `
           <div>
-            <div class="gold-name">${escapeHtml(streamName)}</div>
-            <div class="gold-stat">${count} commit${count === 1 ? '' : 's'} recorded</div>
+            <div class="gold-name">${escapeHtml(name)} ${selectedStreamFilter === name ? '★ (Filtered)' : ''}</div>
+            <div class="gold-stat">${sObj.commits.length} commits &bull; ${sObj.files.size} active files</div>
           </div>
-          <span style="font-size:11px;color:var(--gold);font-weight:700;">STREAM ACTIVE</span>
+          <span style="font-size:11px;color:${isStable ? 'var(--success)' : 'var(--gold)'};font-weight:700;">
+            ${isStable ? 'STABLE' : 'ACTIVE'}
+          </span>
         `;
         goldContainer.appendChild(card);
-      });
+      }
     }
   }
 
+  // 2. SILVER LAYER: Semantic Feature Lineage Streams
   if (silverContainer) {
     silverContainer.innerHTML = '';
-    const streams = Object.keys(state.streams);
-    if (streams.length === 0) {
+    if (streamMap.size === 0) {
       silverContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No active feature threads.</div>';
     } else {
-      streams.forEach(streamName => {
+      for (const [name, sObj] of streamMap.entries()) {
+        if (selectedStreamFilter && selectedStreamFilter !== name) continue;
+
         const thread = document.createElement('div');
         thread.className = 'stream-thread';
-        const hashes = state.streams[streamName];
+        thread.style.cursor = 'pointer';
+
+        thread.onclick = () => {
+          selectedStreamFilter = (selectedStreamFilter === name) ? null : name;
+          renderLakehouse();
+        };
+
         thread.innerHTML = `
-          <div class="stream-name">Stream: ${escapeHtml(streamName)}</div>
-          <div style="font-size:11px;color:var(--text-dim);">Linked Lineage: ${hashes.length} commits bound across time</div>
+          <div class="stream-name">Stream: ${escapeHtml(name)}</div>
+          <div style="font-size:11px;color:var(--text-dim);">
+            Linked Lineage: <b>${sObj.commits.length}</b> commits bound across time (${sObj.files.size} files)
+          </div>
         `;
         silverContainer.appendChild(thread);
-      });
+      }
     }
   }
 
+  // 3. BRONZE LAYER: Raw Chronological Commits (Filtered by Stream & Search Layer)
   if (bronzeContainer) {
     bronzeContainer.innerHTML = '';
-    let chronicles = state.chronicles;
+    let filtered = chronicles;
 
+    // Filter by selected stream if any
+    if (selectedStreamFilter) {
+      filtered = filtered.filter(c => (c.stream || 'Core') === selectedStreamFilter);
+    }
+
+    // Filter by layer search query if any
     if (currentSearchQuery) {
       const q = currentSearchQuery.toLowerCase();
-      chronicles = chronicles.filter(c => {
-        if (activeSearchLayer === 1) return (c.motive || '').toLowerCase().includes(q) || (c.stream || '').toLowerCase().includes(q);
+      filtered = filtered.filter(c => {
+        if (activeSearchLayer === 1) return (c.motive || '').toLowerCase().includes(q) || (c.stream || '').toLowerCase().includes(q) || (c.summary || '').toLowerCase().includes(q);
         if (activeSearchLayer === 2) return (c.architecture || '').toLowerCase().includes(q);
         if (activeSearchLayer === 3) return (c.filesManifest || []).some(f => f.toLowerCase().includes(q));
         return (c.verification || '').toLowerCase().includes(q);
       });
     }
 
-    if (chronicles.length === 0) {
-      bronzeContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);">No commits match the layer filter.</div>';
+    if (filtered.length === 0) {
+      bronzeContainer.innerHTML = '<div style="font-size:11px;color:var(--text-dim);padding:8px;">No commits match the active stream/layer filters.</div>';
       return;
     }
 
-    chronicles.forEach(c => {
+    filtered.forEach(c => {
       const card = document.createElement('div');
       card.className = 'commit-chronicle-card';
 
+      const shortSha = (c.commitHash || '').slice(0, 7);
+      const isFormal = c.isChronicle !== false;
+
       card.innerHTML = `
-        <div class="commit-summary">${escapeHtml(c.summary)}</div>
-        <div class="commit-meta">
-          <span>Stream: <b>${escapeHtml(c.stream)}</b></span>
-          <span>Branch: ${escapeHtml(c.branch)}</span>
-          <span>Agent: ${escapeHtml(c.agentId)}</span>
+        <div class="commit-summary">
+          <span style="color:var(--accent);">${shortSha ? shortSha + ' • ' : ''}</span>
+          ${escapeHtml(c.summary)}
         </div>
+        <div class="commit-meta">
+          <span>Stream: <b>${escapeHtml(c.stream || 'Core')}</b></span>
+          <span>Author: ${escapeHtml(c.author || c.agentId || 'Human')}</span>
+          <span>Date: ${escapeHtml((c.timestamp || '').slice(0, 10))}</span>
+        </div>
+        ${isFormal ? `
         <div class="chronicle-layers">
           <div class="layer-box">
             <div class="layer-tag l1">Layer 1: Motive</div>
@@ -301,17 +357,20 @@ function renderLakehouse() {
           </div>
           <div class="layer-box">
             <div class="layer-tag l2">Layer 2: Architecture</div>
-            <div>${escapeHtml(c.architecture || 'No architectural notes')}</div>
+            <div style="white-space:pre-line;">${escapeHtml(c.architecture || 'No architectural notes')}</div>
           </div>
           <div class="layer-box">
-            <div class="layer-tag l3">Layer 3: Code Manifest</div>
+            <div class="layer-tag l3">Layer 3: Code Manifest (${(c.filesManifest || []).length} files)</div>
             <div>${escapeHtml((c.filesManifest || []).join(', ') || 'None')}</div>
           </div>
           <div class="layer-box">
-            <div class="layer-tag l4">Layer 4: Verification & Lines</div>
-            <div>${escapeHtml(c.verification || 'No verification proof')}</div>
+            <div class="layer-tag l4">Layer 4: Verification &amp; Lines</div>
+            <div style="white-space:pre-line;">${escapeHtml(c.verification || 'No verification proof')}</div>
           </div>
         </div>
+        ` : `
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;">${escapeHtml(c.motive || '')}</div>
+        `}
       `;
       bronzeContainer.appendChild(card);
     });

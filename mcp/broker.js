@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
+import { scanGitHistory } from './tools/chronicle-parser.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -10,15 +11,41 @@ const ROOT_DIR = path.resolve(__dirname, '..');
 const STATE_FILE = path.join(ROOT_DIR, '.gitx', 'state.json');
 const PORT = 7771;
 
-// Default In-Memory State
 let state = {
-  agents: {},       // id -> { id, name, model, pid, branch, status, currentTask, connectedAt, lastSeen }
-  issues: [],       // array of { id, number, title, branch, prompt_spec, source_branch, status, assignedTo, createdAt, worktreePath }
-  chronicles: [],   // array of 4-layer commits
-  streams: {}       // streamName -> array of commit hashes
+  agents: {},
+  issues: [],
+  chronicles: [],
+  streams: {}
 };
 
-// Load saved state if exists
+function refreshFromGit() {
+  console.log('[GitX Broker] Scanning real Git history from:', ROOT_DIR);
+  const gitCommits = scanGitHistory(ROOT_DIR, 100);
+
+  // Merge git commits into chronicles without duplicates
+  const existingHashes = new Set((state.chronicles || []).map(c => c.commitHash));
+  for (const gc of gitCommits) {
+    if (!existingHashes.has(gc.commitHash)) {
+      state.chronicles.push(gc);
+      existingHashes.add(gc.commitHash);
+    }
+  }
+
+  // Sort newest first
+  state.chronicles.sort((a, b) => new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime());
+
+  // Re-index streams map
+  state.streams = {};
+  for (const c of state.chronicles) {
+    const sName = c.stream || 'Core';
+    if (!state.streams[sName]) state.streams[sName] = [];
+    state.streams[sName].push(c.commitHash);
+  }
+
+  saveState();
+  console.log(`[GitX Broker] Loaded ${state.chronicles.length} total commits across ${Object.keys(state.streams).length} streams.`);
+}
+
 function loadState() {
   try {
     if (fs.existsSync(STATE_FILE)) {
@@ -31,9 +58,9 @@ function loadState() {
   } catch (err) {
     console.warn('[GitX Broker] Failed to read state.json, starting fresh:', err.message);
   }
+  refreshFromGit();
 }
 
-// Persist state to .gitx/state.json
 function saveState() {
   try {
     const dir = path.dirname(STATE_FILE);
@@ -50,7 +77,6 @@ function saveState() {
 
 loadState();
 
-// Create HTTP server for health-check / REST fallback
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -65,6 +91,14 @@ const server = http.createServer((req, res) => {
   if (req.url === '/health' || req.url === '/api/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, service: 'gitx-broker', port: PORT, agents: Object.keys(state.agents).length }));
+    return;
+  }
+
+  if (req.url === '/api/refresh') {
+    refreshFromGit();
+    broadcast({ type: 'SYNC_STATE', state });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, count: state.chronicles.length }));
     return;
   }
 
@@ -158,6 +192,7 @@ function handleMessage(msg, ws) {
         branch: msg.branch || ('feat/task-' + issueNumber),
         prompt_spec: msg.prompt_spec || '',
         source_branch: msg.source_branch || 'main',
+        worktreePath: msg.worktreePath || ROOT_DIR,
         status: 'Open',
         assignedTo: null,
         createdAt: new Date().toISOString(),
@@ -172,7 +207,7 @@ function handleMessage(msg, ws) {
 
     case 'COMMIT_CHRONICLE': {
       const chronicle = {
-        id: 'chronicle-' + Date.now(),
+        id: 'git-' + (msg.commitHash ? msg.commitHash.slice(0, 12) : Date.now().toString(16)),
         commitHash: msg.commitHash || ('local-' + Date.now().toString(16)),
         branch: msg.branch || 'main',
         agentId: msg.agentId || 'Unknown',
@@ -182,7 +217,8 @@ function handleMessage(msg, ws) {
         architecture: msg.architecture || '',
         filesManifest: msg.filesManifest || [],
         verification: msg.verification || '',
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        isChronicle: true
       };
 
       state.chronicles.unshift(chronicle);
@@ -192,6 +228,12 @@ function handleMessage(msg, ws) {
       saveState();
       broadcast({ type: 'CHRONICLE_COMMITTED', chronicle, state });
       ws.send(JSON.stringify({ type: 'CHRONICLE_OK', chronicle }));
+      break;
+    }
+
+    case 'REFRESH_HISTORY': {
+      refreshFromGit();
+      broadcast({ type: 'SYNC_STATE', state });
       break;
     }
 

@@ -1,4 +1,4 @@
-﻿node_modules/
-.gitx/worktrees/
+node_modules/
+.gitx/
 *.log
 .DS_Store
