@@ -39,6 +39,48 @@ const ROOT_DIR = getRepoRoot();
  * for. Worktree creation has the same problem and is NOT fixed here -
  * flagged separately, since it needs its own answer about where a
  * worktree for someone else's repo should actually live. */
+/* Per-repo GitX data - issues and worktrees - lives INSIDE whichever repo
+ * it is about, at <repo>/.gitx/, the same convention .git/ itself uses.
+ * Not the repo GitX happens to be installed in; the one actually named by
+ * cwd. This is what makes it travel: clone the repo and its .gitx/ comes
+ * along as ordinary files, no GitX install or broker required to have
+ * created them - only to read them back.
+ *
+ * ensureGitignored is what keeps the promise of "without disturbing the
+ * user's code": a bare .gitx/ folder with no ignore rule is untracked
+ * clutter the moment someone runs `git status` in their own repo. Same
+ * defensive shape as every other .gitignore writer in this stack - skip a
+ * pattern already present, enforce a trailing newline before appending, or
+ * the new line grafts onto whatever the last line was. */
+function ensureGitignored(dir) {
+  try {
+    const giFile = path.join(dir, '.gitignore');
+    let text = '';
+    try { text = fs.readFileSync(giFile, 'utf8'); } catch (_) { /* none yet - creating it */ }
+    const already = text.split(/\r?\n/).some((l) => l.trim() === '.gitx' || l.trim() === '.gitx/');
+    if (already) return;
+    const sep = (text === '' || text.endsWith('\n')) ? '' : '\n';
+    fs.writeFileSync(giFile, text + sep + '.gitx/' + '\n', 'utf8');
+  } catch (_) { /* best-effort - never block the actual operation over this */ }
+}
+
+function loadTargetState(dir) {
+  const stateFile = path.join(dir, '.gitx', 'state.json');
+  try {
+    if (fs.existsSync(stateFile)) return JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (_) {}
+  return { issues: [] };
+}
+
+function saveTargetState(dir, state) {
+  try {
+    ensureGitignored(dir);
+    const gitxDir = path.join(dir, '.gitx');
+    if (!fs.existsSync(gitxDir)) fs.mkdirSync(gitxDir, { recursive: true });
+    fs.writeFileSync(path.join(gitxDir, 'state.json'), JSON.stringify({ issues: state.issues || [] }, null, 2), 'utf8');
+  } catch (_) {}
+}
+
 function resolveTargetRepo(cwd) {
   if (cwd && typeof cwd === 'string') {
     const resolved = path.resolve(cwd);
@@ -99,7 +141,9 @@ const TOOLS = [
     description: 'Retrieves the task, feature prompt specification, assigned branch, and isolated worktree path allocated to this agent in GitX.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        cwd: { type: 'string', description: 'Absolute path of the repository to check. Defaults to the repo this MCP server was started in.' }
+      },
       required: []
     }
   },
@@ -112,7 +156,8 @@ const TOOLS = [
         title: { type: 'string', description: 'Clear title for the issue/task' },
         branch: { type: 'string', description: 'Git branch name (e.g. feat/customizable-ui)' },
         prompt_spec: { type: 'string', description: 'Comprehensive prompt specification that the assigned agent will consume to implement the feature' },
-        source_branch: { type: 'string', description: 'Base branch to branch off from (defaults to current or main)' }
+        source_branch: { type: 'string', description: 'Base branch to branch off from (defaults to current or main)' },
+        cwd: { type: 'string', description: 'Absolute path of the repository to create this issue and worktree in. Defaults to the repo this MCP server was started in.' }
       },
       required: ['title', 'branch', 'prompt_spec']
     }
@@ -167,28 +212,38 @@ const TOOLS = [
 async function handleToolCall(name, args) {
   switch (name) {
     case 'gitx_get_assigned_task': {
+      const target = resolveTargetRepo(args.cwd);
+      if (!target.ok) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              found: false,
+              error: 'No such folder: ' + target.requested
+            })
+          }]
+        };
+      }
       try {
-        const stateFile = path.join(ROOT_DIR, '.gitx', 'state.json');
-        if (fs.existsSync(stateFile)) {
-          const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-          const task = (state.issues || []).find(i => i.status !== 'Closed');
-          if (task) {
-            return {
-              content: [{
-                type: 'text',
-                text: JSON.stringify({
-                  found: true,
-                  task_number: task.number,
-                  title: task.title,
-                  branch: task.branch,
-                  prompt_spec: task.prompt_spec,
-                  source_branch: task.source_branch,
-                  worktree_path: task.worktreePath || ROOT_DIR,
-                  assigned_to: AGENT_ID
-                }, null, 2)
-              }]
-            };
-          }
+        const state = loadTargetState(target.dir);
+        const task = (state.issues || []).find(i => i.status !== 'Closed');
+        if (task) {
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({
+                found: true,
+                task_number: task.number,
+                title: task.title,
+                branch: task.branch,
+                prompt_spec: task.prompt_spec,
+                source_branch: task.source_branch,
+                worktree_path: task.worktreePath || target.dir,
+                assigned_to: AGENT_ID,
+                repo: target.dir
+              }, null, 2)
+            }]
+          };
         }
       } catch (_) {}
       return {
@@ -196,6 +251,7 @@ async function handleToolCall(name, args) {
           type: 'text',
           text: JSON.stringify({
             found: false,
+            repo: target.dir,
             message: 'No open task currently assigned to this agent in GitX. Working on current branch.'
           })
         }]
@@ -203,13 +259,72 @@ async function handleToolCall(name, args) {
     }
 
     case 'gitx_create_issue_with_branch': {
-      const { title, branch, prompt_spec, source_branch } = args;
+      const { title, branch, prompt_spec, source_branch, cwd } = args;
+      const target = resolveTargetRepo(cwd);
+      if (!target.ok) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ ok: false, error: 'No such folder: ' + target.requested })
+          }]
+        };
+      }
       const baseBranch = source_branch || 'main';
 
-      // 1. Provision physical Git Worktree on disk!
-      const worktreeResult = ensureWorktree(ROOT_DIR, branch, baseBranch);
+      // 1. Provision physical Git Worktree on disk, in the TARGET repo.
+      const worktreeResult = ensureWorktree(target.dir, branch, baseBranch);
 
-      // 2. Broadcast issue and worktree path to broker
+      /* Refuse to record an issue pointing at a worktree that was never
+       * actually created. This used to persist regardless - a failed
+       * ensureWorktree() falls back to { worktreePath: repoRoot, created:
+       * false, error }, and the issue got written anyway, so
+       * gitx_get_assigned_task would hand an agent a "worktree_path" that
+       * was really just the main repo root. An agent told to work isolated
+       * there is not isolated - it is editing the same files as everyone
+       * else, believing otherwise. Only a real error fails this; the
+       * "existing worktree re-used" case has no error field and passes
+       * through exactly as before. */
+      if (worktreeResult.error) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              error: 'Could not provision the worktree, so no issue was recorded: ' + worktreeResult.error,
+              repo: target.dir
+            }, null, 2)
+          }]
+        };
+      }
+
+      /* 2. Persist directly into the target repo's own .gitx/state.json -
+       * not only broadcast to the broker. The broker is a separate process
+       * that may not even be running when an agent calls this tool over
+       * stdio, and its own state file is centralized to wherever GitX
+       * itself is installed, not to the repo the issue is actually about.
+       * Writing it here is what makes the issue survive a clone even if
+       * nobody ever opens the GitX dashboard for this repo. */
+      const state = loadTargetState(target.dir);
+      const issueNumber = (state.issues || []).length + 1;
+      const issue = {
+        id: 'issue-' + Date.now(),
+        number: issueNumber,
+        title: title || ('Untitled Task #' + issueNumber),
+        branch,
+        prompt_spec: prompt_spec || '',
+        source_branch: baseBranch,
+        worktreePath: worktreeResult.worktreePath,
+        repoPath: target.dir,
+        status: 'Open',
+        assignedTo: null,
+        createdAt: new Date().toISOString(),
+        createdBy: AGENT_ID
+      };
+      state.issues = state.issues || [];
+      state.issues.unshift(issue);
+      saveTargetState(target.dir, state);
+
+      // 3. Broadcast too, for whoever has the live dashboard open.
       sendToBroker({
         type: 'CREATE_ISSUE',
         agentId: AGENT_ID,
@@ -225,7 +340,8 @@ async function handleToolCall(name, args) {
           type: 'text',
           text: JSON.stringify({
             ok: true,
-            message: 'Issue registered and physical Git Worktree provisioned!',
+            message: 'Issue registered and physical Git Worktree provisioned in ' + target.dir,
+            repo: target.dir,
             title,
             branch,
             worktree_path: worktreeResult.worktreePath,
