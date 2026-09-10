@@ -19,6 +19,34 @@ function getRepoRoot() {
 }
 
 const ROOT_DIR = getRepoRoot();
+
+/* Every read tool used to be locked to ROOT_DIR - computed ONCE, from
+ * wherever this process happened to be spawned, with no way to ask about a
+ * different repository afterward. A session spawned from inside another
+ * project got that project's history back for every query, silently:
+ * gitx_search_chronicle("gitx") returned commits from the WRONG repo, with
+ * no error and a plausible-looking result, which is the expensive kind of
+ * wrong - it costs nothing to hit and nothing to notice.
+ *
+ * cwd resolves per call now, but only for the two tools that actually
+ * SCAN a repository's history - search_chronicle and get_swarm_status.
+ * GitX's own bookkeeping (.gitx/state.json - the issue list, the agent
+ * registry) stays anchored to ROOT_DIR regardless: it is GitX's own
+ * database, not a property of whichever repo someone asked to search, and
+ * letting cwd move it too would mean asking about a different project's
+ * commits also silently swapped which project's ISSUE LIST you were
+ * looking at - a much bigger and more surprising change than was asked
+ * for. Worktree creation has the same problem and is NOT fixed here -
+ * flagged separately, since it needs its own answer about where a
+ * worktree for someone else's repo should actually live. */
+function resolveTargetRepo(cwd) {
+  if (cwd && typeof cwd === 'string') {
+    const resolved = path.resolve(cwd);
+    if (fs.existsSync(resolved)) return { dir: resolved, requested: cwd, ok: true };
+    return { dir: ROOT_DIR, requested: cwd, ok: false };
+  }
+  return { dir: ROOT_DIR, requested: null, ok: true };
+}
 const BROKER_WS = 'ws://127.0.0.1:7771';
 
 const AGENT_ID = process.env.GITX_AGENT_ID || ('agent-' + process.pid);
@@ -117,7 +145,8 @@ const TOOLS = [
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search term or keyword (e.g. paint canvas, refresh token)' },
-        layer: { type: 'number', description: 'Layer to search: 1 (Motive), 2 (Architecture), 3 (Files), or 4 (Lines/Proof). Defaults to 1.' }
+        layer: { type: 'number', description: 'Layer to search: 1 (Motive), 2 (Architecture), 3 (Files), or 4 (Lines/Proof). Defaults to 1.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository to search. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project, or the result silently answers about the wrong one.' }
       },
       required: ['query']
     }
@@ -127,7 +156,9 @@ const TOOLS = [
     description: 'Queries the current status of all agents in the GitX swarm, active worktrees on disk, and assigned tasks.',
     inputSchema: {
       type: 'object',
-      properties: {},
+      properties: {
+        cwd: { type: 'string', description: 'Absolute path of the repository whose worktrees to list. Defaults to the repo this MCP server was started in.' }
+      },
       required: []
     }
   }
@@ -317,17 +348,34 @@ ${verification || 'Verified by agent inspection.'}
     }
 
     case 'gitx_search_chronicle': {
-      const { query, layer } = args;
+      const { query, layer, cwd } = args;
       const q = (query || '').toLowerCase();
       const l = layer || 1;
+      const target = resolveTargetRepo(cwd);
       let matches = [];
 
+      if (!target.ok) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'No such folder: ' + target.requested + ' - nothing was searched.',
+              searched_repo: null
+            }, null, 2)
+          }]
+        };
+      }
+
       try {
-        const chronicles = scanGitHistory(ROOT_DIR);
+        const chronicles = scanGitHistory(target.dir);
         const seen = new Set(chronicles.map(c => c.commitHash));
 
-        const stateFile = path.join(ROOT_DIR, '.gitx', 'state.json');
-        if (fs.existsSync(stateFile)) {
+        /* GitX's own cache, unaffected by cwd - see the note on
+         * resolveTargetRepo. A repo being searched that is not the one
+         * GitX is installed in will just skip this merge, which only ever
+         * adds chronicles this same process itself recorded. */
+        const stateFile = target.dir === ROOT_DIR ? path.join(ROOT_DIR, '.gitx', 'state.json') : null;
+        if (stateFile && fs.existsSync(stateFile)) {
           const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
           for (const c of state.chronicles || []) {
             if (!seen.has(c.commitHash)) chronicles.push(c);
@@ -353,6 +401,7 @@ ${verification || 'Verified by agent inspection.'}
         content: [{
           type: 'text',
           text: JSON.stringify({
+            searched_repo: target.dir,
             searched_layer: l,
             matches_count: matches.length,
             results: matches
@@ -362,8 +411,20 @@ ${verification || 'Verified by agent inspection.'}
     }
 
     case 'gitx_get_swarm_status': {
+      const target = resolveTargetRepo(args.cwd);
+      if (!target.ok) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              error: 'No such folder: ' + target.requested + ' - nothing was listed.',
+              searched_repo: null
+            }, null, 2)
+          }]
+        };
+      }
       let swarm = [];
-      const activeWorktrees = listWorktrees(ROOT_DIR);
+      const activeWorktrees = listWorktrees(target.dir);
 
       try {
         const stateFile = path.join(ROOT_DIR, '.gitx', 'state.json');
@@ -384,6 +445,7 @@ ${verification || 'Verified by agent inspection.'}
         content: [{
           type: 'text',
           text: JSON.stringify({
+            searched_repo: target.dir,
             current_agent: AGENT_ID,
             active_worktrees: activeWorktrees,
             active_swarm_tasks: swarm
