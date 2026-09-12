@@ -211,11 +211,16 @@ const TOOLS = [
   },
   {
     name: 'gitx_find_related',
-    description: 'Call this AFTER staging changes and BEFORE writing a commit message. Finds earlier commits related to the work you just did, so the message can reference real prior work instead of guessing. Ranks by which code regions you touched AND how you describe the change - the two find different things, so supply both. Reads the staged diff itself; do not paste it in. Unlike gitx_search_chronicle, which searches by keyword, this searches by example: the example is your staged work.',
+    description: 'Finds earlier commits related to what you are working on, so you can read the reasoning behind them instead of guessing. Two uses: AFTER staging and before writing a commit message, or when ORIENTING in an unfamiliar area before changing anything. Ranks on which code regions are involved AND how you describe the work - the two reach different things, so supply both. Reads the staged diff itself; do not paste it in. Unlike gitx_search_chronicle, which searches by keyword, this searches by example.',
     inputSchema: {
       type: 'object',
       properties: {
-        description: { type: 'string', description: 'One line saying what you just built, in your own words - e.g. "reworked how the wallpaper picks its accent colour". This is a second, independent search signal: it reaches work whose code has since moved, which the staged diff alone cannot find.' },
+        description: { type: 'string', description: 'One line in your own words - what you just built, or what you are about to work on. e.g. "reworked how the wallpaper picks its accent colour". An independent search signal: it reaches work whose code has since moved, which regions alone cannot find.' },
+        paths: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Files, directories or exact regions you are working in. USE THIS WHEN NOTHING IS STAGED - without it a query runs on your description alone and loses most of its accuracy. Three forms: "public/app.js::function applyWallpaper" for one declaration, "public/app.js" for a whole file, "public/scenes/" for a directory.'
+        },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project, or the result silently answers about the wrong one.' },
         limit: { type: 'number', description: 'How many results to return. Defaults to 10.' }
       },
@@ -602,12 +607,19 @@ ${verification || 'Verified by agent inspection.'}
        * effect is exactly the kind of surprise that makes a tool untrustworthy. */
       const { index, rebuilt } = loadOrBuildIndex(target.dir);
       const qRegions = stagedRegions(target.dir);
-      const { qWords, results } = findRelated(index, qRegions, args.description || '', args.limit || 10);
+      const { qWords, results, regionSource, matchedRegions } = findRelated(index, {
+        regions: qRegions,
+        description: args.description || '',
+        paths: args.paths,
+        limit: args.limit || 10
+      });
 
       const regionList = Object.keys(qRegions);
       const notes = [];
-      if (!regionList.length) {
-        notes.push('Nothing is staged, so this ranked on your description alone. Stage your changes first for a much better answer.');
+      if (regionSource === 'none') {
+        notes.push('Ranked on your description ALONE - nothing staged and no paths given, so the code half of the search contributed nothing. Pass paths: ["the/file.js"] for the area you are working in; it is normally the stronger of the two signals.');
+      } else if (regionSource === 'paths' && !matchedRegions) {
+        notes.push('None of the paths you gave matched anything in this repository - check the spelling, or that they exist on this branch.');
       }
       if (!qWords.length && args.description) {
         notes.push('Your description contributed nothing: every word in it was either too common in this repo or a stopword. Ranked on staged code alone.');
@@ -625,6 +637,11 @@ ${verification || 'Verified by agent inspection.'}
             index_rebuilt: rebuilt,
             commits_with_relations: index.trailerEdges || 0,
             staged_regions: regionList,
+            /* Which half carried the query. A caller cannot otherwise tell a
+             * genuinely weak result from one scored on text alone - and that
+             * ambiguity is exactly what made two benchmark runs hard to read. */
+            region_source: regionSource,
+            regions_matched: matchedRegions,
             description_terms_used: qWords,
             matches_count: results.length,
             results,

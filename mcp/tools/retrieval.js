@@ -28,6 +28,25 @@ import { COMMON_WORD_CUTOFF } from './commit-index.js';
 
 const BLEND = 0.5;   // regions vs words - see the note in findRelated
 
+/* KNOWN CHARACTERISTIC of the paths route, recorded rather than patched.
+ *
+ * coverageScore asks what share of a commit's work fell inside the named area,
+ * so a commit confined to that one file scores ~1.0 whether or not it is the
+ * relevant one. Observed: asking why trailer relations are surfaced but not
+ * scored, with paths ["mcp/tools/retrieval.js"], ranks a later commit that only
+ * touched that file at 0.509 while the commit whose body actually answers it
+ * sits at 0.020 - rank 3.
+ *
+ * Lowering the region weight for paths was tried and changed nothing: the gap
+ * is 25x, far past what reweighting closes. A real fix has to make coverage
+ * account for how SPECIFIC the named area is, and that wants more than three
+ * queries to design against.
+ *
+ * Left alone for now because the outcome is still serviceable - the answering
+ * commit landed inside the top 5 in every case tested, and every result now
+ * carries its full body, so the agent reads the reason either way. It costs
+ * rank, not the answer. */
+
 export function stagedRegions(repoDir) {
   try {
     const out = execFileSync('git', ['diff', '--cached', '-U0', '--no-renames', '--no-color'],
@@ -37,6 +56,61 @@ export function stagedRegions(repoDir) {
   } catch (_) {
     return {};
   }
+}
+
+/* ─────────────────────────────────────────────── paths → regions
+ *
+ * A fresh agent has nothing staged - it has not written anything yet - so
+ * stagedRegions() returns empty and the region half, which carries most of the
+ * signal, contributes nothing at all. Benchmarks on both repositories ran with
+ * every result marked "text only, no shared region" for exactly this reason.
+ *
+ * What such an agent DOES have, after reading code to orient itself, is a sense
+ * of where it is working. This turns that into the missing half.
+ *
+ * Three ways to name an area, deliberately, because an agent's precision varies
+ * with how much it has read:
+ *
+ *   public/app.js::function applyWallpaper   one declaration, exact
+ *   public/app.js                            every region in that file
+ *   public/scenes/                           everything beneath a directory
+ */
+export function regionsFromPaths(index, paths) {
+  const want = (paths || []).map((p) => String(p).trim().replace(/\\/g, '/')).filter(Boolean);
+  const out = new Set();
+  if (!want.length) return out;
+
+  for (const key of Object.keys(index.regionDf || {})) {
+    const file = key.split('::')[0];
+    for (const p of want) {
+      if (key === p) { out.add(key); break; }                       // exact region
+      if (file === p) { out.add(key); break; }                      // whole file
+      if (p.endsWith('/') && file.startsWith(p)) { out.add(key); break; }   // directory
+      if (key.startsWith(p + '::')) { out.add(key); break; }        // file given without ::
+    }
+  }
+  return out;
+}
+
+/* Scored differently from a staged diff, and the difference is the point.
+ *
+ * A staged diff is a DISTRIBUTION - the commit really did put 30% of its lines
+ * there - so comparing two distributions with min/max Jaccard is meaningful.
+ * A path list is not a distribution. It is a declaration of interest, and
+ * pretending otherwise by spreading 1.0 across every region in a file would
+ * make a large file score near zero against everything, quietly rebuilding the
+ * whole-file problem regions were introduced to solve.
+ *
+ * So the question asked here is asymmetric and is the one actually being asked:
+ * what share of THIS COMMIT's weighted work happened inside the area I named? */
+function coverageScore(wantedRegions, c, idf) {
+  let inside = 0, total = 0;
+  for (const [r, share] of Object.entries(c.regions || {})) {
+    const w = (idf[r] || 0) * share;
+    total += w;
+    if (wantedRegions.has(r)) inside += w;
+  }
+  return total > 0 ? inside / total : 0;
 }
 
 /* Weighted Jaccard, min/max form. min asks "how much do BOTH live here",
@@ -70,10 +144,19 @@ function wordScore(qWords, cWords, idf) {
 /**
  * @param {object} index       from loadOrBuildIndex
  * @param {object} qRegions    region -> share, from stagedRegions
- * @param {string} description one line: what the agent just built
- * @param {number} limit
+ * @param {object} opts
+ * @param {object} opts.regions     region -> share, from stagedRegions
+ * @param {string} opts.description one line: what the agent built or intends
+ * @param {string[]} opts.paths     files, directories or region keys the agent
+ *                                  is working in - the region half for someone
+ *                                  who has not staged anything yet
+ * @param {number} opts.limit
  */
-export function findRelated(index, qRegions, description, limit = 10) {
+export function findRelated(index, opts = {}) {
+  const qRegions = opts.regions || {};
+  const description = opts.description || '';
+  const limit = opts.limit || 10;
+
   /* The same corpus filter the index applied, so a description saying "git" in
    * a git tool does not drag every commit in. Reads the stored counts rather
    * than scanning every commit per query - which is what storing raw df buys. */
@@ -81,9 +164,15 @@ export function findRelated(index, qRegions, description, limit = 10) {
   const qWords = tokenize(description).filter(w =>
     !index.count || (wordDf[w] || 0) / index.count <= COMMON_WORD_CUTOFF);
 
-  const hasRegions = Object.keys(qRegions).length > 0;
+  const hasStaged = Object.keys(qRegions).length > 0;
+  /* Staged work outranks a declared area when both are present: one is evidence
+   * of what was actually touched, the other is a statement of intent. */
+  const wantedRegions = hasStaged ? null : regionsFromPaths(index, opts.paths);
+  const hasPaths = !hasStaged && wantedRegions && wantedRegions.size > 0;
+
+  const hasRegions = hasStaged || hasPaths;
   const hasWords = qWords.length > 0;
-  if (!hasRegions && !hasWords) return { qWords, results: [] };
+  if (!hasRegions && !hasWords) return { qWords, regionSource: 'none', matchedRegions: 0, results: [] };
 
   /* With only one signal present, that signal is the whole score rather than
    * half of it - otherwise every result would be capped at 0.5 for a reason
@@ -96,9 +185,12 @@ export function findRelated(index, qRegions, description, limit = 10) {
   const wordSets = new Map(index.commits.map(c => [c.hash, new Set(c.words)]));
 
   const scored = index.commits.map(c => {
-    const rs = hasRegions ? regionScore(qRegions, c.regions, index.regionIdf) : 0;
+    const rs = hasStaged ? regionScore(qRegions, c.regions, index.regionIdf)
+      : (hasPaths ? coverageScore(wantedRegions, c, index.regionIdf) : 0);
     const ts = hasWords ? wordScore(qWords, c.words, index.wordIdf) : 0;
-    const shared = Object.keys(qRegions).filter(r => c.regions[r] !== undefined);
+    const shared = hasStaged
+      ? Object.keys(qRegions).filter(r => c.regions[r] !== undefined)
+      : (hasPaths ? Object.keys(c.regions || {}).filter(r => wantedRegions.has(r)) : []);
     const cw = wordSets.get(c.hash);
 
     /* Commits this one explicitly declared a relation to, or that declared one
@@ -144,5 +236,12 @@ export function findRelated(index, qRegions, description, limit = 10) {
   }).filter(x => x.score > 0);
 
   scored.sort((a, b) => b.score - a.score || (a.date < b.date ? 1 : -1));
-  return { qWords, results: scored.slice(0, Math.max(1, Math.min(50, limit))) };
+  return {
+    qWords,
+    /* Which half actually carried the query, so a caller can tell a genuinely
+     * weak result from one scored on text alone. */
+    regionSource: hasStaged ? 'staged' : (hasPaths ? 'paths' : 'none'),
+    matchedRegions: hasStaged ? Object.keys(qRegions).length : (hasPaths ? wantedRegions.size : 0),
+    results: scored.slice(0, Math.max(1, Math.min(50, limit)))
+  };
 }
