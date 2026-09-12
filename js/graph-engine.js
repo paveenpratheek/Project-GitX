@@ -217,6 +217,7 @@ function buildGraphData() {
       id: 'thread_' + t.id,
       name: t.name,
       type: 'gold',
+      tone: 'thread',
       radius: 20 + Math.min(14, t.commits.length),
       color: '#e3b341',
       borderColor: '#ffffff',
@@ -248,6 +249,7 @@ function buildGraphData() {
          * the whole file - show the path rather than a bare asterisk. */
         name: (decl === '*') ? r.split('::')[0] : decl,
         type: 'silver',
+        tone: 'region',
         radius: 13,
         color: '#58a6ff',
         borderColor: '#ffffff',
@@ -275,6 +277,7 @@ function buildGraphData() {
         id: 'bronze_' + hash,
         name: (hash || '').slice(0, 7),
         type: 'bronze',
+        tone: hasProof ? 'commit-verified' : 'commit',
         radius: 10,
         color: hasProof ? '#3fb950' : '#8b949e',
         borderColor: '#ffffff',
@@ -324,6 +327,7 @@ function buildGraphData() {
       id: 'bronze_' + c.commitHash,
       name: (c.commitHash || '').slice(0, 7),
       type: 'bronze',
+      tone: 'loose',
       radius: 9,
       color: '#6e7681',
       borderColor: 'rgba(255,255,255,0.4)',
@@ -526,6 +530,155 @@ function isNodeVisible(n) {
   return true;
 }
 
+/* -------------------------------------------------- Host theme
+ *
+ * This page previously read no theme at all, so every --pal-* fell through to
+ * the GitHub-dark fallbacks in graph.css and the graph stayed blue no matter
+ * which of ter-manager's palettes was active. The chrome and the canvas were
+ * both wrong, just in different ways - the CSS at least had the right variables
+ * to inherit, while the canvas had colours typed in as literals.
+ *
+ * Two ways the theme arrives, because neither alone is enough:
+ *   - postMessage, which the host broadcasts on every palette change
+ *   - reading the parent directly on load, since a broadcast that happened
+ *     before this frame existed was never received */
+const THEME_VARS = ['--pal-bg', '--pal-raise', '--pal-fg', '--pal-accent',
+  '--pal-red', '--pal-green', '--pal-yellow', '--on-accent', '--mono'];
+const THEME_ATTRS = ['data-theme', 'data-scene', 'data-surface'];
+
+function applyHostTheme(theme) {
+  if (!theme) return;
+  const root = document.documentElement;
+  for (const [k, v] of Object.entries(theme.vars || {})) {
+    if (THEME_VARS.includes(k) && v) root.style.setProperty(k, v);
+  }
+  for (const [k, v] of Object.entries(theme.attrs || {})) {
+    if (!THEME_ATTRS.includes(k)) continue;
+    if (v) root.setAttribute(k, v); else root.removeAttribute(k);
+  }
+  PAL = null;          // palette changed - the canvas must re-read it
+  GRAD.clear();        // and every cached gradient is now the wrong colour
+}
+
+function adoptParentTheme() {
+  try {
+    if (window.parent === window) return;          // standalone, nothing to adopt
+    const host = window.parent.document.documentElement;   // same origin or it throws
+    const vars = {};
+    for (const v of THEME_VARS) {
+      const val = host.style.getPropertyValue(v);
+      if (val) vars[v] = val;
+    }
+    const attrs = {};
+    for (const a of THEME_ATTRS) attrs[a] = host.getAttribute(a);
+    applyHostTheme({ vars, attrs });
+  } catch (_) { /* cross-origin or no parent - the CSS fallbacks still hold */ }
+}
+
+window.addEventListener('message', (e) => {
+  if (e.data && e.data.__tm && e.data.event === 'theme') applyHostTheme(e.data.theme);
+});
+
+/* -------------------------------------------------- Canvas palette
+ *
+ * Read from the same CSS custom properties the chrome uses, so the graph and
+ * the interface around it can never disagree about what colour this theme is.
+ * Cached, because getComputedStyle on every node of every frame is not free -
+ * and cleared whenever the theme changes. */
+let PAL = null;
+const GRAD = new Map();
+
+function pal() {
+  if (PAL) return PAL;
+  const s = getComputedStyle(document.documentElement);
+  const get = (v, fb) => (s.getPropertyValue(v) || '').trim() || fb;
+  const fg = get('--pal-fg', '#e6edf3');
+  PAL = {
+    bg: get('--pal-bg', '#0d1117'),
+    fg,
+    accent: get('--pal-accent', '#58a6ff'),
+    green: get('--pal-green', '#3fb950'),
+    yellow: get('--pal-yellow', '#d29922'),
+    /* Gold is the one hue held apart from the palette. It marks a THREAD, and
+     * a thread must stay visually distinct from the accent that marks a region
+     * - if both followed --pal-accent they would collide in any palette whose
+     * accent happens to be warm. */
+    gold: '#e3b341',
+    dim: mix(fg, get('--pal-bg', '#0d1117'), 0.45),
+    dimmer: mix(fg, get('--pal-bg', '#0d1117'), 0.68),
+    sans: (getComputedStyle(document.body).fontFamily) ||
+          '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
+  };
+  return PAL;
+}
+
+/* canvas cannot resolve var(--x), so colours have to be mixed here rather than
+ * handed to color-mix() the way the stylesheet does it */
+function rgbOf(c) {
+  c = (c || '').trim();
+  const h = c.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (h) {
+    let v = h[1];
+    if (v.length === 3) v = v[0] + v[0] + v[1] + v[1] + v[2] + v[2];
+    return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16)];
+  }
+  const m = c.match(/(\d+(?:\.\d+)?)[,\s]+(\d+(?:\.\d+)?)[,\s]+(\d+(?:\.\d+)?)/);
+  if (m) return [+m[1], +m[2], +m[3]];
+  return [136, 148, 158];
+}
+function mix(a, b, t) {
+  const x = rgbOf(a), y = rgbOf(b);
+  return `rgb(${Math.round(x[0] + (y[0] - x[0]) * t)}, ${Math.round(x[1] + (y[1] - x[1]) * t)}, ${Math.round(x[2] + (y[2] - x[2]) * t)})`;
+}
+function withAlpha(c, a) {
+  const [r, g, b] = rgbOf(c);
+  return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+/* Gradients are built in LOCAL coordinates and the context is translated to the
+ * node, so one gradient serves every node of the same colour and size instead
+ * of being rebuilt per node per frame. */
+function fillGrad(color, r) {
+  const k = 'f|' + color + '|' + r;
+  let g = GRAD.get(k);
+  if (!g) {
+    g = ctx.createLinearGradient(0, -r, 0, r);
+    g.addColorStop(0, mix(color, '#ffffff', 0.26));
+    g.addColorStop(0.55, color);
+    g.addColorStop(1, mix(color, '#000000', 0.17));
+    GRAD.set(k, g);
+  }
+  return g;
+}
+
+function glowGrad(color, r) {
+  const k = 'g|' + color + '|' + r;
+  let g = GRAD.get(k);
+  if (!g) {
+    g = ctx.createRadialGradient(0, 0, r * 0.72, 0, 0, r * 2.5);
+    g.addColorStop(0, withAlpha(color, 0.34));
+    g.addColorStop(0.45, withAlpha(color, 0.13));
+    g.addColorStop(1, withAlpha(color, 0));
+    GRAD.set(k, g);
+  }
+  return g;
+}
+
+/* The tone a node was built with, resolved to a colour at DRAW time rather than
+ * build time - otherwise a palette change would need the whole graph rebuilt to
+ * take effect. */
+function toneColor(n) {
+  const p = pal();
+  switch (n.tone) {
+    case 'thread': return p.gold;
+    case 'region': return p.accent;
+    case 'commit-verified': return p.green;
+    case 'commit': return p.dim;
+    case 'loose': return p.dimmer;
+    default: return n.color || p.dim;
+  }
+}
+
 // -------------------------------------------------- 60FPS High-DPI Canvas Rendering
 function render() {
   ensureCanvasDimensions();
@@ -553,12 +706,13 @@ function render() {
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
 
+    const LP = pal();
     if (l.type === 'stated') {
       /* Solid amber, and thicker: someone WROTE this relation in a trailer.
        * Drawn unlike anything inferred, because confusing a stated fact with a
        * guess is the one mistake this graph should never invite. */
       ctx.setLineDash([]);
-      ctx.strokeStyle = `rgba(227, 179, 65, ${Math.min(1, alpha * 2.4)})`;
+      ctx.strokeStyle = withAlpha(LP.gold, Math.min(1, alpha * 2.4));
       ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 3 : 1.8;
     } else if (l.type === 'semantic') {
       /* Weight carries through to the line: a strong inter-thread relation is
@@ -566,11 +720,11 @@ function render() {
        * equally confident. */
       const s = Math.max(0, Math.min(1, (l.relStrength || 0) / 2));
       ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = `rgba(88, 166, 255, ${alpha * (0.9 + s * 0.9)})`;
+      ctx.strokeStyle = withAlpha(LP.accent, alpha * (0.9 + s * 0.9));
       ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.5 : (0.9 + s * 1.6);
     } else {
       ctx.setLineDash([]);
-      ctx.strokeStyle = `rgba(230, 237, 243, ${alpha})`;
+      ctx.strokeStyle = withAlpha(LP.fg, alpha * 0.8);
       ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.0 : 1.0;
     }
     ctx.stroke();
@@ -590,45 +744,92 @@ function render() {
       alpha = 0.18;
     }
 
+    const P = pal();
+    const color = toneColor(n);
+    const r = n.radius;
+
     ctx.save();
     ctx.globalAlpha = alpha;
+    /* Translated to the node so the cached gradients, built in local
+     * coordinates, can serve every node of the same colour and size instead of
+     * being rebuilt per node per frame. */
+    ctx.translate(n.x, n.y);
 
-    // Outer Glow / Ring for Gold & Selected
-    if (n.type === 'gold' || isHovered || isSelected) {
+    /* Soft falloff, replacing the hard-edged disc the old version drew at
+     * radius+6 - which read as a second ring rather than a glow. */
+    if (n.tone === 'thread' || isHovered || isSelected) {
       ctx.beginPath();
-      ctx.arc(n.x, n.y, n.radius + 6, 0, Math.PI * 2);
-      ctx.fillStyle = n.type === 'gold' ? 'rgba(227, 179, 65, 0.25)' : 'rgba(88, 166, 255, 0.28)';
+      ctx.arc(0, 0, r * 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = glowGrad((isHovered || isSelected) ? P.accent : color, r);
       ctx.fill();
     }
 
-    // Node Circle
+    // Body, lit from above - one constant light direction for every object
     ctx.beginPath();
-    ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
-    ctx.fillStyle = n.color;
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fillStyle = fillGrad(color, r);
     ctx.fill();
-    ctx.lineWidth = isHovered ? 2.8 : 1.8;
-    ctx.strokeStyle = isHovered ? '#ffffff' : (n.type === 'gold' ? '#fff8db' : 'rgba(255,255,255,0.7)');
+
+    // A thin rim instead of the old 1.8px white outline
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 0.5, 0, Math.PI * 2);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = withAlpha('#ffffff', isHovered ? 0.5 : 0.2);
     ctx.stroke();
 
-    // Node Center Icon / Text
-    ctx.fillStyle = (n.type === 'gold') ? '#000000' : '#ffffff';
-    ctx.font = `bold ${n.type === 'gold' ? '12px' : (n.type === 'silver' ? '10px' : '9px')} var(--font-sans)`;
+    // Specular highlight across the top arc only, consistent with the fill
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 0.5, Math.PI * 1.15, Math.PI * 1.85);
+    ctx.lineWidth = 1.4;
+    ctx.strokeStyle = withAlpha('#ffffff', 0.32);
+    ctx.stroke();
+
+    // Focus ring sits OFF the node rather than thickening its edge
+    if (isSelected || isHovered) {
+      ctx.beginPath();
+      ctx.arc(0, 0, r + 5, 0, Math.PI * 2);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = withAlpha(P.accent, isSelected ? 0.9 : 0.45);
+      ctx.stroke();
+    }
+
+    // Centre glyph
+    ctx.fillStyle = (n.tone === 'thread') ? withAlpha('#000000', 0.7) : withAlpha('#ffffff', 0.92);
+    ctx.font = `600 ${n.type === 'gold' ? 13 : (n.type === 'silver' ? 10 : 9)}px ${P.sans}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
     if (n.type === 'gold') {
-      ctx.fillText('★', n.x, n.y);
+      ctx.fillText('★', 0, 0);
     } else if (n.type === 'silver') {
-      ctx.fillText('⚡', n.x, n.y);
+      ctx.fillText('⚡', 0, 0);
     } else {
-      ctx.fillText(n.name, n.x, n.y);
+      ctx.fillText(n.name, 0, 0);
     }
 
-    // Node Label underneath (only for Gold & Silver by default, or hovered/selected Bronze to prevent clutter)
+    /* Label underneath - bronze only when hovered, selected or zoomed in.
+     *
+     * For a commit this is the SUBJECT, not the name: the name is the short
+     * hash and it is already drawn in the centre, so repeating it underneath
+     * printed every commit twice. Which it did, invisibly, until the nodes got
+     * large enough to read. */
     if (n.type !== 'bronze' || isHovered || isSelected || zoom > 0.9) {
-      ctx.font = `${n.type === 'gold' ? 'bold 11.5px' : '10px'} var(--font-sans)`;
-      ctx.fillStyle = (n.type === 'gold') ? '#e3b341' : (n.type === 'silver' ? '#58a6ff' : '#e6edf3');
-      ctx.fillText(n.name, n.x, n.y + n.radius + 12);
+      /* Kept short deliberately. Commit subjects run long, and at any zoom
+       * where they are all legible they are also all overlapping - a truncated
+       * label you can read beats a full one buried under its neighbour. */
+      const raw = (n.type === 'bronze') ? (n.summary || '') : n.name;
+      const label = raw.length > 26 ? raw.slice(0, 25).trimEnd() + '…' : raw;
+      if (label) {
+        ctx.font = `${n.type === 'gold' ? '600 12px' : '500 10.5px'} ${P.sans}`;
+        /* Haloed in the PAGE colour, not black. The label has to stay readable
+         * over the links running beneath it, and on a light palette a dark halo
+         * would look worse than none at all. */
+        ctx.shadowColor = P.bg;
+        ctx.shadowBlur = 6;
+        ctx.fillStyle = (n.tone === 'thread') ? P.gold : (n.tone === 'region' ? P.accent : P.dim);
+        ctx.fillText(label, 0, r + 13);
+        ctx.shadowBlur = 0;
+      }
     }
 
     ctx.restore();
@@ -884,6 +1085,11 @@ document.addEventListener('DOMContentLoaded', () => {
       };
     }
   });
+
+  /* Before the first frame: the host broadcasts theme on every palette change,
+   * but any broadcast that happened before this frame existed was never heard.
+   * Reading the parent once on load covers that gap. */
+  adoptParentTheme();
 
   initSessionSync();
   connectBroker();
