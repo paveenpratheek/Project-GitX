@@ -120,9 +120,25 @@ export function findRelated(index, qRegions, description, limit = 10) {
       text_score: +ts.toFixed(4),
       shared_regions: shared.slice(0, 5),
       shared_words: qWords.filter(w => cw.has(w)),
-      /* the WHY - the part no diff can carry. Trimmed, because the agent needs
-       * enough to judge relevance, not the whole essay. */
-      why: c.body ? (c.body.length > 400 ? c.body.slice(0, 400) + '…' : c.body) : undefined,
+      /* The WHY - the part no diff can carry, and the whole reason this tool
+       * exists.
+       *
+       * Previously capped at 400 characters, which was measured to be actively
+       * destructive: real commit bodies here run 1,000-2,400 characters, so the
+       * cap discarded 60-83% of every one. Retrieval would surface exactly the
+       * right commit and then hand back its opening paragraph, with the
+       * reasoning the agent asked for cut off below the fold. Correct answer
+       * found, correct answer withheld.
+       *
+       * 1500 covers essentially every real body whole. Anything longer says so
+       * and names the commit, because a silent truncation is how the first
+       * version went wrong. */
+      why: c.body
+        ? (c.body.length > 1500
+            ? c.body.slice(0, 1500) + '\n[…truncated at 1500 of ' + c.body.length +
+              ' chars — run: git show -s --format=%B ' + c.short + ']'
+            : c.body)
+        : undefined,
       thread: thread.length ? thread : undefined
     };
   }).filter(x => x.score > 0);
