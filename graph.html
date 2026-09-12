@@ -61,11 +61,12 @@
     <canvas id="graph-canvas"></canvas>
 
     <div class="graph-legend">
-      <span class="legend-item"><span class="legend-dot gold"></span> Feature Domain (Gold)</span>
-      <span class="legend-item"><span class="legend-dot silver"></span> Lineage Thread (Silver)</span>
-      <span class="legend-item"><span class="legend-dot bronze"></span> Commit / File (Bronze)</span>
-      <span class="legend-item"><span class="legend-line solid"></span> Lineage Edge</span>
-      <span class="legend-item"><span class="legend-line dashed"></span> Shared File Cross-link</span>
+      <span class="legend-item"><span class="legend-dot gold"></span> Thread — a line of work (Gold)</span>
+      <span class="legend-item"><span class="legend-dot silver"></span> Code Region (Silver)</span>
+      <span class="legend-item"><span class="legend-dot bronze"></span> Commit (Bronze)</span>
+      <span class="legend-item"><span class="legend-line solid"></span> Thread &rarr; Region &rarr; Commit</span>
+      <span class="legend-item"><span class="legend-line dashed"></span> Thread &harr; Thread (inferred)</span>
+      <span class="legend-item"><span class="legend-line solid" style="background:#e3b341"></span> Stated relation (trailer)</span>
     </div>
 
     <div class="canvas-hint">Drag nodes &bull; Scroll to zoom &bull; Drag space to pan &bull; Hover to inspect</div>

@@ -1,6 +1,8 @@
 /* GitX — Zero-Build 60FPS Force-Directed Lakehouse Network Graph Engine */
 
-const BROKER_URL = 'ws://127.0.0.1:7771';
+/* ?broker=ws://127.0.0.1:7799 points this page at a second broker, so a change
+ * can be tried without stopping the one someone is using. */
+const BROKER_URL = new URLSearchParams(location.search).get('broker') || 'ws://127.0.0.1:7771';
 let ws = null;
 let state = {
   activeRepo: '',
@@ -155,122 +157,125 @@ function updateHeaderBadge() {
   if (branchEl) branchEl.textContent = '[' + (state.activeBranch || 'main') + ']';
 }
 
-// -------------------------------------------------- Lakehouse Data to Interconnected Network
+// -------------------------------------------------- Threads to Interconnected Network
+/* Nodes come from state.threads, which the broker derives from code regions,
+ * declared scope and stated trailers - so EVERY commit is eligible, not only
+ * those carrying a chronicle tag. The previous version grouped on `c.stream`,
+ * which meant any repository without GitX's own commit format collapsed into a
+ * single "Standard" bucket that is not a topic, just a bin for "unparsed".
+ *
+ * The three tiers now each say something different:
+ *
+ *   GOLD    a thread - a line of work
+ *   SILVER  a code region that thread spans - WHERE the work actually lives
+ *   BRONZE  a commit
+ *
+ * Silver previously held the same stream as its gold parent with 'Stream: '
+ * prefixed, carrying identical counts and adding no information at all. */
 function buildGraphData() {
   ensureCanvasDimensions();
 
+  const threads = state.threads || [];
   const chronicles = state.chronicles || [];
+  const byHash = new Map(chronicles.map((c) => [c.commitHash, c]));
+
   const newNodes = [];
   const newLinks = [];
-  const nodeMap = new Map();
-
-  let goldCount = 0;
-  let silverCount = 0;
-  let bronzeCount = 0;
-
-  // Group commits by stream
-  const streamMap = new Map();
-  for (const c of chronicles) {
-    const sName = c.stream || 'Core';
-    if (!streamMap.has(sName)) {
-      streamMap.set(sName, { name: sName, commits: [], files: new Set() });
-    }
-    const sObj = streamMap.get(sName);
-    sObj.commits.push(c);
-    (c.filesManifest || []).forEach(f => sObj.files.add(f));
-  }
+  let goldCount = 0, silverCount = 0, bronzeCount = 0;
 
   const cx = canvas.width / 2;
   const cy = canvas.height / 2;
-  const streamKeys = Array.from(streamMap.keys());
-  const angleStep = (2 * Math.PI) / (streamKeys.length || 1);
-  const hubRadius = Math.min(180, Math.max(90, streamKeys.length * 45));
 
-  streamKeys.forEach((sName, sIdx) => {
-    const sObj = streamMap.get(sName);
-    const latest = sObj.commits[0] || {};
-    const isStable = sObj.commits.length >= 2 && latest.verification && !latest.verification.includes('No verification');
+  const REGIONS_PER_THREAD = 3;   // enough to say where the work lives, few enough to read
+  const goldenAngle = 2.39996;    // sunflower spiral - keeps commits from heaping
 
-    const goldId = 'gold_' + sName;
-    const gx = cx + hubRadius * Math.cos(sIdx * angleStep);
-    const gy = cy + hubRadius * Math.sin(sIdx * angleStep);
+  /* Ring size is derived from what has to fit on it, not from a constant. A
+   * fixed radius works for three threads and collapses into an unreadable knot
+   * at twenty-five, because each thread brings a cluster of its own whose size
+   * grows with its commit count. Sum the space the clusters need, and the
+   * circle that holds them follows. Each thread also gets arc PROPORTIONAL to
+   * its size, so a 25-commit thread is not allotted the same wedge as a
+   * 2-commit one. autoFitView zooms to whatever this produces. */
+  const clusterRadius = (t) => 78 + Math.sqrt(t.commits.length + 1) * 32;
+  const spans = threads.map((t) => 2.3 * clusterRadius(t));
+  const totalSpan = spans.reduce((a, b) => a + b, 0) || 1;
+  const hubRadius = Math.max(160, totalSpan / (2 * Math.PI));
 
-    // 1. Create GOLD Hub Node
+  const placed = new Set();
+  const goldByThread = new Map();
+  const bronzeByHash = new Map();
+  let angleCursor = 0;
+
+  threads.forEach((t, ti) => {
+    const share = (spans[ti] / totalSpan) * 2 * Math.PI;
+    const ga = angleCursor + share / 2;
+    angleCursor += share;
+    const gx = cx + hubRadius * Math.cos(ga);
+    const gy = cy + hubRadius * Math.sin(ga);
+
     const goldNode = {
-      id: goldId,
-      name: sName,
+      id: 'thread_' + t.id,
+      name: t.name,
       type: 'gold',
-      radius: 26,
+      radius: 20 + Math.min(14, t.commits.length),
       color: '#e3b341',
       borderColor: '#ffffff',
-      status: isStable ? 'STABLE' : 'ACTIVE',
-      commitsCount: sObj.commits.length,
-      filesCount: sObj.files.size,
-      latestMotive: latest.motive || '',
-      latestArch: latest.architecture || '',
-      files: Array.from(sObj.files),
-      x: gx,
-      y: gy,
-      vx: 0,
-      vy: 0
+      /* Whether the name was declared by the author or inferred from the prose
+       * is worth showing: one is a fact, the other is this tool's guess. */
+      status: t.namedBy === 'scope' ? 'DECLARED' : (t.namedBy === 'file' ? 'BY FILE' : 'INFERRED'),
+      commitsCount: t.commits.length,
+      filesCount: (t.regions || []).length,
+      keywords: t.keywords || [],
+      regions: t.regions || [],
+      files: (t.regions || []).map((r) => r.split('::')[0]),
+      namedBy: t.namedBy,
+      x: gx, y: gy, vx: 0, vy: 0
     };
-
     newNodes.push(goldNode);
-    nodeMap.set(goldId, goldNode);
+    goldByThread.set(t.id, goldNode);
     goldCount++;
 
-    // 2. Create SILVER Lineage Node
-    const silverId = 'silver_' + sName;
-    const silverDist = 65;
-    const sx = gx + silverDist * Math.cos(sIdx * angleStep + 0.3);
-    const sy = gy + silverDist * Math.sin(sIdx * angleStep + 0.3);
-
-    const silverNode = {
-      id: silverId,
-      name: 'Stream: ' + sName,
-      type: 'silver',
-      radius: 18,
-      color: '#58a6ff',
-      borderColor: '#ffffff',
-      parentGold: goldId,
-      commitsCount: sObj.commits.length,
-      filesCount: sObj.files.size,
-      x: sx,
-      y: sy,
-      vx: 0,
-      vy: 0
-    };
-
-    newNodes.push(silverNode);
-    nodeMap.set(silverId, silverNode);
-    silverCount++;
-
-    // Hierarchy Link: Gold -> Silver
-    newLinks.push({
-      source: goldNode,
-      target: silverNode,
-      type: 'hierarchy',
-      length: 80,
-      strength: 0.15
+    const regions = (t.regions || []).slice(0, REGIONS_PER_THREAD);
+    const silverByRegion = new Map();
+    regions.forEach((r, ri) => {
+      const sa = ga + (ri - (regions.length - 1) / 2) * 0.44;
+      const sx = gx + 88 * Math.cos(sa);
+      const sy = gy + 88 * Math.sin(sa);
+      const decl = r.includes('::') ? r.split('::').pop() : r;
+      const silverNode = {
+        id: 'region_' + t.id + '_' + ri,
+        /* '*' means git found no declaration above the hunk, so the region is
+         * the whole file - show the path rather than a bare asterisk. */
+        name: (decl === '*') ? r.split('::')[0] : decl,
+        type: 'silver',
+        radius: 13,
+        color: '#58a6ff',
+        borderColor: '#ffffff',
+        fullRegion: r,
+        file: r.split('::')[0],
+        parentThread: t.name,
+        files: [r.split('::')[0]],
+        x: sx, y: sy, vx: 0, vy: 0
+      };
+      newNodes.push(silverNode);
+      silverByRegion.set(r, silverNode);
+      silverCount++;
+      newLinks.push({ source: goldNode, target: silverNode, type: 'hierarchy', length: 98, strength: 0.16 });
     });
 
-    // 3. Create BRONZE Commit Nodes in an expanding golden spiral
-    const goldenAngle = 2.39996; // (3 - Math.sqrt(5)) * Math.PI
-    sObj.commits.forEach((c, cIdx) => {
-      const bId = 'bronze_' + (c.commitHash || cIdx);
-      
-      // Sunflower spiral coordinates prevent overlapping heaps
-      const spiralRadius = 55 + Math.sqrt(cIdx + 1) * 26;
-      const bx = sx + spiralRadius * Math.cos(cIdx * goldenAngle);
-      const by = sy + spiralRadius * Math.sin(cIdx * goldenAngle);
-
+    t.commits.forEach((hash, ci) => {
+      const c = byHash.get(hash) || {};
+      placed.add(hash);
+      const spiral = 72 + Math.sqrt(ci + 1) * 30;
+      const bx = gx + spiral * Math.cos(ci * goldenAngle);
+      const by = gy + spiral * Math.sin(ci * goldenAngle);
       const hasProof = c.verification && !c.verification.includes('No verification');
 
       const bronzeNode = {
-        id: bId,
-        name: (c.commitHash || '').slice(0, 7) || ('#c' + cIdx),
+        id: 'bronze_' + hash,
+        name: (hash || '').slice(0, 7),
         type: 'bronze',
-        radius: 11,
+        radius: 10,
         color: hasProof ? '#3fb950' : '#8b949e',
         borderColor: '#ffffff',
         chronicle: c,
@@ -281,59 +286,106 @@ function buildGraphData() {
         verification: c.verification,
         author: c.author || c.agentId || 'Human',
         date: (c.timestamp || '').slice(0, 10),
-        x: bx,
-        y: by,
-        vx: 0,
-        vy: 0
+        threadName: t.name,
+        x: bx, y: by, vx: 0, vy: 0
       };
-
       newNodes.push(bronzeNode);
-      nodeMap.set(bId, bronzeNode);
+      bronzeByHash.set(hash, bronzeNode);
       bronzeCount++;
 
-      // Hierarchy Link: Silver -> Bronze
-      newLinks.push({
-        source: silverNode,
-        target: bronzeNode,
-        type: 'hierarchy',
-        length: 70 + (cIdx % 3) * 20,
-        strength: 0.12
-      });
+      /* Hang the commit off a region it actually touched when one is on screen,
+       * otherwise straight off the thread. A commit linked through the code it
+       * edited says more than one linked to the group it was sorted into. */
+      let attached = false;
+      for (const [r, sn] of silverByRegion) {
+        const f = r.split('::')[0];
+        if ((c.filesManifest || []).some((x) => x === f || f.endsWith(x) || x.endsWith(f))) {
+          newLinks.push({ source: sn, target: bronzeNode, type: 'hierarchy', length: 76, strength: 0.13 });
+          attached = true;
+          break;
+        }
+      }
+      if (!attached) {
+        newLinks.push({ source: goldNode, target: bronzeNode, type: 'hierarchy', length: 112, strength: 0.09 });
+      }
     });
   });
 
-  // 4. Generate Curated SEMANTIC CROSS-LINKS (Overlapping Modified Files in Image 2)
-  // We cap cross-links to max 3 per node and ignore trivial root files
-  const ignoredFiles = new Set(['package.json', 'package-lock.json', '.gitignore', 'readme.md', 'license']);
-  const bronzeNodes = newNodes.filter(n => n.type === 'bronze');
-  const nodeLinkCounts = new Map();
+  /* Commits belonging to no thread. Left unattached on purpose: drifting to the
+   * edge is an honest picture of "nothing groups this yet", and hiding them
+   * would make the graph claim more structure than was actually found. */
+  let looseIdx = 0;
+  for (const c of chronicles) {
+    if (placed.has(c.commitHash)) continue;
+    const a = looseIdx * goldenAngle;
+    const rr = hubRadius + 210 + (looseIdx % 6) * 20;
+    looseIdx++;
+    newNodes.push({
+      id: 'bronze_' + c.commitHash,
+      name: (c.commitHash || '').slice(0, 7),
+      type: 'bronze',
+      radius: 9,
+      color: '#6e7681',
+      borderColor: 'rgba(255,255,255,0.4)',
+      chronicle: c,
+      summary: c.summary,
+      motive: c.motive,
+      architecture: c.architecture,
+      files: c.filesManifest || [],
+      verification: c.verification,
+      author: c.author || c.agentId || 'Human',
+      date: (c.timestamp || '').slice(0, 10),
+      threadName: null,
+      x: cx + rr * Math.cos(a), y: cy + rr * Math.sin(a), vx: 0, vy: 0
+    });
+    bronzeCount++;
+  }
 
-  for (let i = 0; i < bronzeNodes.length; i++) {
-    for (let j = i + 1; j < bronzeNodes.length; j++) {
-      const b1 = bronzeNodes[i];
-      const b2 = bronzeNodes[j];
+  /* Cross-links, replacing the previous commit-to-commit file-overlap rule.
+   *
+   * That rule linked any two commits sharing one file, against a hardcoded list
+   * of five filenames to ignore - a list that guessed wrong. On ter-manager the
+   * real noise is app.js (71% of commits), server.js and app.css, none of which
+   * were on it. So most pairs qualified, a cap of three admitted an arbitrary
+   * subset, and which three survived came down to loop order.
+   *
+   * Two honest link types now:
+   *
+   *   INFERRED  thread <-> thread, weighted by the same idf-scored evidence the
+   *             clustering used, normalised by thread size. Drawn between GOLD
+   *             nodes because two commits inside one thread are already visibly
+   *             together - a line between them says nothing.
+   *   STATED    commit <-> commit, from a GitX trailer. Ground truth where
+   *             everything else here is a guess, so it is drawn separately. */
+  for (const l of (state.threadLinks || [])) {
+    const a = goldByThread.get(l.a);
+    const b = goldByThread.get(l.b);
+    if (!a || !b) continue;
+    newLinks.push({
+      source: a,
+      target: b,
+      type: 'semantic',
+      length: 240,
+      /* Pulled from the measured strength so a strong relation visibly draws
+       * two threads together, rather than every link tugging equally. */
+      strength: Math.min(0.06, 0.012 + l.strength * 0.05),
+      relStrength: l.strength,
+      sources: l.sources
+    });
+  }
 
-      const c1 = nodeLinkCounts.get(b1.id) || 0;
-      const c2 = nodeLinkCounts.get(b2.id) || 0;
-      if (c1 >= 3 || c2 >= 3) continue; // limit link density
-
-      const f1 = (b1.files || []).filter(f => !ignoredFiles.has(f.toLowerCase()));
-      const f2 = (b2.files || []).filter(f => !ignoredFiles.has(f.toLowerCase()));
-
-      const shared = f1.filter(f => f2.includes(f));
-      if (shared.length > 0) {
-        newLinks.push({
-          source: b1,
-          target: b2,
-          type: 'semantic',
-          length: 120,
-          strength: 0.05,
-          sharedFiles: shared
-        });
-        nodeLinkCounts.set(b1.id, c1 + 1);
-        nodeLinkCounts.set(b2.id, c2 + 1);
-      }
-    }
+  for (const r of (state.statedRelations || [])) {
+    const a = bronzeByHash.get(r.from);
+    const b = bronzeByHash.get(r.to);
+    if (!a || !b) continue;
+    newLinks.push({
+      source: a,
+      target: b,
+      type: 'stated',
+      kind: r.kind,
+      length: 150,
+      strength: 0.09
+    });
   }
 
   nodes = newNodes;
@@ -501,10 +553,21 @@ function render() {
     ctx.moveTo(l.source.x, l.source.y);
     ctx.lineTo(l.target.x, l.target.y);
 
-    if (l.type === 'semantic') {
+    if (l.type === 'stated') {
+      /* Solid amber, and thicker: someone WROTE this relation in a trailer.
+       * Drawn unlike anything inferred, because confusing a stated fact with a
+       * guess is the one mistake this graph should never invite. */
+      ctx.setLineDash([]);
+      ctx.strokeStyle = `rgba(227, 179, 65, ${Math.min(1, alpha * 2.4)})`;
+      ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 3 : 1.8;
+    } else if (l.type === 'semantic') {
+      /* Weight carries through to the line: a strong inter-thread relation is
+       * visibly heavier than a marginal one, rather than every dash looking
+       * equally confident. */
+      const s = Math.max(0, Math.min(1, (l.relStrength || 0) / 2));
       ctx.setLineDash([4, 4]);
-      ctx.strokeStyle = `rgba(88, 166, 255, ${alpha * 1.3})`;
-      ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.5 : 1.2;
+      ctx.strokeStyle = `rgba(88, 166, 255, ${alpha * (0.9 + s * 0.9)})`;
+      ctx.lineWidth = (isConnectedToHover || isConnectedToSelect) ? 2.5 : (0.9 + s * 1.6);
     } else {
       ctx.setLineDash([]);
       ctx.strokeStyle = `rgba(230, 237, 243, ${alpha})`;
@@ -683,31 +746,36 @@ function showTooltip(n, clientX, clientY) {
         <span class="tooltip-badge gold">${n.status}</span>
       </div>
       <div class="tooltip-body">
-        <div><b>${n.commitsCount}</b> commits across <b>${n.filesCount}</b> active files</div>
-        ${n.latestMotive ? `
+        <div><b>${n.commitsCount}</b> commits spanning <b>${n.filesCount}</b> code regions</div>
+        ${n.namedBy === 'scope' ? `
           <div class="tooltip-layer">
-            <div class="tooltip-layer-tag l1">Core Motive</div>
-            <div>${escapeHtml(n.latestMotive)}</div>
+            <div class="tooltip-layer-tag l1">Declared scope</div>
+            <div>The author wrote this scope into the commit subject - a fact, not a guess.</div>
+          </div>
+        ` : n.namedBy === 'file' ? `
+          <div class="tooltip-layer">
+            <div class="tooltip-layer-tag l1">Named by file</div>
+            <div>Nothing distinctive in the wording of these commits, so the name is the file the work lives in.</div>
           </div>
         ` : ''}
-        ${n.latestArch ? `
+        ${(n.keywords || []).length ? `
           <div class="tooltip-layer">
-            <div class="tooltip-layer-tag l2">Architecture Pattern</div>
-            <div>${escapeHtml(n.latestArch)}</div>
+            <div class="tooltip-layer-tag l2">Distinctive words</div>
+            <div>${escapeHtml(n.keywords.slice(0, 8).join(', '))}</div>
           </div>
         ` : ''}
-        <div class="tooltip-files"><b>Files:</b> ${(n.files || []).slice(0, 5).join(', ')}${n.files.length > 5 ? '…' : ''}</div>
+        <div class="tooltip-files"><b>Regions:</b><br>${(n.regions || []).slice(0, 4).map(escapeHtml).join('<br>')}</div>
       </div>
     `;
   } else if (n.type === 'silver') {
     html = `
       <div class="tooltip-header">
         <div class="tooltip-title">⚡ ${escapeHtml(n.name)}</div>
-        <span class="tooltip-badge silver">Lineage Thread</span>
+        <span class="tooltip-badge silver">Code Region</span>
       </div>
       <div class="tooltip-body">
-        <div>Binds <b>${n.commitsCount}</b> sequential commits into feature continuity.</div>
-        <div class="tooltip-files">Tracks ${n.filesCount} touched files across time.</div>
+        <div>${escapeHtml(n.fullRegion || '')}</div>
+        <div class="tooltip-files">Part of <b>${escapeHtml(n.parentThread || '')}</b>. Read from git's own hunk header, so this is a declaration NAME rather than a line number - it survives the file growing above it.</div>
       </div>
     `;
   } else {

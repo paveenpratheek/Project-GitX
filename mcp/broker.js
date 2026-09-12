@@ -5,12 +5,16 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { WebSocketServer, WebSocket } from 'ws';
 import { scanGitHistory } from './tools/chronicle-parser.js';
+import { loadOrBuildIndex } from './tools/commit-index.js';
+import { formThreads } from './tools/threads.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DEFAULT_ROOT = path.resolve(__dirname, '..');
 const STATE_FILE = path.join(DEFAULT_ROOT, '.gitx', 'state.json');
-const PORT = 7771;
+/* Overridable so a second instance can run beside a live one - otherwise the
+ * only way to try a change is to stop the broker someone is using. */
+const PORT = Number(process.env.GITX_BROKER_PORT) || 7771;
 
 let state = {
   activeRepo: DEFAULT_ROOT,
@@ -19,7 +23,15 @@ let state = {
   agents: {},
   issues: [],
   chronicles: [],
-  streams: {}
+  streams: {},
+  /* Threads are derived from code regions, declared scope and stated trailers -
+   * so unlike `streams`, which only sees commits carrying a chronicle tag, they
+   * cover every commit in the repository. Added ALONGSIDE chronicles rather
+   * than replacing them: the Lakehouse view still reads those. */
+  threads: [],
+  threadLinks: [],
+  statedRelations: [],
+  threadStats: null
 };
 
 function getBranch(dir) {
@@ -54,6 +66,28 @@ function refreshFromGit(targetDir = null) {
     const sName = c.stream || 'Core';
     if (!state.streams[sName]) state.streams[sName] = [];
     state.streams[sName].push(c.commitHash);
+  }
+
+  /* Thread formation, from the commit index rather than the chronicle tags.
+   * Wrapped because it must never take the broker down: a repo it cannot index
+   * should still get agents, issues and the Lakehouse view, just no threads. */
+  try {
+    const t0 = Date.now();
+    const { index, rebuilt } = loadOrBuildIndex(dir);
+    const { threads, loose, links, relations, stats } = formThreads(index);
+    state.threads = threads;
+    state.threadLinks = links;
+    state.statedRelations = relations;
+    state.threadStats = { ...stats, loose: loose.length, commits: index.count, ms: Date.now() - t0 };
+    console.log(`[GitX Broker] ${threads.length} threads over ${index.count} commits ` +
+      `(${loose.length} unthreaded, ${links.length} inter-thread links, ${relations.length} stated relations, ` +
+      `index ${rebuilt ? 'rebuilt' : 'cached'}, ${Date.now() - t0}ms).`);
+  } catch (err) {
+    state.threads = [];
+    state.threadLinks = [];
+    state.statedRelations = [];
+    state.threadStats = { error: err.message };
+    console.warn('[GitX Broker] Thread formation failed, continuing without it:', err.message);
   }
 
   saveState();
