@@ -111,6 +111,62 @@ export function tokenize(text) {
   return ((text || '').toLowerCase().match(/[a-z][a-z0-9_-]{2,}/g) || []).filter(w => !STOP.has(w));
 }
 
+/* ─────────────────────────────────────────────── message structure
+ * Splits a raw commit message into the three things that matter and keeps them
+ * SEPARATE rather than collapsing to tokens:
+ *
+ *   subject/type/scope  the conventional-commit header, if present
+ *   body                the prose - the WHY, which exists nowhere else. Code
+ *                       says what changed; only this says what it rules out.
+ *   trailers            explicit relations stated by whoever made the commit
+ *
+ * Retrieval only needs tokens, but the knowledge graph this feeds will need the
+ * real text and the real edges - so they are stored, not thrown away after
+ * counting. Deriving tokens later from stored prose is trivial; recovering prose
+ * from tokens is impossible. */
+
+const RELATION_KEYS = new Set(['builds-on', 'fixes', 'supersedes', 'extends', 'refactors', 'relates-to']);
+
+export function parseMessage(subject, rawBody) {
+  const out = { type: null, scope: null, body: '', trailers: [] };
+
+  const h = (subject || '').match(/^([a-z]+)(?:\(([^)]+)\))?!?:\s*(.+)$/i);
+  if (h) { out.type = h[1].toLowerCase(); out.scope = h[2] ? h[2].toLowerCase() : null; }
+
+  /* %B repeats the subject as its first line - drop it so subject words are not
+   * counted twice, which would double their weight for no reason. */
+  const lines = (rawBody || '').split(/\r?\n/);
+  if (lines.length && lines[0].trim() === (subject || '').trim()) lines.shift();
+
+  /* Trailers are the trailing run of Key: value lines. Every trailer-shaped
+   * line is stripped from the body - including Co-Authored-By and Signed-off-by,
+   * which would otherwise put "claude", "anthropic" and "noreply" into the
+   * vocabulary of every single commit. Only GitX relations become edges. */
+  let end = lines.length;
+  while (end > 0 && !lines[end - 1].trim()) end--;
+  let start = end;
+  while (start > 0) {
+    const t = lines[start - 1].trim();
+    if (!t) break;
+    if (!/^[A-Za-z][A-Za-z-]*:\s*\S/.test(t)) break;
+    start--;
+  }
+
+  for (let i = start; i < end; i++) {
+    const m = lines[i].trim().match(/^([A-Za-z][A-Za-z-]*):\s*(.+)$/);
+    if (!m) continue;
+    const key = m[1].toLowerCase().replace(/^gitx-/, '');
+    if (!RELATION_KEYS.has(key)) continue;
+    for (const ref of m[2].split(/[,\s]+/)) {
+      const r = ref.trim().replace(/[^0-9a-fA-F]/g, '');
+      if (r.length >= 7) out.trailers.push({ kind: key, ref: r.toLowerCase() });
+    }
+  }
+
+  out.body = lines.slice(0, start).join('\n').trim();
+  return out;
+}
+
 /* ─────────────────────────────────────────────── index construction */
 
 export function buildIndex(repoDir) {
@@ -124,7 +180,7 @@ export function buildIndex(repoDir) {
   let metaRaw = '';
   try {
     metaRaw = execFileSync('git', ['log', '--no-renames',
-      `--pretty=format:${SEP_REC}%H${SEP_FLD}%aI${SEP_FLD}%s${SEP_FLD}`], gitArgs);
+      `--pretty=format:${SEP_REC}%H${SEP_FLD}%aI${SEP_FLD}%s${SEP_FLD}%B${SEP_FLD}`], gitArgs);
   } catch (_) {
     return { head, count: 0, commits: [], regionIdf: {}, wordIdf: {}, contextHitRate: 0 };
   }
@@ -134,11 +190,20 @@ export function buildIndex(repoDir) {
   for (const rec of metaRaw.split(SEP_REC)) {
     if (!rec.trim()) continue;
     const p = rec.split(SEP_FLD);
-    if (p.length < 3) continue;
-    const [hash, date, subject] = p;
+    if (p.length < 4) continue;
+    const [hash, date, subject, rawBody] = p;
     if (!/^[0-9a-f]{40}$/.test(hash)) continue;
+    const msg = parseMessage(subject, rawBody);
     order.set(hash, commits.length);
-    commits.push({ hash, short: hash.slice(0, 8), date: (date || '').slice(0, 10), subject: subject || '', regions: {}, words: [] });
+    commits.push({
+      hash, short: hash.slice(0, 8),
+      date: (date || '').slice(0, 10),
+      subject: subject || '',
+      type: msg.type, scope: msg.scope,
+      body: msg.body,
+      trailers: msg.trailers,
+      regions: {}, words: []
+    });
   }
 
   /* pass 2 - patches, for hunk contexts. -U0 strips context lines so every
@@ -159,10 +224,15 @@ export function buildIndex(repoDir) {
     }
   } catch (_) { /* a repo with no diffable history still indexes on words alone */ }
 
-  /* word vectors, then the >25% filter, which needs corpus counts first */
+  /* Word vectors over subject AND body. The body is where the reasoning lives,
+   * so excluding it discards the one thing the code cannot express.
+   *
+   * A long body does not let a commit match everything: the union term in the
+   * weighted Jaccard grows with it, so a single shared word against a 200-word
+   * body yields a low ratio. Verbosity is self-penalising and needs no cap. */
   const rawDf = new Map();
   const rawTokens = commits.map(c => {
-    const set = new Set(tokenize(c.subject));
+    const set = new Set([...tokenize(c.subject), ...tokenize(c.body)]);
     for (const w of set) rawDf.set(w, (rawDf.get(w) || 0) + 1);
     return set;
   });
@@ -170,6 +240,26 @@ export function buildIndex(repoDir) {
   commits.forEach((c, i) => {
     c.words = Array.from(rawTokens[i]).filter(w => (rawDf.get(w) || 0) / N <= COMMON_WORD_CUTOFF);
   });
+
+  /* Explicit relation edges, both directions. A trailer is ground truth -
+   * someone STATED the relation - where region similarity is only inference.
+   * Nothing scores on these yet; they are surfaced so the agent can see a
+   * thread rather than an isolated hit, and they are the seed material for the
+   * knowledge graph that will consume this index later. */
+  const byPrefix = (ref) => commits.find(c => c.hash.startsWith(ref));
+  const edges = {};
+  const push = (from, to, kind) => {
+    if (!from || !to || from === to) return;
+    (edges[from] = edges[from] || []).push({ hash: to, kind });
+  };
+  for (const c of commits) {
+    for (const t of c.trailers) {
+      const target = byPrefix(t.ref);
+      if (!target) continue;
+      push(c.hash, target.hash, t.kind);
+      push(target.hash, c.hash, 'referenced-by:' + t.kind);
+    }
+  }
 
   /* IDF for both signals - one number per key, over the whole corpus */
   const regionDf = new Map();
@@ -188,7 +278,9 @@ export function buildIndex(repoDir) {
     builtAt: new Date().toISOString(),
     count: commits.length,
     contextHitRate: hunksSeen ? +(hunksWithCtx / hunksSeen).toFixed(3) : 0,
+    trailerEdges: Object.keys(edges).length,
     commits,
+    edges,
     regionIdf,
     wordIdf
   };
@@ -299,10 +391,23 @@ export function findRelated(index, qRegions, description, limit = 10) {
   const wR = hasRegions && hasWords ? BLEND : (hasRegions ? 1 : 0);
   const wW = hasRegions && hasWords ? (1 - BLEND) : (hasWords ? 1 : 0);
 
+  const byHash = new Map(index.commits.map(c => [c.hash, c]));
+  const edges = index.edges || {};
+
   const scored = index.commits.map(c => {
     const rs = hasRegions ? regionScore(qRegions, c.regions, index.regionIdf) : 0;
     const ts = hasWords ? wordScore(qWords, c.words, index.wordIdf) : 0;
     const shared = Object.keys(qRegions).filter(r => c.regions[r] !== undefined);
+
+    /* Commits this one explicitly declared a relation to, or that declared one
+     * to it. Surfaced, NOT scored: boosting a neighbour because it sits next to
+     * a hit is an untested heuristic, and everything else here was measured
+     * before it shipped. The agent can see the thread and judge. */
+    const thread = (edges[c.hash] || []).map(e => {
+      const t = byHash.get(e.hash);
+      return t ? { kind: e.kind, short: t.short, subject: t.subject } : null;
+    }).filter(Boolean).slice(0, 4);
+
     return {
       hash: c.hash,
       short: c.short,
@@ -312,7 +417,11 @@ export function findRelated(index, qRegions, description, limit = 10) {
       region_score: +rs.toFixed(4),
       text_score: +ts.toFixed(4),
       shared_regions: shared.slice(0, 5),
-      shared_words: qWords.filter(w => c.words.includes(w))
+      shared_words: qWords.filter(w => c.words.includes(w)),
+      /* the WHY - the part no diff can carry. Trimmed, because the agent needs
+       * enough to judge relevance, not the whole essay. */
+      why: c.body ? (c.body.length > 400 ? c.body.slice(0, 400) + '…' : c.body) : undefined,
+      thread: thread.length ? thread : undefined
     };
   }).filter(x => x.score > 0);
 

@@ -622,6 +622,7 @@ ${verification || 'Verified by agent inspection.'}
             searched_repo: target.dir,
             indexed_commits: index.count,
             index_rebuilt: rebuilt,
+            commits_with_relations: index.trailerEdges || 0,
             staged_regions: regionList,
             description_terms_used: qWords,
             matches_count: results.length,
@@ -630,7 +631,22 @@ ${verification || 'Verified by agent inspection.'}
              * region_score with a low text_score means "same code, described
              * differently", the reverse means "same topic, code has moved".
              * Those are different relations and are worth wording differently. */
-            how_to_use: 'Cite the commits you actually built on in your message, e.g. "GitX-Builds-On: ' + (results[0] ? results[0].short : 'a1b2c3d4') + '". shared_regions and shared_words say WHY each result surfaced - if neither looks relevant to what you did, do not cite it.',
+            how_to_use: [
+              'READ the "why" field on each result before citing it - that is the reasoning behind the earlier change, and it is the one thing the code itself cannot tell you. If a result already rules out the approach you were about to take, that is the most valuable thing this tool can give you.',
+              'shared_regions and shared_words say WHY each result surfaced. If neither looks relevant to what you actually did, do not cite it.',
+              '"thread" lists commits explicitly linked to that result, so you can see a line of work rather than an isolated change.',
+              'Then write the message in this shape:',
+              '',
+              '  type(scope): what changed, in this project\'s own nouns',
+              '',
+              '  Why - the constraint that forced this, what you tried first, what',
+              '  it rules out. Do NOT list changed files here: git already records',
+              '  them exactly and a hand-typed list is only ever less accurate.',
+              '',
+              '  GitX-Builds-On: ' + (results[0] ? results[0].short : '<hash from these results>'),
+              '',
+              'Specific nouns matter far more than length. Words like "added", "fixed", "update" and "bug" are discarded outright, so a long message built from them scores exactly the same as an empty one.'
+            ].join('\n'),
             notes: notes.length ? notes : undefined
           }, null, 2)
         }]
