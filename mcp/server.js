@@ -8,7 +8,8 @@ import { WebSocket } from 'ws';
 import { scanPreCommit } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
 import { scanGitHistory } from './tools/chronicle-parser.js';
-import { loadOrBuildIndex, stagedRegions, findRelated } from './tools/region-index.js';
+import { loadOrBuildIndex } from './tools/commit-index.js';
+import { stagedRegions, findRelated } from './tools/retrieval.js';
 
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
