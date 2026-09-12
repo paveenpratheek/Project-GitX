@@ -8,6 +8,7 @@ import { WebSocket } from 'ws';
 import { scanPreCommit } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
 import { scanGitHistory } from './tools/chronicle-parser.js';
+import { loadOrBuildIndex, stagedRegions, findRelated } from './tools/region-index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
@@ -205,6 +206,19 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Absolute path of the repository whose worktrees to list. Defaults to the repo this MCP server was started in.' }
       },
       required: []
+    }
+  },
+  {
+    name: 'gitx_find_related',
+    description: 'Call this AFTER staging changes and BEFORE writing a commit message. Finds earlier commits related to the work you just did, so the message can reference real prior work instead of guessing. Ranks by which code regions you touched AND how you describe the change - the two find different things, so supply both. Reads the staged diff itself; do not paste it in. Unlike gitx_search_chronicle, which searches by keyword, this searches by example: the example is your staged work.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', description: 'One line saying what you just built, in your own words - e.g. "reworked how the wallpaper picks its accent colour". This is a second, independent search signal: it reaches work whose code has since moved, which the staged diff alone cannot find.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project, or the result silently answers about the wrong one.' },
+        limit: { type: 'number', description: 'How many results to return. Defaults to 10.' }
+      },
+      required: ['description']
     }
   }
 ];
@@ -565,6 +579,59 @@ ${verification || 'Verified by agent inspection.'}
             current_agent: AGENT_ID,
             active_worktrees: activeWorktrees,
             active_swarm_tasks: swarm
+          }, null, 2)
+        }]
+      };
+    }
+
+    case 'gitx_find_related': {
+      const target = resolveTargetRepo(args.cwd);
+      if (!target.ok) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({ error: 'No such folder: ' + target.requested + ' - nothing was searched.', searched_repo: null }, null, 2)
+          }]
+        };
+      }
+
+      /* Deliberately does NOT call ensureGitignored or write into the repo.
+       * This tool only reads; its index is a rebuildable cache kept in the OS
+       * temp directory. A search that edits someone's .gitignore as a side
+       * effect is exactly the kind of surprise that makes a tool untrustworthy. */
+      const { index, rebuilt } = loadOrBuildIndex(target.dir);
+      const qRegions = stagedRegions(target.dir);
+      const { qWords, results } = findRelated(index, qRegions, args.description || '', args.limit || 10);
+
+      const regionList = Object.keys(qRegions);
+      const notes = [];
+      if (!regionList.length) {
+        notes.push('Nothing is staged, so this ranked on your description alone. Stage your changes first for a much better answer.');
+      }
+      if (!qWords.length && args.description) {
+        notes.push('Your description contributed nothing: every word in it was either too common in this repo or a stopword. Ranked on staged code alone.');
+      }
+      if (!results.length) {
+        notes.push('No prior commit shares a region or a distinctive word with this work. That usually means it is genuinely new - say so in the message rather than inventing a link.');
+      }
+
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            searched_repo: target.dir,
+            indexed_commits: index.count,
+            index_rebuilt: rebuilt,
+            staged_regions: regionList,
+            description_terms_used: qWords,
+            matches_count: results.length,
+            results,
+            /* Two sub-scores are returned per result on purpose: a high
+             * region_score with a low text_score means "same code, described
+             * differently", the reverse means "same topic, code has moved".
+             * Those are different relations and are worth wording differently. */
+            how_to_use: 'Cite the commits you actually built on in your message, e.g. "GitX-Builds-On: ' + (results[0] ? results[0].short : 'a1b2c3d4') + '". shared_regions and shared_words say WHY each result surfaced - if neither looks relevant to what you did, do not cite it.',
+            notes: notes.length ? notes : undefined
           }, null, 2)
         }]
       };
