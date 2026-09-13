@@ -5,11 +5,21 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { WebSocket } from 'ws';
 
-import { scanPreCommit } from './tools/guardrails.js';
+import { scanStaged } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
 import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
 import { stagedRegions, findRelated } from './tools/retrieval.js';
+import { parseMessage, tokenize } from './tools/git-extract.js';
+
+/* The commit form's vocabulary. Conventional-commit types, so the header parses
+ * the way parseMessage already reads one. */
+const COMMIT_TYPES = ['feat', 'fix', 'refactor', 'perf', 'docs', 'test', 'build', 'ci', 'chore', 'style', 'revert'];
+/* A scope or root is a NAME that later commits repeat, so it is kept to
+ * characters that pass through a commit header and a trailer value unchanged. */
+const NAME_RE = /^[a-z0-9][a-z0-9._/-]*$/;
+/* A floor against filler, not a measure of quality - see the why check. */
+const MIN_WHY_WORDS = 3;
 
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
@@ -91,7 +101,10 @@ function resolveTargetRepo(cwd) {
   }
   return { dir: ROOT_DIR, requested: null, ok: true };
 }
-const BROKER_WS = 'ws://127.0.0.1:7771';
+/* Overridable for the same reason the broker's own port is: a second instance -
+ * a test run, say - has to be able to point somewhere other than the dashboard
+ * someone is using, or its test commits show up in their live view. */
+const BROKER_WS = process.env.GITX_BROKER_URL || 'ws://127.0.0.1:7771';
 
 const AGENT_ID = process.env.GITX_AGENT_ID || ('agent-' + process.pid);
 const AGENT_NAME = process.env.GITX_AGENT_NAME || ('Agent ' + process.pid);
@@ -166,23 +179,31 @@ const TOOLS = [
   },
   {
     name: 'gitx_commit_chronicle',
-    description: 'Executes a real Git commit in the local repository or worktree using the structured 4-layer Chronicle format. Runs Secret Shield pre-commit verification and enforces the Push Shield.',
+    /* This used to write a 4-layer "chronicle": summary, stream, motive,
+     * architecture, a hand-typed file list and a verification block between
+     * START/END tags. It had no field for what a commit builds on, and its END
+     * tag closed every message, so a trailer typed into any field could never be
+     * read. It also wrote the file list into the message (git records files
+     * exactly; a typed list only drifts), filled an empty verification with a
+     * claim nobody made, and committed into whichever repo this server started
+     * in. It is now a form for the one format retrieval, chains and the graph
+     * actually read. The name stays so existing setups keep working. */
+    description: 'Commit what is staged, with GitX writing the message from the fields you fill in - so the format, and the trailers that link commits into chains, are always exactly right. Give builds_on (the earlier commit this continues: run gitx_find_related first and pick from its results) OR root (the name of a new feature this commit starts). Nothing is committed if: nothing is staged, why is filler, both or neither of builds_on/root are given, a hash does not exist or (for builds_on) is not behind HEAD, the root name is already taken, or the staged content contains a secret. A root whose staged change overlaps earlier commits is held until you have reviewed them and pass root_confirmed: true.',
     inputSchema: {
       type: 'object',
       properties: {
-        summary: { type: 'string', description: 'Standard conventional commit summary (e.g. feat: implement token refresh)' },
-        stream: { type: 'string', description: 'The semantic feature stream (e.g. Feature-Auth, UI, Core)' },
-        motive: { type: 'string', description: 'Layer 1: The user prompt or task goal that motivated this change' },
-        architecture: { type: 'string', description: 'Layer 2: Architectural decisions, trade-offs, patterns chosen and why' },
-        files_manifest: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Layer 3: List of relative file paths to stage and commit'
-        },
-        verification: { type: 'string', description: 'Layer 4: Verification evidence, test cases run, exit codes, and exact line locations' },
-        worktree_path: { type: 'string', description: 'Optional: absolute path to agent worktree if working in an isolated sandbox' }
+        cwd: { type: 'string', description: 'Absolute path of the repository (or agent worktree) to commit in. Required - a commit is not something to default to wherever this server happened to start.' },
+        type: { type: 'string', enum: COMMIT_TYPES, description: 'What kind of change this is.' },
+        scope: { type: 'string', description: 'The feature or area, in the project\'s own nouns - e.g. "menu", "retrieval". Reuse an existing name where one fits: it is what ties a line of work together. Defaults to root when root is given.' },
+        subject: { type: 'string', description: 'One line: what changed. Without the "type(scope):" prefix - GitX writes that.' },
+        why: { type: 'string', description: 'What forced this change, what you tried first, and what it rules out. Do not list files - git records them exactly.' },
+        verification: { type: 'string', description: 'Optional: what you actually ran and what it showed. Left out when empty, never filled in for you.' },
+        builds_on: { type: 'array', items: { type: 'string' }, description: 'Hash(es) of the earlier commit(s) this continues - pick from gitx_find_related results. Give this OR root.' },
+        root: { type: 'string', description: 'Name of the NEW feature this commit starts, when no earlier commit is what it continues. Give this OR builds_on. Written as GitX-Root: <name>; later commits in the feature build on this one.' },
+        root_confirmed: { type: 'boolean', description: 'Pass true only after a root attempt came back needs_confirmation and none of its candidates is what this continues.' },
+        relates_to: { type: 'array', items: { type: 'string' }, description: 'Optional: commits that are related but are not what this builds on - e.g. the feature a new feature sits inside. Written as GitX-Relates-To.' }
       },
-      required: ['summary', 'motive', 'architecture', 'files_manifest']
+      required: ['cwd', 'type', 'subject', 'why']
     }
   },
   {
@@ -374,113 +395,242 @@ async function handleToolCall(name, args) {
     }
 
     case 'gitx_commit_chronicle': {
-      const { summary, stream, motive, architecture, files_manifest, verification, worktree_path } = args;
-      const executionDir = worktree_path && fs.existsSync(worktree_path) ? worktree_path : ROOT_DIR;
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
 
-      // 1. Run Secret Shield Pre-Commit Guardrail
-      const guardrailCheck = scanPreCommit(executionDir, files_manifest);
-      if (!guardrailCheck.allowed) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              blocked_by: 'GitX Secret Shield',
-              error: guardrailCheck.reason,
-              action_required: 'Remove the detected secret or sensitive file from your changes before attempting to commit.'
-            }, null, 2)
-          }]
-        };
-      }
-
-      // 2. Build 4-Layer Chronicle Commit Body
-      const chronicleBody = `=== GITX-CHRONICLE:START ===
-[LAYER-1: MOTIVE]
-Stream: ${stream || 'Core'} | Agent: ${AGENT_ID}
-Motive: ${motive}
-
-[LAYER-2: ARCHITECTURE]
-${architecture}
-
-[LAYER-3: CODE-MANIFEST]
-Files:
-${(files_manifest || []).map(f => '- ' + f).join('\n')}
-
-[LAYER-4: VERIFICATION & EXACT LOCATIONS]
-${verification || 'Verified by agent inspection.'}
-=== GITX-CHRONICLE:END ===`;
-
-      let commitHash = 'local-' + Date.now().toString(16);
-      let currentBranch = 'unknown';
-
-      // 3. Execute Real Git Add and Git Commit
-      try {
-        // Stage files
-        if (files_manifest && files_manifest.length > 0) {
-          execFileSync('git', ['add', ...files_manifest], { cwd: executionDir, stdio: 'ignore' });
-        }
-
-        // Commit with summary and 4-layer body
-        execFileSync('git', ['commit', '-m', summary, '-m', chronicleBody], {
-          cwd: executionDir,
-          encoding: 'utf8'
+      /* A caller still sending the old 4-layer fields is told what replaced them,
+       * rather than getting a commit made from half of what it meant. */
+      const legacy = ['summary', 'stream', 'motive', 'architecture', 'files_manifest'].filter((k) => args[k] !== undefined);
+      if (legacy.length && args.subject === undefined && args.why === undefined) {
+        return reply({
+          ok: false,
+          committed: false,
+          error: 'gitx_commit_chronicle no longer takes ' + legacy.join(', ') + ' - it now writes the GitX commit format from a form. Nothing was committed.',
+          field_map: {
+            summary: 'type + scope + subject (the subject without its "feat:" prefix)',
+            'motive, architecture': 'why - what forced the change, what you tried first, what it rules out',
+            files_manifest: 'gone - stage the files yourself (git add); the commit takes exactly what is staged',
+            stream: 'scope',
+            'new and required': 'builds_on (the earlier commit this continues) OR root (the name of the new feature this starts)'
+          }
         });
-
-        // Retrieve newly generated Git SHA
-        commitHash = execFileSync('git', ['rev-parse', 'HEAD'], {
-          cwd: executionDir,
-          encoding: 'utf8'
-        }).trim();
-
-        // Retrieve current branch name
-        currentBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-          cwd: executionDir,
-          encoding: 'utf8'
-        }).trim();
-
-      } catch (err) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              ok: false,
-              error: 'Git execution error: ' + err.message,
-              note: 'Ensure files exist and contain modifications to commit.'
-            }, null, 2)
-          }]
-        };
       }
 
-      // 4. Notify broker with real Git SHA and metadata
+      const cwd = args.cwd || args.worktree_path;
+      if (!cwd) {
+        return reply({ ok: false, committed: false, error: 'cwd is required: the absolute path of the repository to commit in. A commit is not something to default to wherever this server happened to start. Nothing was committed.' });
+      }
+      const target = resolveTargetRepo(cwd);
+      if (!target.ok) {
+        return reply({ ok: false, committed: false, error: 'No such folder: ' + target.requested + ' - nothing was committed.' });
+      }
+      const dir = target.dir;
+      const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      const gitOk = (...a) => { try { git(...a); return true; } catch (_) { return false; } };
+      if (!gitOk('rev-parse', '--is-inside-work-tree')) {
+        return reply({ ok: false, committed: false, error: dir + ' is not inside a git repository - nothing was committed.' });
+      }
+
+      const list = (v) => (Array.isArray(v) ? v : String(v || '').split(/[,\s]+/)).map((s) => String(s).trim()).filter(Boolean);
+      const type = String(args.type || '').trim().toLowerCase();
+      const subject = String(args.subject || '').trim();
+      const why = String(args.why || '').replace(/\r\n?/g, '\n').trim();
+      const verification = String(args.verification || '').replace(/\r\n?/g, '\n').trim();
+      const root = String(args.root || '').trim().toLowerCase();
+      const scope = String(args.scope || '').trim().toLowerCase() || root;
+      const rootConfirmed = args.root_confirmed === true || args.root_confirmed === 'true';
+      const buildsOnIn = [...new Set(list(args.builds_on))];
+      const relatesIn = [...new Set(list(args.relates_to))].filter((h) => !buildsOnIn.includes(h));
+
+      /* Every problem at once, so a caller fixes the form in one pass instead of
+       * discovering the next refusal only after fixing the last. */
+      const problems = [];
+      if (!COMMIT_TYPES.includes(type)) problems.push('type must be one of: ' + COMMIT_TYPES.join(', ') + '.');
+      if (!subject) problems.push('subject is empty - one line saying what changed.');
+      else if (/\n/.test(subject)) problems.push('subject must be one line; the detail belongs in why.');
+      else if (/^[a-z]+(\([^)]*\))?!?:\s/i.test(subject)) problems.push('subject repeats the "type(scope):" prefix - give only the description; GitX writes the prefix.');
+      if (args.scope && !NAME_RE.test(scope)) problems.push('scope "' + scope + '" should be a short name: lowercase letters, digits, dot, dash, underscore or slash.');
+      if (root && !NAME_RE.test(root)) problems.push('root "' + root + '" should be a short name: lowercase letters, digits, dot, dash, underscore or slash.');
+
+      /* A floor against filler, not a quality check. Words describing the act of
+       * committing - added, fixed, update, bug - are exactly the ones retrieval
+       * discards, so a why built from them scores the same as an empty one and
+       * would look recorded while saying nothing. */
+      const whyWords = new Set(tokenize(why));
+      if (whyWords.size < MIN_WHY_WORDS) {
+        problems.push('why has ' + whyWords.size + ' usable word(s); it needs at least ' + MIN_WHY_WORDS + '. Say what forced the change, what you tried first and what it rules out - words like "added", "fixed", "update" and "bug" do not count.');
+      }
+
+      if (root && buildsOnIn.length) {
+        problems.push('give builds_on OR root, not both: builds_on continues earlier work, root starts a new feature. For what a new feature sits inside, use relates_to.');
+      }
+      if (!root && !buildsOnIn.length) {
+        problems.push('say what this continues - builds_on: ["<hash>"], picked from gitx_find_related - or, if it starts something new, root: "<feature name>". With neither, "new", "forgot" and "nothing matched" would all look the same.');
+      }
+
+      const hasHead = gitOk('rev-parse', '--verify', '--quiet', 'HEAD');
+      const resolveRefs = (refs, field, mustBeBehind) => refs.map((ref) => {
+        if (!/^[0-9a-f]{7,40}$/i.test(ref)) {
+          problems.push(field + ': "' + ref + '" is not a commit hash (7 to 40 hex characters).');
+          return null;
+        }
+        let full = '';
+        try { full = git('rev-parse', '--verify', '--quiet', ref + '^{commit}').trim(); } catch (_) {}
+        if (!full) {
+          problems.push(field + ': ' + ref + ' does not name a commit in this repository (or is ambiguous - give more characters).');
+          return null;
+        }
+        if (mustBeBehind && !(hasHead && gitOk('merge-base', '--is-ancestor', full, 'HEAD'))) {
+          problems.push(field + ': ' + ref + ' is not in this branch\'s history - a commit can only build on work that is already behind it.');
+          return null;
+        }
+        /* Written at 12 characters: a 7-character hash that is unique today can
+         * stop being unique as the history grows, and an ambiguous trailer is a
+         * link that resolves to whichever commit happens to be found first. */
+        return git('rev-parse', '--short=12', full).trim();
+      }).filter(Boolean);
+      const buildsOn = resolveRefs(buildsOnIn, 'builds_on', true);
+      const relatesTo = resolveRefs(relatesIn, 'relates_to', false);
+
+      /* One name, one start. A second root under a name already in use makes
+       * "where does this feature begin" ambiguous - the one question a root
+       * exists to answer. Read from the index, which parses every commit's
+       * trailers exactly the way retrieval does. */
+      let index = null;
+      if (root && hasHead) {
+        index = loadOrBuildIndex(dir).index;
+        const taken = index.commits.find((c) => c.root === root);
+        if (taken) {
+          problems.push('root "' + root + '" was already started by ' + taken.short + ' ("' + taken.subject + '"). If this continues that feature, use builds_on: ["' + taken.short + '"]; if it is genuinely separate, choose another name.');
+        }
+      }
+
+      let staged = false;
+      try { git('diff', '--cached', '--quiet'); } catch (_) { staged = true; }
+      if (!staged) problems.push('nothing is staged. Stage exactly what this commit should contain (git add <files>) and call again - the commit takes the staged changes and nothing else.');
+
+      if (problems.length) return reply({ ok: false, committed: false, problems });
+
+      /* Scans the staged bytes - what the commit will actually contain - not the
+       * working copy, which can differ. */
+      const shield = scanStaged(dir);
+      if (!shield.allowed) {
+        return reply({
+          ok: false,
+          committed: false,
+          blocked_by: 'GitX Secret Shield',
+          error: shield.reason,
+          action_required: 'Unstage the file (git restore --staged <file>) or remove the secret and stage it again, then call again.'
+        });
+      }
+
+      /* "This is new" is the one claim nothing downstream can check, so it is the
+       * one asked about BEFORE the commit exists - afterwards the message is
+       * immutable. Every earlier commit sharing code or distinctive words with the
+       * staged change is shown, and the root is only written once the caller has
+       * looked and confirmed none of them is what this continues.
+       *
+       * No score threshold decides it: any overlap at all asks. In a busy
+       * repository most roots will take two calls. That friction is deliberate
+       * and cheap; a threshold would be an untested constant quietly deciding
+       * which near-misses an agent never gets to see. */
+      if (root && hasHead && !rootConfirmed) {
+        index = index || loadOrBuildIndex(dir).index;
+        const { results } = findRelated(index, { regions: stagedRegions(dir), description: subject + '\n' + why, limit: 3 });
+        if (results.length) {
+          return reply({
+            ok: false,
+            committed: false,
+            needs_confirmation: true,
+            message: 'Not committed yet. You marked this as the start of a new feature, but these earlier commits share code or wording with it. If one of them is what this continues, call again with builds_on: [its hash] instead of root. If it is genuinely new, call again with root_confirmed: true - and use relates_to for any of them it only sits beside.',
+            candidates: results.map((r) => ({
+              hash: r.short,
+              date: r.date,
+              subject: r.subject,
+              score: r.score,
+              shared_regions: r.shared_regions,
+              shared_words: r.shared_words,
+              why: r.why,
+              root: r.root
+            }))
+          });
+        }
+      }
+
+      const header = type + (scope ? '(' + scope + ')' : '') + ': ' + subject;
+      const trailers = [
+        ...buildsOn.map((h) => 'GitX-Builds-On: ' + h),
+        ...(root ? ['GitX-Root: ' + root] : []),
+        ...relatesTo.map((h) => 'GitX-Relates-To: ' + h)
+      ];
+      const message = [header, why, ...(verification ? ['Verified: ' + verification] : []), trailers.join('\n')].join('\n\n') + '\n';
+
+      /* Read back with the same parser the index uses AND with git's own trailer
+       * parser, before committing. If either would miss a link, that is found
+       * while the message can still be changed - not later, as a chain that
+       * silently stops early. */
+      const readBack = parseMessage(header, message);
+      let gitRead = [];
+      try {
+        gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+          .split('\n').filter((l) => /^GitX-/i.test(l));
+      } catch (_) {}
+      if (readBack.trailers.length !== buildsOn.length + relatesTo.length || (readBack.root || '') !== root || gitRead.length !== trailers.length) {
+        return reply({
+          ok: false,
+          committed: false,
+          error: 'The composed message would not read back correctly, so nothing was committed.',
+          message,
+          gitx_read: { links: readBack.trailers, root: readBack.root },
+          git_read: gitRead
+        });
+      }
+
+      try {
+        execFileSync('git', ['commit', '--cleanup=whitespace', '-F', '-'], { cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
+      } catch (err) {
+        return reply({ ok: false, committed: false, error: 'git commit failed: ' + String(err.stderr || err.stdout || err.message).trim(), message });
+      }
+
+      const hash = git('rev-parse', 'HEAD').trim();
+      const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
+      const files = git('show', '--name-status', '--format=', 'HEAD').split('\n').map((l) => l.trim()).filter(Boolean);
+
+      /* Same message type the dashboard already listens for. The fields it
+       * expects are filled from real data - the why, the links, the files git
+       * actually committed - never from placeholder text. */
       sendToBroker({
         type: 'COMMIT_CHRONICLE',
         agentId: AGENT_ID,
-        stream: stream || 'Core',
-        summary,
-        motive,
-        architecture,
-        filesManifest: files_manifest,
+        stream: scope || 'Core',
+        summary: header,
+        motive: why,
+        architecture: trailers.join('\n'),
+        filesManifest: files.map((l) => l.split('\t').pop()),
         verification,
-        commitHash,
-        branch: currentBranch
+        commitHash: hash,
+        branch
       });
 
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            ok: true,
-            commit_hash: commitHash,
-            branch: currentBranch,
-            commit_format: 'GitX 4-Layer Chronicle',
-            stream: stream || 'Core',
-            summary,
-            layers_recorded: [1, 2, 3, 4],
-            security_check: 'Passed (Secret Shield clean)',
-            note: 'Commit safely recorded in local Git history. Remote push is guarded and must be executed in Ter-Manager.'
-          }, null, 2)
-        }]
-      };
+      return reply({
+        ok: true,
+        committed: true,
+        commit: hash.slice(0, 12),
+        branch,
+        repo: dir,
+        message,
+        links: { builds_on: buildsOn, relates_to: relatesTo, root: root || null },
+        files,
+        checks: [
+          buildsOn.length
+            ? 'builds_on: every hash resolved and is behind HEAD'
+            : 'root: "' + root + '" was not taken' + (rootConfirmed ? ', and you confirmed it is new after seeing the candidates' : ''),
+          'why: ' + whyWords.size + ' usable words',
+          'staged content scanned for secrets: clean (' + (shield.files || []).length + ' file(s))',
+          'GitX and git both read the trailers back'
+        ],
+        next: root ? 'Later commits in this feature should use builds_on: ["' + hash.slice(0, 12) + '"].' : undefined,
+        note: 'Committed locally only - nothing was pushed.'
+      });
     }
 
     case 'gitx_search_chronicle': {
@@ -625,7 +775,7 @@ ${verification || 'Verified by agent inspection.'}
         notes.push('Your description contributed nothing: every word in it was either too common in this repo or a stopword. Ranked on staged code alone.');
       }
       if (!results.length) {
-        notes.push('No prior commit shares a region or a distinctive word with this work. That usually means it is genuinely new - say so in the message rather than inventing a link.');
+        notes.push('No prior commit shares a region or a distinctive word with this work. That usually means it is genuinely new - mark it as the start of a feature (root in gitx_commit_chronicle, or GitX-Root: <name> in a message) rather than inventing a link.');
       }
 
       return {
@@ -663,7 +813,9 @@ ${verification || 'Verified by agent inspection.'}
               '',
               '  GitX-Builds-On: ' + (results[0] ? results[0].short : '<hash from these results>'),
               '',
-              'Specific nouns matter far more than length. Words like "added", "fixed", "update" and "bug" are discarded outright, so a long message built from them scores exactly the same as an empty one.'
+              'If none of these is what your work continues, it starts something new: write GitX-Root: <feature name> instead of GitX-Builds-On. Use GitX-Relates-To: <hash> for a commit that is related but is not the one you build on.',
+              'Specific nouns matter far more than length. Words like "added", "fixed", "update" and "bug" are discarded outright, so a long message built from them scores exactly the same as an empty one.',
+              'gitx_commit_chronicle writes this whole shape from fields, checks every hash, and commits exactly what is staged.'
             ].join('\n'),
             notes: notes.length ? notes : undefined
           }, null, 2)

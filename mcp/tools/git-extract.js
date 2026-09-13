@@ -109,6 +109,8 @@ export function tokenize(text) {
  *   body                the prose - the WHY, which exists nowhere else. Code
  *                       says what changed; only this says what it rules out.
  *   trailers            explicit relations stated by whoever made the commit
+ *   root                the name of a feature this commit declared it STARTS
+ *                       (GitX-Root) - the bottom of a chain, said outright
  *
  * Retrieval only needs tokens, but the knowledge graph that will consume this
  * needs the real text and the real edges - so they are kept, not thrown away
@@ -116,7 +118,7 @@ export function tokenize(text) {
  * prose from tokens is impossible. */
 
 export function parseMessage(subject, rawBody) {
-  const out = { type: null, scope: null, body: '', trailers: [] };
+  const out = { type: null, scope: null, body: '', trailers: [], root: null };
 
   const h = (subject || '').match(/^([a-z]+)(?:\(([^)]+)\))?!?:\s*(.+)$/i);
   if (h) { out.type = h[1].toLowerCase(); out.scope = h[2] ? h[2].toLowerCase() : null; }
@@ -144,6 +146,14 @@ export function parseMessage(subject, rawBody) {
     const m = lines[i].trim().match(/^([A-Za-z][A-Za-z-]*):\s*(.+)$/);
     if (!m) continue;
     const key = m[1].toLowerCase().replace(/^gitx-/, '');
+    /* A root is a NAME, not a reference, so it gets its own field instead of an
+     * edge. Before this key was known a GitX-Root line was still trailer-shaped:
+     * stripped from the body, then matched no relation - so it vanished from
+     * both, which is worse than being ignored. */
+    if (key === 'root') {
+      if (!out.root) out.root = m[2].trim().toLowerCase();
+      continue;
+    }
     if (!RELATION_KEYS.has(key)) continue;
     for (const ref of m[2].split(/[,\s]+/)) {
       const r = ref.trim().replace(/[^0-9a-fA-F]/g, '');

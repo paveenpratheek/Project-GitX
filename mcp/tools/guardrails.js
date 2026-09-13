@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // File patterns that must never be staged or committed
@@ -44,7 +42,7 @@ export function validateFilePaths(files) {
 
 /**
  * Scans raw content string for known secret token signatures.
- * @param {string} content 
+ * @param {string} content
  * @param {string} [fileName]
  * @returns {{ allowed: boolean, reason?: string, matchType?: string }}
  */
@@ -64,33 +62,41 @@ export function scanContent(content, fileName = 'unspecified') {
 }
 
 /**
- * Inspects files staged or to be staged in a repository before committing.
+ * Scans what is actually STAGED - the bytes the commit will contain.
+ *
+ * This replaces a scan of the files on disk, which is not the same thing twice
+ * over: a secret staged and then deleted from the working copy passed a disk
+ * scan and still landed in the commit, and only the paths a caller happened to
+ * list were checked, while `git commit` takes everything that is staged.
  * @param {string} repoDir Directory of the git repository or worktree
- * @param {string[]} filesToStage Array of files requested to be committed
- * @returns {{ allowed: boolean, reason?: string }}
+ * @returns {{ allowed: boolean, reason?: string, files?: string[] }}
  */
-export function scanPreCommit(repoDir, filesToStage = []) {
-  // 1. File path validation
-  const pathCheck = validateFilePaths(filesToStage);
-  if (!pathCheck.allowed) return pathCheck;
+export function scanStaged(repoDir) {
+  const git = (args) => execFileSync('git', args,
+    { cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
-  // 2. File content scan on disk
-  for (const relPath of filesToStage) {
-    const fullPath = path.resolve(repoDir, relPath);
-    if (fs.existsSync(fullPath)) {
-      const stats = fs.statSync(fullPath);
-      // Skip large binary files (> 1MB) for text scanning
-      if (stats.size > 1024 * 1024) continue;
-
-      try {
-        const content = fs.readFileSync(fullPath, 'utf8');
-        const contentCheck = scanContent(content, relPath);
-        if (!contentCheck.allowed) return contentCheck;
-      } catch (_) {
-        // Binary or unreadable, skip content scan
-      }
-    }
+  let files;
+  try {
+    // Added, copied, modified or renamed - a deletion has no content left to leak.
+    files = git(['diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR']).split('\0').filter(Boolean);
+  } catch (err) {
+    return { allowed: false, reason: 'Could not list the staged files, so nothing was scanned: ' + String(err.stderr || err.message).trim() };
   }
 
-  return { allowed: true };
+  const pathCheck = validateFilePaths(files);
+  if (!pathCheck.allowed) return pathCheck;
+
+  for (const rel of files) {
+    let size = 0;
+    try { size = Number(git(['cat-file', '-s', ':' + rel]).trim()); } catch (_) { continue; }
+    // Skip large blobs (> 1MB) for text scanning - almost always binary
+    if (size > 1024 * 1024) continue;
+
+    let content = '';
+    try { content = git(['show', ':' + rel]); } catch (_) { continue; }
+    const contentCheck = scanContent(content, rel);
+    if (!contentCheck.allowed) return contentCheck;
+  }
+
+  return { allowed: true, files };
 }

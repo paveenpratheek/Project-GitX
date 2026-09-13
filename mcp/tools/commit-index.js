@@ -25,6 +25,12 @@ import { SEP_REC, SEP_FLD, parseHunks, toShares, tokenize, parseMessage } from '
 
 export const COMMON_WORD_CUTOFF = 0.25;   // a word in >25% of commits carries no topic
 
+/* Bumped whenever what an indexed commit CARRIES changes. The cache is keyed by
+ * HEAD, and HEAD says nothing about which version of this code built the file:
+ * without this, an index written before `root` existed would keep being served
+ * for the same HEAD with every root silently missing. */
+export const INDEX_VERSION = 2;
+
 export function buildIndex(repoDir) {
   const gitArgs = { cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };
 
@@ -38,6 +44,7 @@ export function buildIndex(repoDir) {
       `--pretty=format:${SEP_REC}%H${SEP_FLD}%aI${SEP_FLD}%s${SEP_FLD}%B${SEP_FLD}`], gitArgs);
   } catch (_) {
     return {
+      version: INDEX_VERSION,
       head, count: 0, commits: [], edges: {},
       regionDf: {}, wordDf: {}, regionIdf: {}, wordIdf: {}, contextHitRate: 0
     };
@@ -60,6 +67,7 @@ export function buildIndex(repoDir) {
       type: msg.type, scope: msg.scope,
       body: msg.body,
       trailers: msg.trailers,
+      root: msg.root,
       regions: {}, words: []
     });
   }
@@ -132,6 +140,7 @@ export function buildIndex(repoDir) {
   for (const [w, n] of wordDfMap) { wordDf[w] = n; wordIdf[w] = Math.log(N / n); }
 
   return {
+    version: INDEX_VERSION,
     head,
     builtAt: new Date().toISOString(),
     count: commits.length,
@@ -159,9 +168,10 @@ function cachePath(repoDir) {
 }
 
 /**
- * Load the cached index, rebuilding when HEAD has moved. A rebuild is a single
- * linear pass, so the index is rebuilt rather than incrementally patched - which
- * means it can never drift out of sync with the repository it describes.
+ * Load the cached index, rebuilding when HEAD has moved or the index format has
+ * changed. A rebuild is a single linear pass, so the index is rebuilt rather
+ * than incrementally patched - which means it can never drift out of sync with
+ * the repository it describes.
  */
 export function loadOrBuildIndex(repoDir) {
   const file = cachePath(repoDir);
@@ -171,7 +181,9 @@ export function loadOrBuildIndex(repoDir) {
   try {
     if (fs.existsSync(file)) {
       const cached = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (cached.head && cached.head === head) return { index: cached, rebuilt: false, cache: file };
+      if (cached.head && cached.head === head && cached.version === INDEX_VERSION) {
+        return { index: cached, rebuilt: false, cache: file };
+      }
     }
   } catch (_) { /* unreadable or corrupt cache - fall through and rebuild */ }
 

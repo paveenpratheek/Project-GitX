@@ -231,7 +231,12 @@ export function findRelated(index, opts = {}) {
               ' chars — run: git show -s --format=%B ' + c.short + ']'
             : c.body)
         : undefined,
-      thread: thread.length ? thread : undefined
+      thread: thread.length ? thread : undefined,
+      /* Set when this commit declared itself the first commit of a feature
+       * (GitX-Root). Nothing earlier in that line of work exists, so a chain
+       * followed back through builds-on ends here - and can say so, instead of
+       * wandering on into whatever older work happens to share a file. */
+      root: c.root || undefined
     };
   }).filter(x => x.score > 0);
 
