@@ -1,80 +1,468 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GitX Lakehouse Network Graph</title>
-  <!-- Ter-Manager Host SDK -->
-  <script src="/plugin-host.js"></script>
-  <link rel="stylesheet" href="css/graph.css">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GitX Commit Graph</title>
+<!-- Ter-Manager host SDK: theme, and a stub when opened on its own -->
+<script src="/plugin-host.js"></script>
+<script>
+/* Theme before first paint: an explicit choice wins, otherwise follow the host
+ * (ter-manager's own data-theme), otherwise the OS. */
+(function () {
+  var mode = 'auto';
+  try { mode = localStorage.getItem('gitx.graph.theme') || 'auto'; } catch (e) {}
+  var host = null;
+  try { host = window.parent !== window && window.parent.document.documentElement.getAttribute('data-theme'); } catch (e) {}
+  var eff = mode !== 'auto' ? mode : (host || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  document.documentElement.setAttribute('data-theme', eff);
+  if (window.parent !== window) document.documentElement.classList.add('hosted');
+})();
+</script>
+<style>
+/* Apple-style: system font, grouped lists, frosted bar, systemColors.
+ * Light tokens on :root, dark on [data-theme="dark"] - the attribute is always
+ * set explicitly by the script above, so there is no media-query fallback to
+ * disagree with the host. */
+:root{
+  --bg:#f5f5f7;--card:#fff;--card2:#f2f2f7;--fill:rgba(118,118,128,.12);--fill2:rgba(118,118,128,.08);
+  --label:#1d1d1f;--label2:#6e6e73;--label3:#aeaeb2;--sep:rgba(60,60,67,.14);--lane:rgba(0,0,0,.022);
+  --bar:rgba(251,251,253,.8);--shadow:0 1px 2px rgba(0,0,0,.04),0 8px 28px rgba(0,0,0,.07);
+  --blue:#007aff;--orange:#ff9500;--edge:rgba(110,110,115,.38);--ring:#fff;
+  --c0:#007aff;--c1:#34c759;--c2:#af52de;--c3:#ff9500;--c4:#ff2d55;--c5:#32ade6;--c6:#ffcc00;--c7:#5856d6;--c8:#00c7be;--c9:#a2845e;--c10:#ff3b30;--c11:#30b0c7;
+  color-scheme:light;
+}
+:root[data-theme="dark"]{
+  --bg:#000;--card:#1c1c1e;--card2:#2c2c2e;--fill:rgba(118,118,128,.24);--fill2:rgba(118,118,128,.16);
+  --label:#f5f5f7;--label2:#98989d;--label3:#636366;--sep:rgba(84,84,88,.6);--lane:rgba(255,255,255,.028);
+  --bar:rgba(28,28,30,.76);--shadow:0 1px 0 rgba(255,255,255,.04) inset,0 8px 30px rgba(0,0,0,.5);
+  --blue:#0a84ff;--orange:#ff9f0a;--edge:rgba(152,152,157,.45);--ring:#000;
+  --c0:#0a84ff;--c1:#30d158;--c2:#bf5af2;--c3:#ff9f0a;--c4:#ff375f;--c5:#64d2ff;--c6:#ffd60a;--c7:#5e5ce6;--c8:#63e6e2;--c9:#ac8e68;--c10:#ff453a;--c11:#40c8e0;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--label);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.005em;overflow:hidden;transition:background .3s}
+button{font:inherit;color:inherit}
+.app{display:flex;flex-direction:column;height:100vh}
+.bar{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--bar);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);border-bottom:.5px solid var(--sep);flex:none}
+.hosted .bar{padding-right:60px}   /* ter-manager's close button sits over this corner */
+.title{display:flex;flex-direction:column;min-width:0}
+.title b{font:600 16px/1.2 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;letter-spacing:-.02em}
+.title span{color:var(--label2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spacer{flex:1}
+.search{position:relative;width:220px}
+.search input{width:100%;height:30px;border:0;border-radius:9px;background:var(--fill);color:var(--label);padding:0 10px 0 30px;font:inherit;outline:none;transition:box-shadow .2s}
+.search input::placeholder{color:var(--label2)}
+.search input:focus{box-shadow:0 0 0 3.5px color-mix(in srgb,var(--blue) 35%,transparent)}
+.search svg{position:absolute;left:9px;top:8px;width:14px;height:14px;fill:none;stroke:var(--label2);stroke-width:2}
+.seg{position:relative;display:grid;grid-template-columns:repeat(3,1fr);background:var(--fill);border-radius:9px;padding:2px;height:30px;flex:none}
+.seg button{position:relative;z-index:1;border:0;background:none;padding:0 12px;font-size:12px;font-weight:500;cursor:pointer}
+.seg .thumb{position:absolute;top:2px;bottom:2px;left:2px;width:calc((100% - 4px)/3);border-radius:7px;background:var(--card);box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);transition:transform .28s cubic-bezier(.3,.7,.2,1)}
+.main{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:14px;padding:14px 18px 18px;flex:1;min-height:0}
+.card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;min-height:0;transition:background .3s}
+.graph{display:flex;flex-direction:column}
+.graph-head{display:flex;align-items:center;gap:14px;padding:12px 16px 8px;flex-wrap:wrap}
+.graph-head h2{margin:0;font-size:14px;font-weight:600;letter-spacing:-.01em}
+.legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--label2);font-size:11.5px}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{width:18px;border-top:2px solid}
+.canvas{flex:1;overflow:auto;padding:0 8px 10px;position:relative}
+svg{display:block}
+svg text{fill:var(--label2);font-size:11px;font-family:inherit}
+.lane-chip{cursor:pointer}
+.lane-chip rect{fill:var(--fill2);transition:fill .2s}
+.lane-chip:hover rect{fill:var(--fill)}
+.lane-chip text{fill:var(--label);font-size:12px;font-weight:500}
+.lane-chip .count{fill:var(--label2);font-weight:400}
+.node{cursor:pointer;transition:opacity .25s}
+.node circle,.node rect{stroke:var(--ring);stroke-width:1.5}
+.node:hover circle{r:6.5}
+.node.sel circle,.node.sel rect{stroke:var(--label);stroke-width:2.2}
+.edge{fill:none;transition:opacity .25s}
+.dim{opacity:.1}
+.root-label{font-size:11px;font-weight:600;fill:var(--label)!important}
+.inspector{display:flex;flex-direction:column}
+.inspector .scroll{overflow:auto;padding:14px 14px 18px;flex:1}
+.back{display:inline-flex;align-items:center;gap:4px;border:0;background:none;color:var(--blue);cursor:pointer;padding:0;font-size:14px;margin-bottom:10px}
+.back svg{width:9px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2}
+h3{margin:0 0 4px;font:600 19px/1.25 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;letter-spacing:-.02em;overflow-wrap:anywhere}
+.meta{color:var(--label2);font-size:12px;margin-bottom:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:99px;background:var(--fill2);color:var(--label);font-size:11px;font-weight:500;border:0}
+button.pill{cursor:pointer}
+.pill i{width:7px;height:7px;border-radius:50%}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:11.5px}
+.group{margin-bottom:16px}
+.group-title{color:var(--label2);font-size:11px;text-transform:uppercase;letter-spacing:.04em;padding:0 12px 6px}
+.list{background:var(--card2);border-radius:11px;overflow:hidden}
+.row{display:flex;align-items:center;gap:10px;width:100%;border:0;background:none;text-align:left;padding:9px 12px;position:relative}
+button.row{cursor:pointer}
+button.row:hover{background:var(--fill2)}
+.row+.row::before{content:"";position:absolute;top:0;left:12px;right:0;border-top:.5px solid var(--sep)}
+.row .dot{width:10px;height:10px;border-radius:50%;flex:none}
+.row .diamond{width:9px;height:9px;transform:rotate(45deg);border-radius:2px;flex:none;margin:0 1px}
+.row .txt{flex:1;min-width:0}
+.row .txt b{display:block;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .txt small{display:block;color:var(--label2);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .val{color:var(--label2);font-size:12px}
+.row .chev{width:7px;height:12px;fill:none;stroke:var(--label3);stroke-width:2;flex:none}
+.body{background:var(--card2);border-radius:11px;padding:11px 13px;white-space:pre-wrap;font-size:12.5px;line-height:1.55;overflow-wrap:anywhere}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px}
+.stat{background:var(--card2);border-radius:11px;padding:9px 11px}
+.stat b{display:block;font:600 19px/1.1 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;letter-spacing:-.02em}
+.stat span{color:var(--label2);font-size:11px}
+.note{color:var(--label2);font-size:11.5px;padding:6px 12px 0}
+.pop{position:fixed;z-index:20;pointer-events:none;max-width:320px;background:var(--bar);backdrop-filter:saturate(180%) blur(24px);-webkit-backdrop-filter:saturate(180%) blur(24px);border:.5px solid var(--sep);border-radius:12px;padding:8px 11px;box-shadow:0 10px 30px rgba(0,0,0,.18);font-size:12px;opacity:0;transform:scale(.97);transition:opacity .12s,transform .12s}
+.pop.on{opacity:1;transform:none}
+.pop small{color:var(--label2);display:block}
+.empty[hidden]{display:none}   /* display:flex below would otherwise beat the hidden attribute */
+.empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--label2);text-align:center;padding:24px}
+.empty b{color:var(--label);font-size:15px;font-weight:600}
+.empty code{background:var(--fill);padding:2px 7px;border-radius:6px;font-size:12px;color:var(--label)}
+.spinner{width:22px;height:22px;border-radius:50%;border:2.5px solid var(--fill);border-top-color:var(--blue);animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (max-width:860px){.main{grid-template-columns:1fr;grid-template-rows:1fr 45%}.search{display:none}}
+</style>
 </head>
 <body>
+<div class="app">
+  <div class="bar">
+    <div class="title"><b>Commit Graph</b><span id="subtitle">Connecting to GitX…</span></div>
+    <div class="spacer"></div>
+    <label class="search"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="5"/><path d="M11 11l3.5 3.5"/></svg><input id="q" placeholder="Search commits" autocomplete="off"></label>
+    <div class="seg" role="radiogroup" aria-label="Appearance"><div class="thumb" id="thumb"></div><button data-m="auto">Auto</button><button data-m="light">Light</button><button data-m="dark">Dark</button></div>
+  </div>
+  <div class="main">
+    <section class="card graph">
+      <div class="graph-head"><h2>Threads over time</h2><div class="legend">
+        <span><i style="border-color:var(--edge)"></i>Builds on · same thread</span>
+        <span><i style="border-color:var(--orange)"></i>Builds on · other thread</span>
+        <span><i style="border-color:var(--blue);border-top-style:dashed"></i>Relates to</span>
+        <span><svg width="10" height="10"><rect x="1.5" y="1.5" width="7" height="7" transform="rotate(45 5 5)" style="fill:var(--label2)"/></svg>Root</span></div></div>
+      <div class="canvas" id="canvas"><svg id="g"></svg><div class="empty" id="empty"><div class="spinner"></div><span>Connecting to GitX…</span></div></div>
+    </section>
+    <aside class="card inspector"><div class="scroll" id="info"></div></aside>
+  </div>
+</div>
+<div class="pop" id="pop"></div>
+<script>
+'use strict';
+/* ?broker=ws://127.0.0.1:7799 points this page at a second broker, so a change
+ * can be tried without stopping the one someone is using. */
+const BROKER_URL = new URLSearchParams(location.search).get('broker') || 'ws://127.0.0.1:7771';
+const NS = 'http://www.w3.org/2000/svg';
+const $ = (id) => document.getElementById(id);
+const svg = $('g'), canvas = $('canvas'), info = $('info'), pop = $('pop'), q = $('q'), emptyEl = $('empty');
 
-  <!-- Top Navigation / Control Bar -->
-  <header class="graph-header">
-    <div class="header-left">
-      <span class="logo-icon">⎇</span>
-      <span class="logo-title">GitX • Lakehouse Network</span>
-      <div class="active-badge" id="graph-repo-badge">
-        <span class="proj-icon">📁</span>
-        <b id="badge-repo-name">Detecting...</b>
-        <span class="branch-pill" id="badge-branch-name">[main]</span>
-      </div>
-    </div>
+let D = null, byH = new Map(), sel = null, query = '', N = [], E = [];
+let repoName = '', branch = '';
 
-    <!-- Search & Filters -->
-    <div class="header-center">
-      <div class="search-box">
-        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2">
-          <circle cx="6.5" cy="6.5" r="4.5"/>
-          <path d="M10 10l4 4"/>
-        </svg>
-        <input type="text" id="graph-search" placeholder="Search node, file, or motive..." autocomplete="off">
-      </div>
+const col = (i) => i < 0 ? 'var(--label3)' : 'var(--c' + (i % 12) + ')';
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+function el(n, a, p, style) {
+  const e = document.createElementNS(NS, n);
+  for (const k in a) e.setAttribute(k, a[k]);
+  if (style) e.setAttribute('style', style);
+  p.appendChild(e);
+  return e;
+}
 
-      <div class="layer-filters">
-        <button type="button" class="btn-layer-filter on gold" data-layer="gold" id="toggle-gold">
-          <span class="dot gold"></span> Gold <span class="count" id="count-gold">0</span>
-        </button>
-        <button type="button" class="btn-layer-filter on silver" data-layer="silver" id="toggle-silver">
-          <span class="dot silver"></span> Silver <span class="count" id="count-silver">0</span>
-        </button>
-        <button type="button" class="btn-layer-filter on bronze" data-layer="bronze" id="toggle-bronze">
-          <span class="dot bronze"></span> Bronze <span class="count" id="count-bronze">0</span>
-        </button>
-      </div>
-    </div>
+/* ------------------------------------------------------------------ theme */
+const MODES = ['auto', 'light', 'dark'];
+let mode = 'auto';
+try { mode = localStorage.getItem('gitx.graph.theme') || 'auto'; } catch (_) {}
+function hostTheme() {
+  const t = window.TerManager && TerManager.theme.get();
+  if (t && t.attrs && t.attrs['data-theme']) return t.attrs['data-theme'];
+  try { if (window.parent !== window) { const a = window.parent.document.documentElement.getAttribute('data-theme'); if (a) return a; } } catch (_) {}
+  return matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function applyTheme() {
+  const eff = mode === 'auto' ? hostTheme() : mode;
+  if (document.documentElement.getAttribute('data-theme') !== eff) document.documentElement.setAttribute('data-theme', eff);
+  $('thumb').style.transform = 'translateX(' + MODES.indexOf(mode) * 100 + '%)';
+  document.querySelectorAll('.seg button').forEach((b) => b.setAttribute('aria-checked', b.dataset.m === mode));
+}
+document.querySelectorAll('.seg button').forEach((b) => b.onclick = () => {
+  mode = b.dataset.m;
+  try { mode === 'auto' ? localStorage.removeItem('gitx.graph.theme') : localStorage.setItem('gitx.graph.theme', mode); } catch (_) {}
+  applyTheme();
+});
+/* The host SDK stamps data-theme itself when ter-manager's theme changes; re-apply
+ * afterwards so an explicit Light/Dark choice here still wins. */
+if (window.TerManager) TerManager.theme.onChange(() => applyTheme());
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+applyTheme();
 
-    <!-- Controls -->
-    <div class="header-right">
-      <div class="sim-controls">
-        <button type="button" class="btn-icon" id="btn-zoom-in" title="Zoom In">+</button>
-        <button type="button" class="btn-icon" id="btn-zoom-out" title="Zoom Out">&minus;</button>
-        <button type="button" class="btn-icon" id="btn-reset-view" title="Reset View">&#x21BA;</button>
-        <button type="button" class="btn-icon" id="btn-toggle-sim" title="Pause / Resume Physics">&#x23EF;</button>
-      </div>
-    </div>
-  </header>
+/* ---------------------------------------------------------- repo + broker */
+function normPath(p) { return p ? String(p).replace(/[\\/]+$/, '').toLowerCase() : ''; }
+function resolveActiveRepo() {
+  if (window.parent && window.parent !== window) {
+    try {
+      if (typeof window.parent.repoPath === 'function') { const p = window.parent.repoPath(); if (p) return p; }
+      if (typeof window.parent.activeSessionPath === 'function') { const p = window.parent.activeSessionPath(); if (p) return p; }
+    } catch (_) {}
+  }
+  try { const cwd = localStorage.getItem('gitDashboardCwd'); if (cwd) return cwd; } catch (_) {}
+  return '';
+}
 
-  <!-- Main Canvas Viewport -->
-  <main class="canvas-viewport" id="canvas-viewport">
-    <canvas id="graph-canvas"></canvas>
+let ws = null, lastRepo = '', everConnected = false;
+function checkRepo() {
+  const cwd = resolveActiveRepo();
+  if (cwd && normPath(cwd) !== normPath(lastRepo)) {
+    lastRepo = cwd;
+    if (ws && ws.readyState === WebSocket.OPEN) { showEmpty('spinner', 'Reading ' + cwd.split(/[\\/]/).pop() + '…'); ws.send(JSON.stringify({ type: 'SET_ACTIVE_REPO', repoPath: cwd })); }
+  }
+}
+function connect() {
+  try { ws = new WebSocket(BROKER_URL); } catch (_) { return setTimeout(connect, 3000); }
+  ws.onopen = () => {
+    everConnected = true;
+    if (lastRepo) ws.send(JSON.stringify({ type: 'SET_ACTIVE_REPO', repoPath: lastRepo }));
+  };
+  ws.onmessage = (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (_) { return; }
+    if (msg.type !== 'SYNC_STATE' || !msg.state) return;
+    const s = msg.state;
+    repoName = s.activeRepoName || '';
+    branch = s.activeBranch || '';
+    if (lastRepo && s.activeRepo && normPath(s.activeRepo) !== normPath(lastRepo)) return;   // stale repo, the right one is on its way
+    load(s.projectGraph);
+  };
+  ws.onclose = () => {
+    if (!D) showEmpty('offline');
+    setTimeout(connect, 3000);
+  };
+}
 
-    <div class="graph-legend">
-      <span class="legend-item"><span class="legend-dot gold"></span> Thread — a line of work (Gold)</span>
-      <span class="legend-item"><span class="legend-dot silver"></span> Code Region (Silver)</span>
-      <span class="legend-item"><span class="legend-dot bronze"></span> Commit (Bronze)</span>
-      <span class="legend-item"><span class="legend-line solid"></span> Thread &rarr; Region &rarr; Commit</span>
-      <span class="legend-item"><span class="legend-line dashed"></span> Thread &harr; Thread (inferred)</span>
-      <span class="legend-item"><span class="legend-line solid" style="background:#e3b341"></span> Stated relation (trailer)</span>
-    </div>
+function showEmpty(kind, text) {
+  svg.replaceChildren();
+  emptyEl.hidden = false;
+  if (kind === 'offline') {
+    emptyEl.innerHTML = '<b>GitX broker is not running</b><span>Start it from the Project GitX folder:</span><code>npm run broker</code><span style="font-size:11px">Retrying every 3 seconds.</span>';
+    $('subtitle').textContent = 'Broker offline';
+  } else if (kind === 'error') {
+    emptyEl.innerHTML = '<b>Could not build the graph</b><span>' + esc(text) + '</span>';
+  } else if (kind === 'none') {
+    emptyEl.innerHTML = '<b>No commits yet</b><span>' + esc(text || 'This repository has no history to draw.') + '</span>';
+  } else {
+    emptyEl.innerHTML = '<div class="spinner"></div><span>' + esc(text || 'Connecting to GitX…') + '</span>';
+  }
+}
 
-    <div class="canvas-hint">Drag nodes &bull; Scroll to zoom &bull; Drag space to pan &bull; Hover to inspect</div>
-  </main>
+function load(payload) {
+  if (!payload) return showEmpty('spinner', 'Building the graph…');
+  if (payload.error) return showEmpty('error', payload.error);
+  if (!payload.commits || !payload.commits.length) { D = null; paintInfo(); return showEmpty('none'); }
+  D = payload;
+  byH = new Map(D.commits.map((c) => [c.h, c]));
+  if (sel && ((sel.type === 'commit' && !byH.has(sel.h)) || (sel.type === 'thread' && !D.threads[sel.i]) || (sel.type === 'root' && !D.roots.some((r) => r.name === sel.name)))) sel = null;
+  emptyEl.hidden = true;
+  const s = D.stats || {};
+  $('subtitle').textContent = (repoName || 'repository') + (branch ? ' · ' + branch : '') + ' · ' + D.commits.length + ' commits · ' +
+    D.threads.length + ' threads' + (s.messages_from_gitx ? ' · ' + s.messages_from_gitx + ' messages from .gitx' : '');
+  render();
+  paintInfo();
+}
 
-  <!-- Interactive Glass Tooltip Card (Chronicle Inspector) -->
-  <div class="graph-tooltip" id="graph-tooltip" hidden></div>
+/* ------------------------------------------------------------------ graph */
+function render() {
+  if (!D) return;
+  /* Inside a hidden overlay every box measures 0 - wait for a real width rather
+   * than laying 120 commits out across nothing. */
+  if (canvas.clientWidth < 120) { requestAnimationFrame(render); return; }
+  svg.replaceChildren();
+  const LW = 132, LH = 52, TOP = 28, PADR = 30;
+  const n = D.commits.length;
+  const DX = Math.max(6, (canvas.clientWidth - 16 - LW - PADR) / n);
+  const lanes = D.threads.length + (D.commits.some((c) => c.t < 0) ? 1 : 0);
+  const W = LW + n * DX + PADR, H = TOP + lanes * LH + 8;
+  svg.setAttribute('width', W); svg.setAttribute('height', H);
+  const pos = (c) => [LW + c.x * DX + DX / 2, TOP + (c.t < 0 ? D.threads.length : c.t) * LH + LH / 2];
 
-  <script src="js/graph-engine.js"></script>
+  const bg = el('g', {}, svg);
+  const laneNames = D.threads.map((t) => ({ name: t.name, n: t.n }));
+  if (lanes > D.threads.length) laneNames.push({ name: 'loose', n: D.commits.filter((c) => c.t < 0).length });
+  laneNames.forEach((t, i) => {
+    if (i % 2 === 0) el('rect', { x: LW - 6, y: TOP + i * LH, width: W - LW + 6, height: LH, rx: 10 }, bg, 'fill:var(--lane)');
+    const g = el('g', { class: 'lane-chip' }, bg);
+    if (i < D.threads.length) g.onclick = () => select({ type: 'thread', i });
+    const y = TOP + i * LH + LH / 2;
+    el('rect', { x: 6, y: y - 13, width: LW - 22, height: 26, rx: 13 }, g);
+    el('circle', { cx: 20, cy: y, r: 4.5 }, g, 'fill:' + col(i < D.threads.length ? i : -1));
+    const tx = el('text', { x: 31, y: y + 4 }, g);
+    tx.textContent = t.name.length > 11 ? t.name.slice(0, 10) + '…' : t.name;
+    const title = el('title', {}, g); title.textContent = t.name;
+    const ct = el('text', { x: LW - 26, y: y + 4, 'text-anchor': 'end', class: 'count' }, g); ct.textContent = t.n;
+  });
+  let lastMonth = '', lastX = -1e9;
+  for (const c of D.commits) {
+    const m = c.date.slice(0, 7);
+    const [x] = pos(c);
+    if (m !== lastMonth && x - lastX > 60) {
+      lastMonth = m; lastX = x;
+      el('line', { x1: x, x2: x, y1: TOP - 6, y2: H }, bg, 'stroke:var(--sep);stroke-dasharray:2 4');
+      const t = el('text', { x: x + 4, y: 16 }, bg);
+      t.textContent = new Date(c.date + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+  }
+
+  const eg = el('g', {}, svg), ng = el('g', {}, svg);
+  E = D.rels.map((r) => {
+    const a = byH.get(r.a), b = byH.get(r.b);
+    if (!a || !b) return null;
+    const [x1, y1] = pos(a), [x2, y2] = pos(b);
+    const same = a.t === b.t, rel = r.k !== 'builds-on';
+    const bend = same ? -Math.min(24, 6 + Math.abs(x1 - x2) * .08) : 0;
+    const p = el('path', { class: 'edge', d: 'M' + x1 + ' ' + y1 + ' C' + (x1 - (x1 - x2) * .4) + ' ' + (y1 + bend) + ' ' + (x2 + (x1 - x2) * .4) + ' ' + (y2 + bend) + ' ' + x2 + ' ' + y2 }, eg,
+      'stroke:' + (rel ? 'var(--blue)' : same ? 'var(--edge)' : 'var(--orange)') + ';stroke-width:' + (rel ? 1.3 : 1.5) + ';' + (rel ? 'stroke-dasharray:4 3;' : '') + 'stroke-opacity:' + (same ? .9 : .75));
+    return { r, p };
+  }).filter(Boolean);
+
+  const labelled = new Map();
+  N = D.commits.map((c) => {
+    const [x, y] = pos(c);
+    const g = el('g', { class: 'node' }, ng);
+    if (c.root) {
+      el('rect', { x: x - 6, y: y - 6, width: 12, height: 12, rx: 2.5, transform: 'rotate(45 ' + x + ' ' + y + ')' }, g, 'fill:' + col(c.t));
+      if (!(labelled.has(c.root) && x - labelled.get(c.root) < 60)) {
+        labelled.set(c.root, x);
+        const anchor = x > W - 60 ? 'end' : x < LW + 30 ? 'start' : 'middle';
+        const l = el('text', { x: anchor === 'end' ? x + 6 : anchor === 'start' ? x - 6 : x, y: y - 12, 'text-anchor': anchor, class: 'root-label' }, g);
+        l.textContent = c.root;
+      }
+    } else {
+      el('circle', { cx: x, cy: y, r: 4.5 }, g, 'fill:' + col(c.t));
+    }
+    g.onclick = () => select({ type: 'commit', h: c.h });
+    g.onmouseenter = (e) => {
+      pop.innerHTML = '<b>' + esc(c.subject) + '</b><small class="mono">' + esc(c.h) + ' · ' + esc(c.date) + ' · ' + esc(c.t < 0 ? 'loose' : D.threads[c.t].name) + '</small>';
+      pop.classList.add('on'); movePop(e);
+    };
+    g.onmousemove = movePop;
+    g.onmouseleave = () => pop.classList.remove('on');
+    return { c, g, x };
+  });
+  applyFocus();
+}
+function movePop(e) {
+  const w = pop.offsetWidth, h = pop.offsetHeight;
+  pop.style.left = Math.min(innerWidth - w - 10, e.clientX + 14) + 'px';
+  pop.style.top = Math.min(innerHeight - h - 10, e.clientY + 14) + 'px';
+}
+
+function focusSet() {
+  let s = null;
+  if (sel && sel.type === 'commit') { s = new Set([sel.h]); D.rels.forEach((r) => { if (r.a === sel.h) s.add(r.b); if (r.b === sel.h) s.add(r.a); }); }
+  if (sel && sel.type === 'thread') s = new Set(D.commits.filter((c) => c.t === sel.i).map((c) => c.h));
+  if (sel && sel.type === 'root') s = new Set(D.commits.filter((c) => c.lines.includes(sel.name)).map((c) => c.h));
+  if (query) {
+    const m = new Set(D.commits.filter((c) => (c.h + ' ' + c.subject + ' ' + c.body + ' ' + (c.root || '') + ' ' + (c.original || '') + ' ' + c.files.join(' ')).toLowerCase().includes(query)).map((c) => c.h));
+    s = s ? new Set([...s].filter((h) => m.has(h))) : m;
+  }
+  return s;
+}
+function applyFocus() {
+  if (!D) return;
+  const s = focusSet();
+  N.forEach((n) => { n.g.classList.toggle('dim', !!s && !s.has(n.c.h)); n.g.classList.toggle('sel', !!sel && sel.type === 'commit' && sel.h === n.c.h); });
+  E.forEach((e) => e.p.classList.toggle('dim', !!s && !(s.has(e.r.a) && s.has(e.r.b))));
+}
+
+/* -------------------------------------------------------------- inspector */
+const chev = '<svg class="chev" viewBox="0 0 7 12"><path d="M1 1l5 5-5 5"/></svg>';
+const back = '<button class="back" data-home><svg viewBox="0 0 9 14"><path d="M8 1L2 7l6 6"/></svg>Overview</button>';
+const commitRow = (h, sub) => {
+  const c = byH.get(h);
+  if (!c) return '';
+  return '<button class="row" data-h="' + esc(h) + '"><span class="dot" style="background:' + col(c.t) + '"></span><span class="txt"><b>' + esc(c.subject) + '</b><small class="mono">' + esc(h) + (sub ? ' · ' + esc(sub) : '') + '</small></span>' + chev + '</button>';
+};
+const reflow = (t) => String(t || '').replace(/\r/g, '').replace(/([^\n])\n(?!\n|[-*•] |\d+\. )/g, '$1 ');
+
+function select(s) {
+  sel = s;
+  applyFocus();
+  paintInfo();
+  info.parentElement.scrollTop = 0;
+  if (s && s.type === 'commit') {
+    const n = N.find((x) => x.c.h === s.h);
+    if (n && (n.x < canvas.scrollLeft + 140 || n.x > canvas.scrollLeft + canvas.clientWidth - 40)) canvas.scrollTo({ left: n.x - canvas.clientWidth / 2, behavior: 'smooth' });
+  }
+}
+
+function paintInfo() {
+  if (!D) { info.innerHTML = '<h3>GitX</h3><div class="meta">The graph appears here once the broker has read the repository.</div>'; return; }
+  if (!sel) {
+    const s = D.stats || {};
+    info.innerHTML = '<h3>Overview</h3><div class="meta">' + esc(repoName) + (D.head ? ' · <span class="mono">' + esc(D.head) + '</span>' : '') + '</div>'
+      + '<div class="stats"><div class="stat"><b>' + D.commits.length + '</b><span>Commits</span></div><div class="stat"><b>' + D.roots.length + '</b><span>Lines of work</span></div><div class="stat"><b>' + D.rels.length + '</b><span>Links</span></div></div>'
+      + (D.truncated ? '<div class="note">Showing the newest ' + D.commits.length + ' commits.</div>' : '')
+      + (D.roots.length ? '<div class="group"><div class="group-title">Lines of work</div><div class="list">' + D.roots.map((r) => {
+          const st = r.start && byH.get(r.start);
+          return '<button class="row" data-root="' + esc(r.name) + '"><span class="diamond" style="background:' + col(st ? st.t : -1) + '"></span><span class="txt"><b>' + esc(r.name) + '</b><small>' + esc(st ? st.subject : 'started before the newest commits shown') + '</small></span><span class="val">' + r.n + '</span>' + chev + '</button>';
+        }).join('') + '</div></div>' : '')
+      + '<div class="group"><div class="group-title">Threads · inferred</div><div class="list">' + D.threads.map((t, i) => '<button class="row" data-t="' + i + '"><span class="dot" style="background:' + col(i) + '"></span><span class="txt"><b>' + esc(t.name) + '</b><small>' + esc(t.keywords.slice(0, 4).join(', ')) + '</small></span><span class="val">' + t.n + '</span>' + chev + '</button>').join('') + '</div></div>'
+      + (D.links.length ? '<div class="group"><div class="group-title">Thread links</div><div class="list">' + D.links.map((l) => '<div class="row"><span class="txt"><b>' + esc(D.threads[l.a].name) + ' ↔ ' + esc(D.threads[l.b].name) + '</b><small>' + l.trailer + ' commit links · shared code ' + l.region + '</small></span></div>').join('') + '</div></div>' : '')
+      + (s.messages_from_gitx ? '<div class="note">' + s.messages_from_gitx + ' of ' + s.commits + ' messages come from .gitx/commits; the commits themselves are unchanged.</div>' : '');
+  } else if (sel.type === 'root') {
+    const members = D.commits.filter((c) => c.lines.includes(sel.name)).reverse();
+    const start = members.find((c) => c.root === sel.name);
+    info.innerHTML = back + '<h3>' + esc(sel.name) + '</h3><div class="meta"><span class="pill">◆ Line of work</span>' + members.length + ' commits · ' + esc(members[members.length - 1]?.date || '') + ' → ' + esc(members[0]?.date || '') + '</div>'
+      + (start ? '<div class="group"><div class="group-title">How it started</div><div class="list">' + commitRow(start.h, start.date) + '</div><div class="body" style="margin-top:8px">' + esc(reflow(start.body)) + '</div></div>' : '')
+      + '<div class="group"><div class="group-title">Commits · newest first</div><div class="list">' + members.map((c) => commitRow(c.h, c.date)).join('') + '</div></div>';
+  } else if (sel.type === 'thread') {
+    const i = sel.i, t = D.threads[i], cs = D.commits.filter((c) => c.t === i).reverse();
+    const linked = D.links.filter((l) => l.a === i || l.b === i).map((l) => {
+      const o = l.a === i ? l.b : l.a;
+      return '<button class="row" data-t="' + o + '"><span class="dot" style="background:' + col(o) + '"></span><span class="txt"><b>' + esc(D.threads[o].name) + '</b><small>' + l.trailer + ' commit links · shared code ' + l.region + '</small></span>' + chev + '</button>';
+    }).join('');
+    info.innerHTML = back + '<h3>' + esc(t.name) + '</h3><div class="meta"><span class="pill"><i style="background:' + col(i) + '"></i>Thread · inferred</span>' + t.n + ' commits</div>'
+      + '<div class="group"><div class="group-title">Keywords</div><div class="body">' + esc(t.keywords.join(' · ')) + '</div></div>'
+      + '<div class="group"><div class="group-title">Main code regions</div><div class="list">' + t.regions.map((r) => '<div class="row"><span class="txt"><small class="mono" style="white-space:normal;color:var(--label)">' + esc(r) + '</small></span></div>').join('') + '</div></div>'
+      + (linked ? '<div class="group"><div class="group-title">Linked threads</div><div class="list">' + linked + '</div></div>' : '')
+      + '<div class="group"><div class="group-title">Commits</div><div class="list">' + cs.map((c) => commitRow(c.h, c.date)).join('') + '</div></div>';
+  } else {
+    const c = byH.get(sel.h);
+    const out = D.rels.filter((r) => r.a === c.h), inn = D.rels.filter((r) => r.b === c.h);
+    info.innerHTML = back + '<h3>' + esc(c.subject) + '</h3><div class="meta"><span class="pill mono">' + esc(c.h) + '</span>' + esc(c.date)
+      + (c.t >= 0 ? '<button class="pill" data-t="' + c.t + '"><i style="background:' + col(c.t) + '"></i>' + esc(D.threads[c.t].name) + '</button>' : '')
+      + c.lines.map((r) => '<button class="pill" data-root="' + esc(r) + '">◆ ' + esc(r) + '</button>').join('') + '</div>'
+      + '<div class="group"><div class="group-title">Message' + (c.source === 'gitx' ? ' · from .gitx' : '') + '</div><div class="body">' + (c.body ? esc(reflow(c.body)) : '<span style="color:var(--label2)">No message body.</span>') + '</div>'
+      + (c.original ? '<div class="note">Original commit message: <span style="color:var(--label)">' + esc(c.original) + '</span></div>' : '') + '</div>'
+      + (out.length ? '<div class="group"><div class="group-title">Links to</div><div class="list">' + out.map((r) => commitRow(r.b, r.k)).join('') + '</div></div>' : '')
+      + (inn.length ? '<div class="group"><div class="group-title">Linked from</div><div class="list">' + inn.map((r) => commitRow(r.a, r.k)).join('') + '</div></div>' : '')
+      + (c.files.length ? '<div class="group"><div class="group-title">Files</div><div class="list">' + c.files.map((f) => '<div class="row"><span class="txt"><small class="mono" style="color:var(--label)">' + esc(f) + '</small></span></div>').join('') + '</div></div>' : '');
+  }
+  info.querySelectorAll('[data-h]').forEach((e) => e.onclick = () => select({ type: 'commit', h: e.dataset.h }));
+  info.querySelectorAll('[data-t]').forEach((e) => e.onclick = () => select({ type: 'thread', i: +e.dataset.t }));
+  info.querySelectorAll('[data-root]').forEach((e) => e.onclick = () => select({ type: 'root', name: e.dataset.root }));
+  info.querySelectorAll('[data-home]').forEach((e) => e.onclick = () => select(null));
+}
+
+/* ------------------------------------------------------------------ input */
+q.oninput = () => { query = q.value.trim().toLowerCase(); applyFocus(); };
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (query) { q.value = ''; query = ''; applyFocus(); return; }
+  if (sel) { select(null); return; }
+  /* Nothing left to clear here: hand Escape to ter-manager, which cannot hear
+   * keys pressed inside this frame. */
+  try { if (window.parent !== window && typeof window.parent.closeGitXOverlay === 'function') window.parent.closeGitXOverlay(); } catch (_) {}
+});
+let resizeTimer;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
+/* ter-manager posts this every time Ctrl+Alt+X opens the overlay. */
+addEventListener('message', (e) => {
+  if (e.data && (e.data.__gitx_refresh || e.data.type === 'GITX_REFRESH')) { applyTheme(); checkRepo(); render(); }
+});
+
+lastRepo = resolveActiveRepo();
+setInterval(() => { checkRepo(); if (mode === 'auto') applyTheme(); }, 1500);
+paintInfo();
+connect();
+setTimeout(() => { if (!everConnected && !D) showEmpty('offline'); }, 2500);
+</script>
 </body>
 </html>

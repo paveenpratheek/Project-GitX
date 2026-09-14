@@ -7,6 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
 import { formThreads } from './tools/threads.js';
+import { loadGraph, graphPayload } from './tools/project-graph.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,7 +32,10 @@ let state = {
   threads: [],
   threadLinks: [],
   statedRelations: [],
-  threadStats: null
+  threadStats: null,
+  /* What graph.html draws: commits with their messages in force (.gitx/commits
+   * where written, git otherwise), lines of work, threads and stated links. */
+  projectGraph: null
 };
 
 function getBranch(dir) {
@@ -88,6 +92,18 @@ function refreshFromGit(targetDir = null) {
     state.statedRelations = [];
     state.threadStats = { error: err.message };
     console.warn('[GitX Broker] Thread formation failed, continuing without it:', err.message);
+  }
+
+  /* Same rule as threads: a repo the graph cannot be built for still gets
+   * everything else. The page shows the error instead of a blank canvas. */
+  try {
+    const t0 = Date.now();
+    state.projectGraph = graphPayload(loadGraph(dir));
+    console.log(`[GitX Broker] Graph: ${state.projectGraph.commits.length} commits, ${state.projectGraph.roots.length} lines of work, ` +
+      `${state.projectGraph.stats.messages_from_gitx} messages from .gitx/commits (${Date.now() - t0}ms).`);
+  } catch (err) {
+    state.projectGraph = { error: err.message };
+    console.warn('[GitX Broker] Graph build failed, continuing without it:', err.message);
   }
 
   saveState();

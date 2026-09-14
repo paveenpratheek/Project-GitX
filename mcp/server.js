@@ -11,6 +11,7 @@ import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
 import { stagedRegions, findRelated } from './tools/retrieval.js';
 import { parseMessage, tokenize } from './tools/git-extract.js';
+import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
  * the way parseMessage already reads one. */
@@ -246,6 +247,57 @@ const TOOLS = [
         limit: { type: 'number', description: 'How many results to return. Defaults to 10.' }
       },
       required: ['description']
+    }
+  },
+  /* The project graph: for a NEW agent getting on track, where find_related is
+   * for an agent in the middle of a change. Four small calls rather than one
+   * large one, so an agent pays only for the depth its question needs. */
+  {
+    name: 'gitx_graph_map',
+    description: 'START HERE when you are new to a project and need to get on track with the agents already working on it. Returns the whole project as a map: every line of work (root) with how it started and its latest commits, the threads (areas of code that change together) and how they connect. Read it once, then drill in with gitx_graph_area, gitx_graph_chain and gitx_graph_commit. Uses fuller messages from .gitx/commits/ where they exist, git otherwise. This is navigation, not search: to find what YOUR change relates to, use gitx_find_related.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'gitx_graph_area',
+    description: 'One line of work or thread from gitx_graph_map, in depth: the commit that started it and why, the commits where it split into phases, its latest commits with their reasons, the code regions it lives in, and which other lines of work it connects to.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'A root name (e.g. "terminal") or thread name exactly as gitx_graph_map lists it.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'gitx_graph_chain',
+    description: 'Follow one commit\'s reasoning: every commit it builds on back to the root of its line of work (nearest first, each with its why), and every commit built on it since. Use it to answer WHY something exists or what happened after it. Stop reading once the reason is found.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hash: { type: 'string', description: 'Commit hash or prefix (at least 4 characters).' },
+        limit: { type: 'number', description: 'Maximum commits each way. Defaults to 30.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
+      required: ['hash']
+    }
+  },
+  {
+    name: 'gitx_graph_commit',
+    description: 'One commit in full: its whole message (and the original git subject if a fuller message was written later), what it builds on and what was built on it, its line of work and thread, and the exact files and code regions it changed. Read those regions before describing how something works today.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hash: { type: 'string', description: 'Commit hash or prefix (at least 4 characters).' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
+      required: ['hash']
     }
   }
 ];
@@ -821,6 +873,24 @@ async function handleToolCall(name, args) {
           }, null, 2)
         }]
       };
+    }
+
+    case 'gitx_graph_map':
+    case 'gitx_graph_area':
+    case 'gitx_graph_chain':
+    case 'gitx_graph_commit': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+
+      /* Read-only, like find_related: the index is the temp-dir cache and the
+       * .gitx/commits messages are only read. Nothing is written into the repo. */
+      const graph = loadGraph(target.dir);
+      const head = { repo: target.dir, index_rebuilt: graph.index_rebuilt };
+      if (name === 'gitx_graph_map') return reply({ ...head, ...graphMap(graph) });
+      if (name === 'gitx_graph_area') return reply({ ...head, ...graphArea(graph, args.name) });
+      if (name === 'gitx_graph_chain') return reply({ ...head, ...graphChain(graph, args.hash, args.limit) });
+      return reply({ ...head, ...graphCommit(graph, args.hash) });
     }
 
     default:
