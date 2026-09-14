@@ -110,30 +110,57 @@ function refreshFromGit(targetDir = null) {
   console.log(`[GitX Broker] Loaded ${state.chronicles.length} commits across ${Object.keys(state.streams).length} streams for '${state.activeRepoName}'.`);
 }
 
-function loadState() {
+/* Two files, split by who they belong to.
+ *
+ *   state.json  the issue list - shared project data, tracked in git
+ *   local.json  which repo this broker is showing - a path on THIS machine,
+ *               git-ignored
+ *
+ * They used to be one file, so every time the graph was opened on a different
+ * repository the tracked file changed, and Source Control showed a modified
+ * state.json that nobody had edited and nobody should commit. */
+const LOCAL_FILE = path.join(DEFAULT_ROOT, '.gitx', 'local.json');
+
+function readJson(file) {
   try {
-    if (fs.existsSync(STATE_FILE)) {
-      const raw = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
-      state.issues = raw.issues || [];
-      state.activeRepo = raw.activeRepo || DEFAULT_ROOT;
-      state.agents = {};
-    }
+    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (err) {
-    console.warn('[GitX Broker] Failed to read state.json, starting fresh:', err.message);
+    console.warn('[GitX Broker] Failed to read ' + path.basename(file) + ', ignoring it:', err.message);
   }
+  return null;
+}
+
+function writeJson(file, obj) {
+  const dir = path.dirname(file);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const text = JSON.stringify(obj, null, 2);
+  /* Unchanged content is not rewritten, so saving the same issue list after
+   * every refresh does not touch the file's mtime or show up as activity. */
+  try { if (fs.readFileSync(file, 'utf8') === text) return; } catch (_) { /* new file */ }
+  fs.writeFileSync(file, text, 'utf8');
+}
+
+function loadState() {
+  const shared = readJson(STATE_FILE);
+  const local = readJson(LOCAL_FILE);
+  if (shared) state.issues = shared.issues || [];
+  state.agents = {};
+  /* local.json first; an older state.json that still carries activeRepo is
+   * honoured once, and the next save moves it across. */
+  state.activeRepo = (local && local.activeRepo) || (shared && shared.activeRepo) || DEFAULT_ROOT;
   refreshFromGit(state.activeRepo);
 }
 
 function saveState() {
   try {
-    const dir = path.dirname(STATE_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(STATE_FILE, JSON.stringify({
-      activeRepo: state.activeRepo,
-      issues: state.issues
-    }, null, 2), 'utf8');
+    writeJson(STATE_FILE, { issues: state.issues });
   } catch (err) {
     console.error('[GitX Broker] Failed to persist state.json:', err.message);
+  }
+  try {
+    writeJson(LOCAL_FILE, { activeRepo: state.activeRepo });
+  } catch (err) {
+    console.error('[GitX Broker] Failed to persist local.json:', err.message);
   }
 }
 

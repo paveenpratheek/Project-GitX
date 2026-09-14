@@ -1,3 +1,5 @@
 node_modules/
 *.log
 .DS_Store
+# which repo this machine's broker is showing - machine-local, see mcp/broker.js
+.gitx/local.json
