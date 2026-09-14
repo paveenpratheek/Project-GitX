@@ -41,7 +41,9 @@
   color-scheme:dark;
 }
 *{box-sizing:border-box}
-html,body{height:100%}
+/* No overscroll anywhere on this page: a horizontal swipe that runs past an
+ * edge is what a browser turns into Back. */
+html,body{height:100%;overscroll-behavior:none}
 body{margin:0;background:var(--bg);color:var(--label);font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.005em;overflow:hidden;transition:background .3s}
 button{font:inherit;color:inherit}
 .app{display:flex;flex-direction:column;height:100vh}
@@ -67,8 +69,11 @@ button{font:inherit;color:inherit}
 .legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--label2);font-size:11.5px}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:18px;border-top:2px solid}
-.canvas{flex:1;overflow:auto;padding:0 8px 10px;position:relative}
-svg{display:block}
+/* Vertical scroll stays native; horizontal movement is the focus lens below,
+ * so this never scrolls sideways and has no overscroll to hand to the browser. */
+.canvas{flex:1;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;padding:0 8px 4px;position:relative}
+#g{display:block;touch-action:pan-y;cursor:grab;user-select:none;-webkit-user-select:none}
+.canvas.dragging #g{cursor:grabbing}
 svg text{fill:var(--label2);font-size:11px;font-family:inherit}
 .lane-chip{cursor:pointer}
 .lane-chip rect{fill:var(--fill2);transition:fill .2s}
@@ -81,9 +86,16 @@ svg text{fill:var(--label2);font-size:11px;font-family:inherit}
 .node.sel circle,.node.sel rect{stroke:var(--label);stroke-width:2.2}
 .edge{fill:none;transition:opacity .25s}
 .dim{opacity:.1}
-.root-label{font-size:11px;font-weight:600;fill:var(--label)!important}
+.root-label{font-size:11px;font-weight:600;fill:var(--label)!important;pointer-events:none;transition:opacity .25s}
+/* The scrubber: where the lens is looking, over the whole history. */
+.scrub{display:flex;align-items:center;gap:10px;padding:4px 16px 12px;color:var(--label2);font-size:11px;flex:none}
+.scrub[hidden]{display:none}
+.scrub-date{white-space:nowrap;font-variant-numeric:tabular-nums}
+.scrub-track{position:relative;flex:1;height:18px;border-radius:9px;background:var(--fill2);cursor:pointer;touch-action:none}
+.scrub-thumb{position:absolute;top:3px;bottom:3px;min-width:18px;border-radius:6px;background:color-mix(in srgb,var(--label) 16%,var(--card));box-shadow:0 1px 3px rgba(0,0,0,.15),0 0 0 .5px var(--sep)}
+.scrub-hint{white-space:nowrap}
 .inspector{display:flex;flex-direction:column}
-.inspector .scroll{overflow:auto;padding:14px 14px 18px;flex:1}
+.inspector .scroll{overflow:auto;overscroll-behavior:contain;padding:14px 14px 18px;flex:1}
 .back{display:inline-flex;align-items:center;gap:4px;border:0;background:none;color:var(--blue);cursor:pointer;padding:0;font-size:14px;margin-bottom:10px}
 .back svg{width:9px;height:14px;fill:none;stroke:currentColor;stroke-width:2.2}
 h3{margin:0 0 4px;font:600 19px/1.25 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;letter-spacing:-.02em;overflow-wrap:anywhere}
@@ -121,7 +133,7 @@ button.row:hover{background:var(--fill2)}
 .empty code{background:var(--fill);padding:2px 7px;border-radius:6px;font-size:12px;color:var(--label)}
 .spinner{width:22px;height:22px;border-radius:50%;border:2.5px solid var(--fill);border-top-color:var(--blue);animation:spin .9s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media (max-width:860px){.main{grid-template-columns:1fr;grid-template-rows:1fr 45%}.search{display:none}}
+@media (max-width:860px){.main{grid-template-columns:1fr;grid-template-rows:1fr 45%}.search,.scrub-hint{display:none}}
 </style>
 </head>
 <body>
@@ -140,6 +152,12 @@ button.row:hover{background:var(--fill2)}
         <span><i style="border-color:var(--blue);border-top-style:dashed"></i>Relates to</span>
         <span><svg width="10" height="10"><rect x="1.5" y="1.5" width="7" height="7" transform="rotate(45 5 5)" style="fill:var(--label2)"/></svg>Root</span></div></div>
       <div class="canvas" id="canvas"><svg id="g"></svg><div class="empty" id="empty"><div class="spinner"></div><span>Connecting to GitX…</span></div></div>
+      <div class="scrub" id="scrub" hidden>
+        <span class="scrub-date" id="scrubFrom"></span>
+        <div class="scrub-track" id="scrubTrack" role="slider" aria-label="Position in history" tabindex="0"><div class="scrub-thumb" id="scrubThumb"></div></div>
+        <span class="scrub-date" id="scrubTo"></span>
+        <span class="scrub-hint">Swipe or Shift + scroll · ← → · Home / End</span>
+      </div>
     </section>
     <aside class="card inspector"><div class="scroll" id="info"></div></aside>
   </div>
@@ -195,7 +213,8 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme
 applyTheme();
 
 /* ---------------------------------------------------------- repo + broker */
-function normPath(p) { return p ? String(p).replace(/[\\/]+$/, '').toLowerCase() : ''; }
+/* Slashes too: ter-manager and the broker can spell the same folder E:\x and E:/x. */
+function normPath(p) { return p ? String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : ''; }
 function resolveActiveRepo() {
   if (window.parent && window.parent !== window) {
     try {
@@ -207,19 +226,34 @@ function resolveActiveRepo() {
   return '';
 }
 
-let ws = null, lastRepo = '', everConnected = false;
+let ws = null, lastRepo = '', everConnected = false, waitTimer = 0;
+/* Always force. The broker ignores a switch to the repo it is already on, so a
+ * plain request for the same repo got no SYNC_STATE back - and the page sat on
+ * its spinner forever. Forced, it re-reads and answers every time. */
+function requestRepo(cwd) {
+  if (!ws || ws.readyState !== WebSocket.OPEN || !cwd) return;
+  ws.send(JSON.stringify({ type: 'SET_ACTIVE_REPO', repoPath: cwd, force: true }));
+  /* A graph already on screen stays up while the new one is read; only an empty
+   * page shows the spinner. Either way, never wait silently for ever. */
+  if (!D) showEmpty('spinner', 'Reading ' + cwd.split(/[\\/]/).filter(Boolean).pop() + '…');
+  else $('subtitle').textContent = 'Reading ' + cwd.split(/[\\/]/).filter(Boolean).pop() + '…';
+  clearTimeout(waitTimer);
+  waitTimer = setTimeout(() => {
+    if (!D) showEmpty('error', 'GitX did not answer for ' + cwd + '. Check the broker window for an error, then press Ctrl+Alt+X again.');
+  }, 15000);
+}
 function checkRepo() {
   const cwd = resolveActiveRepo();
   if (cwd && normPath(cwd) !== normPath(lastRepo)) {
     lastRepo = cwd;
-    if (ws && ws.readyState === WebSocket.OPEN) { showEmpty('spinner', 'Reading ' + cwd.split(/[\\/]/).pop() + '…'); ws.send(JSON.stringify({ type: 'SET_ACTIVE_REPO', repoPath: cwd })); }
+    requestRepo(cwd);
   }
 }
 function connect() {
   try { ws = new WebSocket(BROKER_URL); } catch (_) { return setTimeout(connect, 3000); }
   ws.onopen = () => {
     everConnected = true;
-    if (lastRepo) ws.send(JSON.stringify({ type: 'SET_ACTIVE_REPO', repoPath: lastRepo }));
+    if (lastRepo) requestRepo(lastRepo);
   };
   ws.onmessage = (ev) => {
     let msg;
@@ -229,7 +263,8 @@ function connect() {
     repoName = s.activeRepoName || '';
     branch = s.activeBranch || '';
     if (lastRepo && s.activeRepo && normPath(s.activeRepo) !== normPath(lastRepo)) return;   // stale repo, the right one is on its way
-    load(s.projectGraph);
+    clearTimeout(waitTimer);
+    load(s.projectGraph, s.activeRepo || repoName);
   };
   ws.onclose = () => {
     if (!D) showEmpty('offline');
@@ -239,6 +274,8 @@ function connect() {
 
 function showEmpty(kind, text) {
   svg.replaceChildren();
+  G = null;
+  $('scrub').hidden = true;
   emptyEl.hidden = false;
   if (kind === 'offline') {
     emptyEl.innerHTML = '<b>GitX broker is not running</b><span>Start it from the Project GitX folder:</span><code>npm run broker</code><span style="font-size:11px">Retrying every 3 seconds.</span>';
@@ -252,35 +289,59 @@ function showEmpty(kind, text) {
   }
 }
 
-function load(payload) {
+let loadedKey = '';
+function load(payload, repoKey) {
   if (!payload) return showEmpty('spinner', 'Building the graph…');
   if (payload.error) return showEmpty('error', payload.error);
   if (!payload.commits || !payload.commits.length) { D = null; paintInfo(); return showEmpty('none'); }
   D = payload;
   byH = new Map(D.commits.map((c) => [c.h, c]));
   if (sel && ((sel.type === 'commit' && !byH.has(sel.h)) || (sel.type === 'thread' && !D.threads[sel.i]) || (sel.type === 'root' && !D.roots.some((r) => r.name === sel.name)))) sel = null;
+  /* A different repository, or new commits, opens on the newest work again; a
+   * refresh of the same history keeps wherever the lens was looking. */
+  const key = normPath(repoKey) + '|' + D.commits.length + '|' + D.head;
+  const keepFocus = key === loadedKey;
+  loadedKey = key;
   emptyEl.hidden = true;
   const s = D.stats || {};
   $('subtitle').textContent = (repoName || 'repository') + (branch ? ' · ' + branch : '') + ' · ' + D.commits.length + ' commits · ' +
     D.threads.length + ' threads' + (s.messages_from_gitx ? ' · ' + s.messages_from_gitx + ' messages from .gitx' : '');
-  render();
+  build(keepFocus);
   paintInfo();
 }
 
-/* ------------------------------------------------------------------ graph */
-function render() {
+/* --------------------------------------------------------- the focus lens
+ *
+ * The whole history always fits the card; nothing scrolls sideways. Instead
+ * every commit gets a share of the width that depends on how far it is from
+ * the FOCUS - the commit index the reader is looking at:
+ *
+ *   share(i) = floor + (1 - floor) * exp(-((i - focus) / sigma)^2)
+ *
+ * Near the focus a commit gets the full share and links are drawn at normal
+ * length; the share falls away smoothly toward both edges, so links there get
+ * shorter and dots smaller, but nothing is ever cut off. floor is solved so
+ * the commits inside the lens land at roughly SPACING pixels apart whatever
+ * the card width and history length are. Moving through time moves the focus,
+ * and the layout is recomputed - the DOM is built once and only repositioned.
+ */
+const LW = 132, LH = 52, TOP = 28, PADR = 26;
+const SPACING = 24;        // px between commits where the reader is looking
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)');
+let G = null;
+let focusCur = 0, focusTarget = 0, anim = 0;
+
+function build(keepFocus) {
   if (!D) return;
   /* Inside a hidden overlay every box measures 0 - wait for a real width rather
    * than laying 120 commits out across nothing. */
-  if (canvas.clientWidth < 120) { requestAnimationFrame(render); return; }
+  if (canvas.clientWidth < 160) { requestAnimationFrame(() => build(keepFocus)); return; }
   svg.replaceChildren();
-  const LW = 132, LH = 52, TOP = 28, PADR = 30;
   const n = D.commits.length;
-  const DX = Math.max(6, (canvas.clientWidth - 16 - LW - PADR) / n);
   const lanes = D.threads.length + (D.commits.some((c) => c.t < 0) ? 1 : 0);
-  const W = LW + n * DX + PADR, H = TOP + lanes * LH + 8;
+  const W = canvas.clientWidth - 16, H = TOP + lanes * LH + 8;
   svg.setAttribute('width', W); svg.setAttribute('height', H);
-  const pos = (c) => [LW + c.x * DX + DX / 2, TOP + (c.t < 0 ? D.threads.length : c.t) * LH + LH / 2];
+  const yOf = (c) => TOP + (c.t < 0 ? D.threads.length : c.t) * LH + LH / 2;
 
   const bg = el('g', {}, svg);
   const laneNames = D.threads.map((t) => ({ name: t.name, n: t.n }));
@@ -288,69 +349,66 @@ function render() {
   laneNames.forEach((t, i) => {
     if (i % 2 === 0) el('rect', { x: LW - 6, y: TOP + i * LH, width: W - LW + 6, height: LH, rx: 10 }, bg, 'fill:var(--lane)');
   });
-  let lastMonth = '', lastX = -1e9;
+
+  const ticks = [];
+  let lastMonthDay = '';
   for (const c of D.commits) {
-    const m = c.date.slice(0, 7);
-    const [x] = pos(c);
-    if (m !== lastMonth && x - lastX > 60) {
-      lastMonth = m; lastX = x;
-      el('line', { x1: x, x2: x, y1: TOP - 6, y2: H }, bg, 'stroke:var(--sep);stroke-dasharray:2 4');
-      const t = el('text', { x: x + 4, y: 16 }, bg);
-      t.textContent = new Date(c.date + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    }
+    const day = c.date.slice(0, 10);
+    if (day === lastMonthDay) continue;
+    lastMonthDay = day;
+    const line = el('line', { y1: TOP - 6, y2: H }, bg, 'stroke:var(--sep);stroke-dasharray:2 4');
+    const text = el('text', { y: 16 }, bg);
+    text.textContent = new Date(c.date + 'T00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    ticks.push({ i: c.x, line, text });
   }
 
-  const eg = el('g', {}, svg), ng = el('g', {}, svg);
+  const eg = el('g', {}, svg), ng = el('g', {}, svg), lg = el('g', {}, svg);
   E = D.rels.map((r) => {
     const a = byH.get(r.a), b = byH.get(r.b);
     if (!a || !b) return null;
-    const [x1, y1] = pos(a), [x2, y2] = pos(b);
     const same = a.t === b.t, rel = r.k !== 'builds-on';
-    const bend = same ? -Math.min(24, 6 + Math.abs(x1 - x2) * .08) : 0;
-    const p = el('path', { class: 'edge', d: 'M' + x1 + ' ' + y1 + ' C' + (x1 - (x1 - x2) * .4) + ' ' + (y1 + bend) + ' ' + (x2 + (x1 - x2) * .4) + ' ' + (y2 + bend) + ' ' + x2 + ' ' + y2 }, eg,
+    const p = el('path', { class: 'edge' }, eg,
       'stroke:' + (rel ? 'var(--blue)' : same ? 'var(--edge)' : 'var(--orange)') + ';stroke-width:' + (rel ? 1.3 : 1.5) + ';' + (rel ? 'stroke-dasharray:4 3;' : '') + 'stroke-opacity:' + (same ? .9 : .75));
-    return { r, p };
+    return { r, p, a, b, same, ya: yOf(a), yb: yOf(b) };
   }).filter(Boolean);
 
-  const labelled = new Map();
+  const lastLabel = new Map();
   N = D.commits.map((c) => {
-    const [x, y] = pos(c);
     const g = el('g', { class: 'node' }, ng);
+    let label = null;
     if (c.root) {
-      el('rect', { x: x - 6, y: y - 6, width: 12, height: 12, rx: 2.5, transform: 'rotate(45 ' + x + ' ' + y + ')' }, g, 'fill:' + col(c.t));
-      if (!(labelled.has(c.root) && x - labelled.get(c.root) < 60)) {
-        labelled.set(c.root, x);
-        const anchor = x > W - 60 ? 'end' : x < LW + 30 ? 'start' : 'middle';
-        const l = el('text', { x: anchor === 'end' ? x + 6 : anchor === 'start' ? x - 6 : x, y: y - 12, 'text-anchor': anchor, class: 'root-label' }, g);
-        l.textContent = c.root;
+      el('rect', { x: -6, y: -6, width: 12, height: 12, rx: 2.5, transform: 'rotate(45)' }, g, 'fill:' + col(c.t));
+      /* twins of one root sit side by side; label the first only */
+      if (!(lastLabel.has(c.root) && c.x - lastLabel.get(c.root) < 4)) {
+        lastLabel.set(c.root, c.x);
+        label = el('text', { y: yOf(c) - 12, class: 'root-label' }, lg);
+        label.textContent = c.root;
       }
     } else {
-      el('circle', { cx: x, cy: y, r: 4.5 }, g, 'fill:' + col(c.t));
+      el('circle', { cx: 0, cy: 0, r: 4.5 }, g, 'fill:' + col(c.t));
     }
-    g.onclick = () => select({ type: 'commit', h: c.h });
+    g.onclick = () => { if (!dragMoved) select({ type: 'commit', h: c.h }); };
     g.onmouseenter = (e) => {
+      if (drag) return;
       pop.innerHTML = '<b>' + esc(c.subject) + '</b><small class="mono">' + esc(c.h) + ' · ' + esc(c.date) + ' · ' + esc(c.t < 0 ? 'loose' : D.threads[c.t].name) + '</small>';
       pop.classList.add('on'); movePop(e);
     };
     g.onmousemove = movePop;
     g.onmouseleave = () => pop.classList.remove('on');
-    return { c, g, x };
+    return { c, g, label, y: yOf(c), x: 0 };
   });
 
-  /* Thread labels in their own layer, drawn LAST so arcs and commits pass under
-   * them, and moved by the scroll offset so they stay pinned to the left edge.
-   * SVG has no position:sticky, and splitting the labels into a second element
-   * would need its height and vertical scroll kept in step by hand - this keeps
-   * them inside the same coordinate space as the lanes they name. */
-  chipLayer = el('g', { class: 'chips' }, svg);
-  const defs = el('defs', {}, chipLayer);
+  /* Thread labels last, so arcs and commits pass under them, over a strip in
+   * the card colour with a short fade into the graph. */
+  const chips = el('g', { class: 'chips' }, svg);
+  const defs = el('defs', {}, chips);
   const grad = el('linearGradient', { id: 'chip-fade', x1: '0', x2: '1', y1: '0', y2: '0' }, defs);
   el('stop', { offset: '0' }, grad, 'stop-color:var(--card);stop-opacity:1');
   el('stop', { offset: '1' }, grad, 'stop-color:var(--card);stop-opacity:0');
-  el('rect', { x: -8, y: 0, width: LW, height: H }, chipLayer, 'fill:var(--card)');
-  el('rect', { x: LW - 8, y: 0, width: 18, height: H, fill: 'url(#chip-fade)' }, chipLayer);
+  el('rect', { x: -8, y: 0, width: LW - 4, height: H }, chips, 'fill:var(--card)');
+  el('rect', { x: LW - 12, y: 0, width: 14, height: H, fill: 'url(#chip-fade)' }, chips);
   laneNames.forEach((t, i) => {
-    const g = el('g', { class: 'lane-chip' }, chipLayer);
+    const g = el('g', { class: 'lane-chip' }, chips);
     if (i < D.threads.length) g.onclick = () => select({ type: 'thread', i });
     const y = TOP + i * LH + LH / 2;
     el('rect', { x: 6, y: y - 13, width: LW - 22, height: 26, rx: 13 }, g);
@@ -360,14 +418,205 @@ function render() {
     const title = el('title', {}, g); title.textContent = t.name;
     const ct = el('text', { x: LW - 26, y: y + 4, 'text-anchor': 'end', class: 'count' }, g); ct.textContent = t.n;
   });
-  pinChips();
+
+  const A = W - LW - PADR;
+  G = { n, W, H, A, ticks, lensed: n * SPACING > A };
+  $('scrub').hidden = !G.lensed;
+  $('scrubFrom').textContent = D.commits[0].date;
+  $('scrubTo').textContent = D.commits[n - 1].date;
+
+  if (!keepFocus) focusTarget = focusCur = n - 1;   // open on the newest work
+  focusTarget = clamp(focusTarget); focusCur = clamp(focusCur);
+  layout(focusCur);
   applyFocus();
 }
-let chipLayer = null;
-function pinChips() {
-  if (chipLayer) chipLayer.setAttribute('transform', 'translate(' + canvas.scrollLeft + ',0)');
+
+const clamp = (f) => Math.max(0, Math.min((G ? G.n : 1) - 1, f));
+
+function positions(f) {
+  const n = G.n, A = G.A;
+  const xs = new Float64Array(n), sp = new Float64Array(n);
+  if (!G.lensed) {
+    /* short history: it all fits at a comfortable spacing, no lens needed */
+    const step = Math.min(SPACING * 1.6, A / n);
+    for (let i = 0; i < n; i++) { xs[i] = LW + step * (i + .5); sp[i] = step; }
+    return { xs, sp };
+  }
+  /* A Cauchy falloff, 1 / (1 + d^2), rather than a Gaussian: a Gaussian keeps
+   * full spacing for a few commits and then drops off a cliff, so everything
+   * past the lens collapsed to the same squashed width. The long tail shortens
+   * links GRADUALLY all the way to the edges, which is what reads as depth. */
+  const inLens = A / SPACING;                        // commits that would fit at normal spacing
+  const sigma = Math.max(3, inLens * 0.2);
+  const w = new Float64Array(n);
+  const bell = new Float64Array(n);
+  let bellSum = 0;
+  for (let i = 0; i < n; i++) {
+    const d = (i - f) / sigma;
+    bell[i] = 1 / (1 + d * d);
+    bellSum += bell[i];
+  }
+  /* floor solved against the bell as it actually falls inside [0, n) - with
+   * the focus at either end half the bell is off the edge, and ignoring that
+   * would blow the visible half up to twice the intended spacing. */
+  const floor = Math.max(0.05, Math.min(1, (inLens - bellSum) / (n - bellSum)));
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    w[i] = floor + (1 - floor) * bell[i];
+    total += w[i];
+  }
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    sp[i] = A * w[i] / total;
+    xs[i] = LW + A * (acc + w[i] / 2) / total;
+    acc += w[i];
+  }
+  return { xs, sp };
 }
-canvas.addEventListener('scroll', pinChips, { passive: true });
+
+function layout(f) {
+  if (!G) return;
+  const { xs, sp } = positions(f);
+  for (const nd of N) {
+    const i = nd.c.x, x = xs[i];
+    nd.x = x;
+    /* dots shrink with the room they have, down to a readable minimum */
+    const s = Math.max(0.42, Math.min(1, sp[i] / 13));
+    nd.g.setAttribute('transform', 'translate(' + x.toFixed(1) + ',' + nd.y + ') scale(' + s.toFixed(3) + ')');
+    if (nd.label) {
+      const room = sp[i] >= 9;
+      nd.label.style.opacity = room ? '' : '0';
+      const anchor = x > G.W - 50 ? 'end' : x < LW + 30 ? 'start' : 'middle';
+      nd.label.setAttribute('text-anchor', anchor);
+      nd.label.setAttribute('x', (anchor === 'end' ? x + 6 : anchor === 'start' ? x - 6 : x).toFixed(1));
+    }
+  }
+  for (const e of E) {
+    const x1 = xs[e.a.x], x2 = xs[e.b.x], y1 = e.ya, y2 = e.yb;
+    const bend = e.same ? -Math.min(24, 6 + Math.abs(x1 - x2) * .08) : 0;
+    const k = (x1 - x2) * .4;
+    e.p.setAttribute('d', 'M' + x1.toFixed(1) + ' ' + y1 + ' C' + (x1 - k).toFixed(1) + ' ' + (y1 + bend).toFixed(1) + ' ' + (x2 + k).toFixed(1) + ' ' + (y2 + bend).toFixed(1) + ' ' + x2.toFixed(1) + ' ' + y2);
+  }
+  /* date ticks: every line stays, a label only where there is room for one */
+  let lastLabelX = -1e9;
+  for (const t of G.ticks) {
+    const x = xs[t.i] - sp[t.i] / 2;
+    t.line.setAttribute('x1', x.toFixed(1)); t.line.setAttribute('x2', x.toFixed(1));
+    t.line.style.opacity = sp[t.i] < 4 ? '.35' : '';
+    if (x - lastLabelX > 52 && x < G.W - 30) {
+      t.text.setAttribute('x', (x + 4).toFixed(1)); t.text.style.display = ''; lastLabelX = x;
+    } else {
+      t.text.style.display = 'none';
+    }
+  }
+  updateScrub(f);
+}
+
+function updateScrub(f) {
+  if (!G || !G.lensed) return;
+  const inLens = Math.min(G.n, G.A / SPACING);
+  const start = Math.max(0, Math.min(G.n - inLens, f - inLens / 2));
+  const thumb = $('scrubThumb');
+  thumb.style.left = (100 * start / G.n) + '%';
+  thumb.style.width = (100 * inLens / G.n) + '%';
+  $('scrubTrack').setAttribute('aria-valuenow', Math.round(f));
+  $('scrubTrack').setAttribute('aria-valuemax', G.n - 1);
+}
+
+/* Eased: every input sets a TARGET and the lens glides to it, so a burst of
+ * wheel events reads as one smooth movement rather than a series of jumps. */
+function setFocus(f, instant) {
+  if (!G) return;
+  focusTarget = clamp(f);
+  if (instant || REDUCED.matches) {
+    if (anim) { cancelAnimationFrame(anim); anim = 0; }
+    focusCur = focusTarget; layout(focusCur);
+    return;
+  }
+  if (!anim) anim = requestAnimationFrame(step);
+}
+function step() {
+  const d = focusTarget - focusCur;
+  if (Math.abs(d) < 0.004) { focusCur = focusTarget; layout(focusCur); anim = 0; return; }
+  focusCur += d * 0.18;
+  layout(focusCur);
+  anim = requestAnimationFrame(step);
+}
+
+/* ------------------------------------------------------------ moving time */
+
+/* Wheel. Horizontal intent - a trackpad swipe, or Shift + wheel - moves the
+ * lens and is ALWAYS cancelled, lensed or not: an uncancelled horizontal wheel
+ * that reaches the page edge is exactly what a browser turns into Back/Forward.
+ * A plain vertical wheel keeps scrolling the lanes, unless there is nothing to
+ * scroll vertically, in which case a mouse wheel moves through time too. */
+canvas.addEventListener('wheel', (e) => {
+  if (e.ctrlKey) return;                                   // pinch-zoom stays the browser's
+  const horizontal = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+  const nothingToScroll = canvas.scrollHeight <= canvas.clientHeight + 1;
+  if (!horizontal && !e.shiftKey && !nothingToScroll) return;
+  e.preventDefault();
+  if (!G || !G.lensed) return;
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientWidth : 1;
+  const delta = horizontal ? e.deltaX : (e.deltaY || e.deltaX);
+  setFocus(focusTarget + delta * unit / SPACING);
+}, { passive: false });
+/* Same guard for the scrubber and the chrome under it. */
+$('scrub').addEventListener('wheel', (e) => {
+  if (Math.abs(e.deltaX) > Math.abs(e.deltaY) || e.shiftKey) {
+    e.preventDefault();
+    if (G && G.lensed) setFocus(focusTarget + (e.deltaX || e.deltaY) / SPACING);
+  }
+}, { passive: false });
+
+/* Drag the graph itself. The commit under the pointer follows the pointer, so
+ * the movement feels attached rather than scaled. */
+let drag = null, dragMoved = false;
+svg.addEventListener('pointerdown', (e) => {
+  if (!G || !G.lensed || e.button !== 0 || e.target.closest('.lane-chip')) return;
+  drag = { x: e.clientX, f: focusCur, id: e.pointerId };
+  dragMoved = false;
+});
+window.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x;
+  if (!dragMoved && Math.abs(dx) < 4) return;
+  if (!dragMoved) {
+    dragMoved = true;
+    try { svg.setPointerCapture(drag.id); } catch (_) {}
+    canvas.classList.add('dragging');
+    pop.classList.remove('on');
+  }
+  setFocus(drag.f - dx / SPACING, true);
+});
+function endDrag(e) {
+  if (!drag || (e && e.pointerId !== drag.id)) return;
+  drag = null;
+  canvas.classList.remove('dragging');
+  /* the click that ends a drag must not also select a commit */
+  setTimeout(() => { dragMoved = false; }, 0);
+}
+window.addEventListener('pointerup', endDrag);
+window.addEventListener('pointercancel', endDrag);
+
+/* Scrubber: click or drag anywhere on the track to put the lens there. */
+const track = $('scrubTrack');
+let scrubbing = false;
+function scrubTo(e) {
+  const r = track.getBoundingClientRect();
+  setFocus(((e.clientX - r.left) / r.width) * (G.n - 1), scrubbing === 'drag');
+}
+track.addEventListener('pointerdown', (e) => {
+  if (!G) return;
+  scrubbing = 'click';
+  track.setPointerCapture(e.pointerId);
+  scrubTo(e);
+  scrubbing = 'drag';
+});
+track.addEventListener('pointermove', (e) => { if (scrubbing === 'drag') scrubTo(e); });
+track.addEventListener('pointerup', () => { scrubbing = false; });
+track.addEventListener('pointercancel', () => { scrubbing = false; });
+
 function movePop(e) {
   const w = pop.offsetWidth, h = pop.offsetHeight;
   pop.style.left = Math.min(innerWidth - w - 10, e.clientX + 14) + 'px';
@@ -386,9 +635,14 @@ function focusSet() {
   return s;
 }
 function applyFocus() {
-  if (!D) return;
+  if (!D || !G) return;
   const s = focusSet();
-  N.forEach((n) => { n.g.classList.toggle('dim', !!s && !s.has(n.c.h)); n.g.classList.toggle('sel', !!sel && sel.type === 'commit' && sel.h === n.c.h); });
+  N.forEach((n) => {
+    const dim = !!s && !s.has(n.c.h);
+    n.g.classList.toggle('dim', dim);
+    if (n.label) n.label.classList.toggle('dim', dim);
+    n.g.classList.toggle('sel', !!sel && sel.type === 'commit' && sel.h === n.c.h);
+  });
   E.forEach((e) => e.p.classList.toggle('dim', !!s && !(s.has(e.r.a) && s.has(e.r.b))));
 }
 
@@ -407,10 +661,8 @@ function select(s) {
   applyFocus();
   paintInfo();
   info.parentElement.scrollTop = 0;
-  if (s && s.type === 'commit') {
-    const n = N.find((x) => x.c.h === s.h);
-    if (n && (n.x < canvas.scrollLeft + 140 || n.x > canvas.scrollLeft + canvas.clientWidth - 40)) canvas.scrollTo({ left: n.x - canvas.clientWidth / 2, behavior: 'smooth' });
-  }
+  /* the lens travels to a selected commit, so it is always shown at full size */
+  if (s && s.type === 'commit' && G && G.lensed) setFocus(byH.get(s.h).x);
 }
 
 function paintInfo() {
@@ -465,6 +717,14 @@ function paintInfo() {
 /* ------------------------------------------------------------------ input */
 q.oninput = () => { query = q.value.trim().toLowerCase(); applyFocus(); };
 addEventListener('keydown', (e) => {
+  const typing = e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA');
+  if (!typing && G && G.lensed) {
+    const stepBy = e.shiftKey ? 20 : 5;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setFocus(focusTarget - stepBy); return; }
+    if (e.key === 'ArrowRight') { e.preventDefault(); setFocus(focusTarget + stepBy); return; }
+    if (e.key === 'Home') { e.preventDefault(); setFocus(0); return; }
+    if (e.key === 'End') { e.preventDefault(); setFocus(G.n - 1); return; }
+  }
   if (e.key !== 'Escape') return;
   if (query) { q.value = ''; query = ''; applyFocus(); return; }
   if (sel) { select(null); return; }
@@ -473,10 +733,10 @@ addEventListener('keydown', (e) => {
   try { if (window.parent !== window && typeof window.parent.closeGitXOverlay === 'function') window.parent.closeGitXOverlay(); } catch (_) {}
 });
 let resizeTimer;
-addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(render, 120); });
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => build(true), 120); });
 /* ter-manager posts this every time Ctrl+Alt+X opens the overlay. */
 addEventListener('message', (e) => {
-  if (e.data && (e.data.__gitx_refresh || e.data.type === 'GITX_REFRESH')) { applyTheme(); checkRepo(); render(); }
+  if (e.data && (e.data.__gitx_refresh || e.data.type === 'GITX_REFRESH')) { applyTheme(); checkRepo(); build(true); }
 });
 
 lastRepo = resolveActiveRepo();
