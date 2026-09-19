@@ -1,9 +1,14 @@
 /*
  * The thought layer: the reasoning behind commits, kept BESIDE the commit graph.
  *
- *   .gitx/thoughts/   confirmed thoughts - tracked, safe to share
+ *   .gitx/thoughts/   confirmed thoughts - reviewed by the owner
  *   .gitx/drafts/     unconfirmed ones, any depth (a backfill writes to
- *                     drafts/backfill/) - the folder ignores itself
+ *                     drafts/backfill/)
+ *
+ * Both are PRIVATE: the owner's own reasoning, git-ignored, never pushed.
+ * Confirming a thought means its owner has checked it, not that it may be
+ * shared. What IS shared is the commit graph beside it - .gitx/commits - and
+ * ensureGitignored in server.js is what draws that line in each repository.
  *
  * One file per thought, schema gitx.thought/0. The dependency runs one way: a
  * thought names the commits it was anchored at and led to, and nothing about a

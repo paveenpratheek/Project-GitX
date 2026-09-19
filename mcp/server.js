@@ -60,20 +60,30 @@ const ROOT_DIR = getRepoRoot();
  * created them - only to read them back.
  *
  * ensureGitignored is what keeps the promise of "without disturbing the
- * user's code": a bare .gitx/ folder with no ignore rule is untracked
- * clutter the moment someone runs `git status` in their own repo. Same
- * defensive shape as every other .gitignore writer in this stack - skip a
- * pattern already present, enforce a trailing newline before appending, or
- * the new line grafts onto whatever the last line was. */
+ * user's code" - and it ignores only what is PRIVATE. The commit graph
+ * (.gitx/commits, the fuller messages) belongs to the repository and is shared
+ * with it; thoughts, drafts, task state and sandbox checkouts belong to the
+ * person who owns this clone and never leave it. A bare ".gitx/" would have
+ * hidden the graph along with them.
+ *
+ * A repository that already ignores the whole folder is left alone: that is
+ * a choice someone made, and widening what gets pushed is not this function's
+ * call. Same defensive shape as every other .gitignore writer in this stack -
+ * skip a pattern already present, enforce a trailing newline before
+ * appending, or the new line grafts onto whatever the last line was. */
+const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/worktrees/', '.gitx/state.json'];
+
 function ensureGitignored(dir) {
   try {
     const giFile = path.join(dir, '.gitignore');
     let text = '';
     try { text = fs.readFileSync(giFile, 'utf8'); } catch (_) { /* none yet - creating it */ }
-    const already = text.split(/\r?\n/).some((l) => l.trim() === '.gitx' || l.trim() === '.gitx/');
-    if (already) return;
+    const lines = new Set(text.split(/\r?\n/).map((l) => l.trim()));
+    if (lines.has('.gitx') || lines.has('.gitx/')) return;
+    const missing = PRIVATE_GITX.filter((p) => !lines.has(p));
+    if (!missing.length) return;
     const sep = (text === '' || text.endsWith('\n')) ? '' : '\n';
-    fs.writeFileSync(giFile, text + sep + '.gitx/' + '\n', 'utf8');
+    fs.writeFileSync(giFile, text + sep + missing.join('\n') + '\n', 'utf8');
   } catch (_) { /* best-effort - never block the actual operation over this */ }
 }
 
