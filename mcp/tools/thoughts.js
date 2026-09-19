@@ -77,6 +77,16 @@ export function loadThoughts(repoDir) {
   };
 }
 
+/* How many commits HEAD has, so the page can number them #1..#N from the first
+ * commit even when only the newest MAX_COMMITS are sent. */
+function commitCount(repoDir) {
+  try {
+    return Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], {
+      cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
+    }).trim()) || 0;
+  } catch (_) { return 0; }
+}
+
 function gitTopology(repoDir) {
   let raw = '';
   try {
@@ -145,6 +155,7 @@ export function thoughtsPayload(repoDir) {
   return {
     repo: path.basename(repoDir),
     lanes,
+    total: commitCount(repoDir) || commits.length,
     truncated: commits.length >= MAX_COMMITS,
     commits: commits.map((c) => ({ h: c.hash, p: c.parents, d: c.date, s: c.subject, lane: c.lane })),
     thoughts: thoughts.map(compact),

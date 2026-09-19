@@ -62,8 +62,29 @@
           <button type="button" data-mode="expanded">Thoughts expanded</button>
         </div>
       </div>
+      <div class="tg-colhead" id="tg-colhead" aria-hidden="true">
+        <span class="tg-colhead-graph">Graph</span>
+        <span class="tg-ord">#</span>
+        <span class="tg-colhead-main">Commit · and the thinking between</span>
+        <span class="tg-date">Date</span>
+      </div>
       <div class="panel-body tg-scroll">
         <div class="tg-list" id="tg-list"></div>
+      </div>
+      <div class="tg-legend" id="tg-legend">
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.5" class="g-commit"/></svg>code commit (git)</span>
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 L11 6 L6 11 L1 6 Z" fill="currentColor"/></svg>decision</span>
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="6" cy="6" r="4.2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>finding</span>
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1.5 L11 10.5 L1 10.5 Z" fill="currentColor"/></svg>cost</span>
+        <span><svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M6 1 L10.5 3.5 L10.5 8.5 L6 11 L1.5 8.5 L1.5 3.5 Z" fill="currentColor"/></svg>learned</span>
+        <span class="tg-legend-sep"></span>
+        <span><span class="tg-dot o-accepted"></span>accepted</span>
+        <span><span class="tg-dot o-rejected"></span>rejected</span>
+        <span><span class="tg-dot o-stashed"></span>stashed</span>
+        <span><span class="tg-dot o-open"></span>open</span>
+        <span class="tg-legend-sep"></span>
+        <span><svg width="22" height="8" viewBox="0 0 22 8" aria-hidden="true"><path class="g-led" d="M1 4 H21"/></svg>led to</span>
+        <span><svg width="22" height="8" viewBox="0 0 22 8" aria-hidden="true"><path class="g-anchor" d="M1 4 H21"/></svg>anchored at</span>
       </div>
     </section>
 

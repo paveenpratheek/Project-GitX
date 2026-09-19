@@ -348,10 +348,16 @@ body {
  * diamond is a rejected decision, a green ring an accepted finding. All four
  * outcome colours are the palette's own, so a scene or wallpaper that changes
  * the room never makes a rejection read as anything but a rejection. */
+/* The thought lane's own hue. Not the accent: a palette whose accent is green
+ * (Minecraft, a green wallpaper) would make an open thought read as accepted.
+ * Mixed toward the text colour so it darkens on a light page and lifts on a
+ * dark one without a theme switch of its own. */
+:root { --thought: color-mix(in srgb, #7a66e6 78%, var(--text)); }
+
 .o-accepted { color: var(--success); }
 .o-rejected { color: var(--danger); }
 .o-stashed  { color: var(--warning); }
-.o-open     { color: var(--accent); }
+.o-open     { color: var(--thought); }
 
 .tg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .tg-mono { font-family: var(--font-mono); }
@@ -406,7 +412,7 @@ body {
  * read elsewhere: the date and the per-outcome counts are both in the details. */
 .tg-scroll { container-type: inline-size; }
 @container (max-width: 560px) {
-  .tg-date, .tg-count, .tg-meta { display: none; }
+  .tg-date, .tg-count, .tg-meta, .tg-crossnote, .tg-ord { display: none; }
 }
 
 .tg-list {
@@ -426,11 +432,11 @@ body {
 .g-edge { fill: none; stroke: color-mix(in srgb, var(--text) 30%, transparent); stroke-width: 2; }
 .g-commit { fill: var(--text); stroke: var(--bg); stroke-width: 3; }
 .g-commit.is-merge { fill: var(--bg); stroke: var(--text); stroke-width: 2; }
-.g-spine { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.g-spine { fill: none; stroke: var(--thought); stroke-width: 1.5; stroke-dasharray: 3 4; }
 .g-led { fill: none; stroke: var(--success); stroke-width: 1.6; }
 .g-anchor { fill: none; stroke: var(--text-dim); stroke-width: 1.4; stroke-dasharray: 2 3; }
-.g-thought { fill: var(--bg); stroke: var(--accent); stroke-width: 1.5; }
-.g-thought.is-filled { fill: var(--accent); }
+.g-thought { fill: var(--bg); stroke: var(--thought); stroke-width: 1.5; }
+.g-thought.is-filled { fill: var(--thought); }
 
 .tg-row {
   display: flex;
@@ -513,7 +519,7 @@ body {
   margin: 4px 0 10px;
   padding: 12px 14px 14px;
   background: var(--surface-raised);
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--thought) 30%, var(--border));
   border-radius: var(--radius-lg);
 }
 
@@ -583,11 +589,11 @@ body {
 }
 
 .tg-card:hover { border-color: var(--border-active); }
-.tg-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.tg-card.is-selected { border-color: var(--thought); box-shadow: 0 0 0 1px var(--thought); background: color-mix(in srgb, var(--thought) 10%, var(--bg)); }
 .tg-card .tg-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tg-shape { flex-shrink: 0; }
 .tg-meta { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
-.tg-accent { color: var(--accent); font-weight: 600; }
+.tg-accent { color: var(--thought); font-weight: 600; }
 
 .tg-empty { font-size: 12px; color: var(--text-dim); padding: 12px 8px; }
 
@@ -624,7 +630,7 @@ body {
 .tg-pill-accepted { background: var(--success-soft); color: var(--success); }
 .tg-pill-rejected { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
 .tg-pill-stashed { background: var(--warning-soft); color: var(--warning); }
-.tg-pill-open { background: var(--accent-soft); color: var(--accent); }
+.tg-pill-open { background: color-mix(in srgb, var(--thought) 14%, transparent); color: var(--thought); }
 .tg-pill-draft { background: transparent; box-shadow: inset 0 0 0 1px var(--border-active); color: var(--text-dim); }
 
 .tg-dsec { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
@@ -642,7 +648,7 @@ body {
 .tg-force-kind { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
 .tg-force.forward .tg-force-kind { color: var(--success); }
 .tg-force.backward .tg-force-kind { color: var(--danger); }
-.tg-revisit { padding-top: 6px; border-top: 1px solid var(--border); color: var(--accent); }
+.tg-revisit { padding-top: 6px; border-top: 1px solid var(--border); color: var(--thought); }
 .tg-revisit .tg-dim { margin-right: 6px; }
 
 .tg-link {
@@ -664,7 +670,7 @@ body {
 .tg-link:hover { border-color: var(--accent); }
 .tg-link .tg-shape { margin-top: 3px; }
 .tg-link-type { display: block; font-size: 10.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
-.tg-sub { display: block; font-size: 11px; color: var(--accent); margin-top: 2px; }
+.tg-sub { display: block; font-size: 11px; color: var(--thought); margin-top: 2px; }
 
 .tg-kv {
   display: grid;
@@ -744,6 +750,91 @@ body {
 .tg-stats b { font-size: 18px; }
 .tg-stats small { font-size: 12px; color: var(--text-dim); font-weight: 500; }
 .tg-stats span { font-size: 11px; color: var(--text-dim); }
+
+/* Column heads, ordinals, the rows between commits, and the legend - the parts
+ * that make the thought lane readable as a lane rather than as decoration. */
+.tg-colhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 30px;
+  padding: 0 12px 0 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.tg-colhead-graph { width: var(--tg-gutter, 60px); padding-left: 14px; flex-shrink: 0; margin-right: -12px; }
+.tg-colhead-main { flex: 1; min-width: 0; padding-left: 8px; }
+.tg-colhead .tg-date { font-size: 10.5px; }
+
+.tg-ord { width: 40px; flex-shrink: 0; font-size: 11.5px; color: var(--text-dim); }
+
+.tg-commit { min-height: 46px; }
+.tg-commit.is-open .tg-subj { font-weight: 650; }
+
+.tg-chiprow, .tg-absent { min-height: 38px; gap: 10px; }
+.tg-crossnote { font-size: 11.5px; color: var(--text-dim); white-space: nowrap; }
+.tg-absent .tg-none { opacity: 0.85; }
+
+.tg-anchorline b { color: var(--text); font-weight: 600; }
+
+.tg-derived {
+  height: 20px;
+  margin-left: 22px;
+  padding-left: 8px;
+  border-left: 1.5px dashed var(--thought);
+  display: flex;
+  align-items: center;
+  font-size: 10.5px;
+  color: var(--thought);
+}
+
+.tg-card.is-derived { margin-left: 14px; }
+
+.tg-callout {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px dashed color-mix(in srgb, var(--thought) 45%, transparent);
+  border-radius: var(--radius-md);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+
+.tg-callout b { color: var(--thought); font-size: 12.5px; font-weight: 600; }
+
+.g-tick { fill: none; stroke: var(--thought); stroke-width: 1.5; }
+.g-thought.is-empty { fill: var(--bg); stroke: var(--text-dim); stroke-dasharray: 2 2; }
+
+.tg-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 9px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.tg-legend[hidden] { display: none; }
+.tg-legend > span { display: inline-flex; align-items: center; gap: 6px; }
+.tg-legend .g-commit { stroke-width: 0; }
+.tg-legend-sep { width: 1px; height: 14px; background: var(--border); }
+
+.tg-force-kind { display: inline-flex; align-items: center; gap: 6px; text-transform: none; letter-spacing: 0; font-size: 12px; }
+.tg-force-text { font-size: 13px; line-height: 1.5; }
+.tg-revisit { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; }
+.tg-pill svg { flex-shrink: 0; }
 
 /* Outcome filters reuse the deck's toggle buttons, but an outcome that is on is
  * the normal state, so on reads as plain and off reads as faded. */

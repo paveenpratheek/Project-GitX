@@ -12,13 +12,19 @@
  * share, so the alternatives turned down on the way sit with the choice they
  * lost to. A group with no led_to at all is thinking that has not produced a
  * commit yet, and is drawn ABOVE its anchor instead of below the next commit.
+ *
+ * Absence is drawn, not left blank. A commit with no thinking on record says
+ * so in both thought modes, because "nobody recorded why" is an answer an
+ * agent needs to be able to give - and a blank row cannot be told apart from a
+ * row that failed to load.
  */
 (function () {
   'use strict';
 
   const OUTCOMES = ['accepted', 'rejected', 'stashed', 'open'];
   const LANE_W = 16;
-  const GUT_PAD = 18;
+  const GUT_PAD = 20;
+  const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   const store = {
     get(k, d) { try { return localStorage.getItem(k) || d; } catch (_) { return d; } },
@@ -28,7 +34,7 @@
   const view = {
     httpBase: '',
     state: null,
-    data: null,             // { commits, thoughts, lanes, fallback, error, truncated }
+    data: null,             // { commits, thoughts, lanes, total, fallback, error, truncated }
     idx: null,              // derived lookups, rebuilt with data
     fetchedFor: '',
     mode: store.get('gitx.thoughtMode', 'collapsed'),   // code | collapsed | expanded
@@ -46,11 +52,12 @@
   const short = (h) => (h && h !== 'genesis' ? h.slice(0, 7) : h || '');
   const day = (iso) => {
     const d = new Date(iso);
-    return isNaN(d) ? '' : d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    return isNaN(d) ? '' : d.getDate() + ' ' + MONTHS[d.getMonth()];
   };
   const stamp = (iso) => {
     const d = new Date(iso);
-    return isNaN(d) ? '' : d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    if (isNaN(d)) return '';
+    return day(iso) + ' ' + d.getFullYear() + ', ' + String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
   };
 
   /* ───────────────────────────────────────────── data */
@@ -71,7 +78,7 @@
       const pg = (st.projectGraph && st.projectGraph.commits) || [];
       view.data = {
         commits: pg.slice().reverse().map((c) => ({ h: c.h, p: [], d: c.date, s: c.subject, lane: 0 })),
-        thoughts: [], lanes: 1, fallback: true, error: err.message, stats: { count: 0 }
+        thoughts: [], lanes: 1, total: pg.length, fallback: true, error: err.message, stats: { count: 0 }
       };
     }
     buildIndex();
@@ -81,13 +88,12 @@
   function buildIndex() {
     const d = view.data;
     const commitAt = new Map(d.commits.map((c, i) => [c.h, i]));
+    const total = d.total || d.commits.length;
+    const ordinal = new Map(d.commits.map((c, i) => [c.h, total - i]));
     const thoughtById = new Map(d.thoughts.map((t) => [t.id, t]));
 
     const byAnchor = new Map();
-    for (const t of d.thoughts) {
-      if (!byAnchor.has(t.anchor)) byAnchor.set(t.anchor, []);
-      byAnchor.get(t.anchor).push(t);
-    }
+    for (const t of d.thoughts) push(byAnchor, t.anchor, t);
     const groups = new Map();
     for (const [anchor, list] of byAnchor) {
       const votes = new Map();
@@ -115,12 +121,21 @@
       if (t.applied_to) push(incoming, t.applied_to, { type: 'applied-from', from: t.id });
     }
 
-    view.idx = { commitAt, thoughtById, groups, below, above, unplaced, incoming };
+    view.idx = { commitAt, ordinal, thoughtById, groups, below, above, unplaced, incoming };
   }
 
   function push(map, k, v) {
     if (!map.has(k)) map.set(k, []);
     map.get(k).push(v);
+  }
+
+  const ord = (h) => (view.idx.ordinal.has(h) ? '#' + view.idx.ordinal.get(h) : '');
+  /* The number a group is known by: the commit it led to, or failing that the
+   * one it was anchored at. */
+  function groupOrd(key) {
+    const g = view.idx.groups.get(key);
+    if (!g) return '';
+    return ord(g.ledTo) || ord(g.anchor);
   }
 
   /* Status a thought is IN, as opposed to the outcome it was given: a rejection
@@ -151,6 +166,8 @@
     learned: '<path d="M6 1 L10.5 3.5 L10.5 8.5 L6 11 L1.5 8.5 L1.5 3.5 Z" fill="currentColor"/>'
   };
   const shape = (t) => `<svg class="tg-shape o-${esc(t.outcome)}" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">${SHAPES[t.kind] || SHAPES.decision}</svg>`;
+  const CHEVRON_RIGHT = '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5 L7 5 L3 8.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
+  const CHEVRON_DOWN = '<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 3 L5 7 L8.5 3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>';
 
   function counts(list) {
     const c = {};
@@ -159,11 +176,42 @@
       `<span class="tg-count"><span class="tg-dot o-${o}"></span>${c[o]}${o === 'open' ? ' open' : ''}</span>`).join('');
   }
 
-  function chip(g) {
+  /* What a group says about OTHER commits' thinking - "1 refines a thought in
+   * #119" - read off its outgoing links. It is the part of the thought graph
+   * that crosses commit boundaries, so it is shown even while the group is shut. */
+  function crossNotes(g) {
+    const tally = new Map();
+    for (const t of g.thoughts) {
+      for (const l of t.links) {
+        if (l.type !== 'refines' && l.type !== 'supersedes') continue;
+        const target = view.idx.thoughtById.get(l.to);
+        if (!target || target.group === g.key) continue;
+        const k = l.type + ' ' + groupOrd(target.group);
+        tally.set(k, (tally.get(k) || 0) + 1);
+      }
+    }
+    return [...tally.entries()].map(([k, n]) => {
+      const [type, where] = k.split(' ');
+      return `${n} ${type} a thought in ${where || 'an earlier commit'}`;
+    });
+  }
+
+  function chipRow(g, pending) {
     const n = g.thoughts.length;
-    return `<button type="button" class="tg-chip" data-toggle="${esc(g.key)}" aria-expanded="false">
-      <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5 L7 5 L3 8.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
-      ${n} thought${n === 1 ? '' : 's'}${counts(g.thoughts)}</button>`;
+    const notes = crossNotes(g);
+    if (pending) notes.unshift('not in a commit yet');
+    return `<div class="tg-row tg-chiprow" data-chip="${esc(g.key)}">
+      <span class="tg-ord"></span>
+      <button type="button" class="tg-chip" data-toggle="${esc(g.key)}" aria-expanded="false">${CHEVRON_RIGHT}
+        ${n} thought${n === 1 ? '' : 's'}${counts(g.thoughts)}</button>
+      ${notes.map((x) => `<span class="tg-crossnote">${esc(x)}</span>`).join('')}
+    </div>`;
+  }
+
+  function absentRow(c) {
+    return `<div class="tg-row tg-absent" data-absent="${esc(c.h)}">
+      <span class="tg-ord"></span><span class="tg-none">Nothing on record</span>
+      <span class="tg-crossnote">no thinking was saved for ${esc(ord(c.h) || short(c.h))}</span></div>`;
   }
 
   function cardMeta(t) {
@@ -174,25 +222,27 @@
       return back ? `<span class="tg-meta">${esc(back.kind)}</span>` : '';
     }
     if (t.outcome === 'stashed') return `<span class="tg-meta">${t.applied_to ? 'applied' : 'not applied'}</span>`;
-    if (inc.some((l) => l.type === 'supersedes')) return '<span class="tg-meta">superseded later</span>';
-    if (inc.some((l) => l.type === 'refines')) return '<span class="tg-meta">refined later</span>';
-    return t.kind === 'decision' && t.decided_by ? `<span class="tg-meta">${esc(t.decided_by)}</span>` : '';
+    for (const type of ['supersedes', 'refines']) {
+      const later = inc.find((l) => l.type === type);
+      if (later) {
+        const from = view.idx.thoughtById.get(later.from);
+        const where = from ? groupOrd(from.group) : '';
+        return `<span class="tg-meta">${type === 'supersedes' ? 'superseded' : 'refined'} by ${esc(where || 'a later thought')}</span>`;
+      }
+    }
+    return t.kind === 'decision' && t.decided_by ? `<span class="tg-meta">${esc(t.decided_by === 'agent-delegated' ? 'delegated' : t.decided_by)}</span>` : '';
   }
 
-  function card(t) {
+  function card(t, extraCls) {
     const sel = view.sel && view.sel.type === 'thought' && view.sel.id === t.id ? ' is-selected' : '';
     const draft = t.confirmed ? '' : ' is-draft';
-    return `<button type="button" class="tg-card${sel}${draft}" data-thought="${esc(t.id)}" title="${esc(t.text)}">
+    return `<button type="button" class="tg-card${sel}${draft}${extraCls ? ' ' + extraCls : ''}" data-thought="${esc(t.id)}" title="${esc(t.text)}">
       ${shape(t)}<span class="tg-text">${esc(t.text)}</span>${cardMeta(t)}</button>`;
   }
 
   function box(g) {
     const list = g.thoughts.filter(shown);
-    const left = [], right = [];
-    const led = g.ledTo ? 'Led to ' + short(g.ledTo) : 'Decided, not committed yet';
-    const buckets = {
-      led: [], found: [], cost: [], turned: [], learned: [], stashed: [], open: []
-    };
+    const buckets = { led: [], found: [], cost: [], turned: [], learned: [], stashed: [], open: [] };
     for (const t of list) {
       if (t.outcome === 'rejected') buckets.turned.push(t);
       else if (t.outcome === 'stashed') buckets.stashed.push(t);
@@ -202,23 +252,44 @@
       else if (t.kind === 'learned') buckets.learned.push(t);
       else buckets.led.push(t);
     }
-    const section = (title, items) => items.length
-      ? `<div class="tg-sec"><span class="tg-label">${esc(title)}</span>${items.map(card).join('')}</div>` : '';
-    left.push(section(led, buckets.led), section('Found', buckets.found), section('Costs kept', buckets.cost));
-    right.push(section('Turned down', buckets.turned), section('Learned', buckets.learned),
-      section('Stashed', buckets.stashed), section('Still open', buckets.open));
+
+    /* A rule learned from a rejection sits under that rejection, joined by the
+     * derived-from edge, rather than in a list of its own away from its cause. */
+    const learnedFrom = new Map();
+    for (const t of buckets.learned) {
+      const src = t.links.find((l) => l.type === 'derived-from' && buckets.turned.some((r) => r.id === l.to));
+      if (src) push(learnedFrom, src.to, t);
+    }
+    const placed = new Set([...learnedFrom.values()].flat().map((t) => t.id));
+    const turnedHtml = buckets.turned.map((r) => card(r) + (learnedFrom.get(r.id) || []).map((t) =>
+      `<div class="tg-derived"><span>derived-from</span></div>${card(t, 'is-derived')}`).join('')).join('');
+    const looseLearned = buckets.learned.filter((t) => !placed.has(t.id));
+
+    const section = (title, items, html) => (items.length || html)
+      ? `<div class="tg-sec"><span class="tg-label">${esc(title)}</span>${html || items.map((t) => card(t)).join('')}</div>` : '';
+    const ledTitle = g.ledTo ? 'Led to ' + (ord(g.ledTo) || short(g.ledTo)) : 'Decided, not committed yet';
+    const left = [section(ledTitle, buckets.led), section('Found', buckets.found), section('Costs kept', buckets.cost)];
+    const right = [section('Turned down', buckets.turned, turnedHtml), section('Learned', looseLearned),
+      section('Stashed', buckets.stashed), section('Still open', buckets.open)];
+
+    const back = list.filter(reopenable);
+    if (back.length) {
+      const conds = back.flatMap((t) => t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => 'if ' + f.revisit_if.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase())));
+      right.push(`<div class="tg-callout"><b>${back.length} turned-down idea${back.length === 1 ? '' : 's'} can come back</b><span>${esc([...new Set(conds)].join(' · '))}</span></div>`);
+    }
 
     const ats = g.thoughts.map((t) => t.at).filter(Boolean).sort();
-    const span = ats.length ? (day(ats[0]) === day(ats[ats.length - 1]) ? day(ats[0]) : day(ats[0]) + ' – ' + day(ats[ats.length - 1])) : '';
+    const span = ats.length ? (day(ats[0]) === day(ats[ats.length - 1]) ? day(ats[0]) : day(ats[0]) + '–' + day(ats[ats.length - 1])) : '';
     const hidden = g.thoughts.length - list.length;
+    const title = g.ledTo ? 'Thinking behind ' + (ord(g.ledTo) || short(g.ledTo)) : 'Thinking since ' + (ord(g.anchor) || short(g.anchor));
+    const anchorTxt = g.anchor === 'genesis' ? 'before the first commit' : `${short(g.anchor)} <b>${esc(ord(g.anchor))}</b>`;
     return `<section class="tg-box" data-group="${esc(g.key)}">
       <div class="tg-box-head">
-        <button type="button" class="tg-fold" data-toggle="${esc(g.key)}" aria-expanded="true" aria-label="Collapse">
-          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1.5 3 L5 7 L8.5 3" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></button>
-        <b>${g.ledTo ? 'Thinking behind ' + esc(short(g.ledTo)) : 'Thinking since ' + esc(short(g.anchor))}</b>
+        <button type="button" class="tg-fold" data-toggle="${esc(g.key)}" aria-expanded="true" aria-label="Collapse">${CHEVRON_DOWN}</button>
+        <b>${esc(title)}</b>
         <span class="tg-dim">${g.thoughts.length} thought${g.thoughts.length === 1 ? '' : 's'}${span ? ' · ' + esc(span) : ''}${hidden ? ' · ' + hidden + ' filtered out' : ''}</span>
         <span class="tg-grow"></span>
-        <span class="tg-mono tg-dim">anchored at ${esc(short(g.anchor))}${g.ledTo ? '  →  led to ' + esc(short(g.ledTo)) : ''}</span>
+        <span class="tg-mono tg-dim tg-anchorline">anchored at ${anchorTxt}${g.ledTo ? ` → led to ${esc(short(g.ledTo))} <b>${esc(ord(g.ledTo))}</b>` : ''}</span>
       </div>
       <div class="tg-cols"><div class="tg-col">${left.join('')}</div><div class="tg-col">${right.join('')}</div></div>
     </section>`;
@@ -230,23 +301,17 @@
     const thoughtHit = groupsHere.some((g) => g.thoughts.some(shown));
     const dim = q && !hit && !thoughtHit ? ' is-dim' : '';
     const sel = view.sel && view.sel.type === 'commit' && view.sel.id === c.h ? ' is-selected' : '';
-    let why = '';
-    if (view.mode !== 'code') {
-      const closed = groupsHere.filter((g) => !isOpen(g));
-      if (closed.length) why = closed.map(chip).join('');
-      else if (!groupsHere.length && view.data.thoughts.length) why = '<span class="tg-none">Nothing on record</span>';
-    }
-    return `<div class="tg-row tg-commit${sel}${dim}" data-row="${esc(c.h)}">
+    const strong = groupsHere.some(isOpen) && view.mode !== 'code' ? ' is-open' : '';
+    /* Collapsed, an empty commit says so in its own row; expanded, the gap
+     * below it gets a row of its own on the thought lane instead. */
+    const none = view.mode === 'collapsed' && !groupsHere.length ? '<span class="tg-none">Nothing on record</span>' : '';
+    return `<div class="tg-row tg-commit${sel}${dim}${strong}" data-row="${esc(c.h)}">
+      <span class="tg-ord tg-mono">${esc(ord(c.h))}</span>
       <button type="button" class="tg-commit-btn" data-commit="${esc(c.h)}">
         <span class="tg-mono tg-hash">${esc(short(c.h))}</span><span class="tg-subj">${esc(c.s)}</span></button>
-      <span class="tg-why">${why}</span>
+      ${none}
       <span class="tg-mono tg-date">${esc(day(c.d))}</span>
     </div>`;
-  }
-
-  function pendingRow(g) {
-    return `<div class="tg-row tg-pending" data-pending="${esc(g.key)}">
-      <span class="tg-dim">Not in a commit yet</span><span class="tg-why">${chip(g)}</span></div>`;
   }
 
   function renderList() {
@@ -254,30 +319,37 @@
     if (!list) return;
     const d = view.data;
     if (!d) { list.innerHTML = '<div class="tg-empty">Loading the graph…</div>'; return; }
-    if (!d.commits.length) { list.innerHTML = '<div class="tg-empty">This repository has no commits yet.</div>'; drawGraph(); return; }
+    if (!d.commits.length) { list.innerHTML = '<div class="tg-empty">This repository has no commits yet.</div>'; return; }
 
     const { below, above, unplaced } = view.idx;
     const code = view.mode === 'code';
     const html = [];
     for (const c of d.commits) {
-      if (!code) for (const g of above.get(c.h) || []) html.push(isOpen(g) ? box(g) : pendingRow(g));
+      if (!code) for (const g of above.get(c.h) || []) html.push(isOpen(g) ? box(g) : chipRow(g, true));
       const here = below.get(c.h) || [];
       html.push(commitRow(c, here));
-      if (!code) for (const g of here) if (isOpen(g)) html.push(box(g));
+      if (code) continue;
+      if (!here.length) { if (view.mode === 'expanded' && !view.query) html.push(absentRow(c)); continue; }
+      for (const g of here) {
+        if (view.query && !g.thoughts.some(shown)) continue;
+        html.push(isOpen(g) ? box(g) : chipRow(g, false));
+      }
     }
     if (!code && unplaced.length) {
       const n = unplaced.reduce((s, g) => s + g.thoughts.length, 0);
       html.push(`<div class="tg-empty">${n} thought${n === 1 ? ' is' : 's are'} anchored before the oldest commit shown.</div>`);
     }
-    if (d.truncated) html.push('<div class="tg-empty">Showing the newest 600 commits.</div>');
+    if (d.truncated) html.push(`<div class="tg-empty">Showing the newest ${d.commits.length} of ${d.total} commits.</div>`);
     list.innerHTML = html.join('') + '<svg class="tg-lines" aria-hidden="true"></svg>';
-    list.style.setProperty('--tg-gutter', gutter() + 'px');
+    list.dataset.mode = view.mode;
+    const colhead = $('tg-colhead');
+    for (const el of [list, colhead]) if (el) el.style.setProperty('--tg-gutter', gutter() + 'px');
     drawGraph();
   }
 
   const laneX = (l) => GUT_PAD + l * LANE_W;
-  const thoughtX = () => GUT_PAD + Math.max(1, view.data.lanes) * LANE_W + 6;
-  const gutter = () => view.mode === 'code' ? GUT_PAD + Math.max(1, view.data.lanes) * LANE_W + 4 : thoughtX() + 18;
+  const thoughtX = () => GUT_PAD + Math.max(1, view.data.lanes) * LANE_W + 20;
+  const gutter = () => view.mode === 'code' ? GUT_PAD + Math.max(1, view.data.lanes) * LANE_W + 8 : thoughtX() + 20;
 
   /* Drawn after layout, from where the rows actually landed - an opened group
    * is hundreds of pixels tall, so no row height can be assumed. */
@@ -290,8 +362,9 @@
     svg.setAttribute('height', H);
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
 
+    const mid = (el) => el.offsetTop + el.offsetHeight / 2;
     const y = new Map();
-    for (const el of list.querySelectorAll('.tg-commit')) y.set(el.dataset.row, el.offsetTop + el.offsetHeight / 2);
+    for (const el of list.querySelectorAll('.tg-commit')) y.set(el.dataset.row, mid(el));
     const lane = new Map(view.data.commits.map((c) => [c.h, c.lane]));
     const out = [];
 
@@ -299,10 +372,7 @@
       const x1 = laneX(c.lane), y1 = y.get(c.h);
       c.p.forEach((p, k) => {
         const y2 = y.get(p);
-        if (y2 == null) {
-          out.push(`<path class="g-edge" d="M${x1} ${y1} V${H}"/>`);
-          return;
-        }
+        if (y2 == null) { out.push(`<path class="g-edge" d="M${x1} ${y1} V${H}"/>`); return; }
         const x2 = laneX(lane.get(p));
         if (x1 === x2) out.push(`<path class="g-edge" d="M${x1} ${y1} V${y2}"/>`);
         else if (k === 0) out.push(`<path class="g-edge" d="M${x1} ${y1} V${y2 - 28} C${x1} ${y2 - 10} ${x2} ${y2 - 14} ${x2} ${y2}"/>`);
@@ -312,52 +382,54 @@
 
     if (view.mode !== 'code') {
       const tx = thoughtX();
-      const diamond = (cy, filled) => `<path class="g-thought${filled ? ' is-filled' : ''}" d="M${tx - 6} ${cy} L${tx} ${cy - 6} L${tx + 6} ${cy} L${tx} ${cy + 6} Z"/>`;
+      const diamond = (cy, cls) => `<path class="g-thought ${cls}" d="M${tx - 6} ${cy} L${tx} ${cy - 6} L${tx + 6} ${cy} L${tx} ${cy + 6} Z"/>`;
+      /* led to: from the thinking UP to the commit it produced, solid.
+       * anchored at: from the commit it started on UP to the thinking, dotted. */
+      const ledTo = (h, top) => {
+        if (!h || !y.has(h)) return;
+        const cx = laneX(lane.get(h)), cy = y.get(h);
+        out.push(`<path class="g-led" d="M${tx} ${top} C${tx} ${cy + 14} ${cx} ${cy + 16} ${cx} ${cy + 7}"/>`);
+      };
+      const anchoredAt = (h, bottom) => {
+        if (!h || !y.has(h)) return;
+        const cx = laneX(lane.get(h)), cy = y.get(h);
+        out.push(`<path class="g-anchor" d="M${cx} ${cy - 7} C${cx} ${cy - 18} ${tx} ${bottom + 14} ${tx} ${bottom}"/>`);
+      };
+
       for (const el of list.querySelectorAll('.tg-box')) {
         const g = view.idx.groups.get(el.dataset.group);
-        const top = el.offsetTop, bottom = top + el.offsetHeight, ny = top + 20;
-        out.push(`<path class="g-spine" d="M${tx} ${top + 8} V${bottom - 8}"/>`);
-        out.push(`<path class="g-spine" d="M${tx + 6} ${ny} H${W}"/>`);
-        if (g.ledTo && y.has(g.ledTo)) {
-          const cx = laneX(lane.get(g.ledTo)), cy = y.get(g.ledTo);
-          out.push(`<path class="g-led" d="M${tx} ${ny - 6} C${tx} ${cy + 12} ${cx} ${cy + 16} ${cx} ${cy + 6}"/>`);
-        }
-        if (y.has(g.anchor)) {
-          const cx = laneX(lane.get(g.anchor)), cy = y.get(g.anchor);
-          out.push(`<path class="g-anchor" d="M${cx} ${cy - 6} C${cx} ${cy - 16} ${tx} ${bottom + 4} ${tx} ${bottom - 8}"/>`);
-        }
-        out.push(diamond(ny, true));
+        const top = el.offsetTop, bottom = top + el.offsetHeight, ny = top + 23;
+        out.push(`<path class="g-spine" d="M${tx} ${ny + 6} V${bottom - 6}"/>`);
+        out.push(`<path class="g-tick" d="M${tx + 6} ${ny} H${W + 12}"/>`);
+        ledTo(g.ledTo, ny - 6);
+        anchoredAt(g.anchor, bottom - 6);
+        out.push(diamond(ny, 'is-filled'));
       }
-      for (const el of list.querySelectorAll('.tg-commit .tg-chip')) {
-        const row = el.closest('.tg-commit');
-        out.push(diamond(row.offsetTop + row.offsetHeight / 2, false));
+      for (const el of list.querySelectorAll('.tg-chiprow')) {
+        const g = view.idx.groups.get(el.dataset.chip);
+        const cy = mid(el);
+        ledTo(g.ledTo, cy - 6);
+        anchoredAt(g.anchor, cy + 6);
+        out.push(diamond(cy, ''));
       }
-      for (const el of list.querySelectorAll('.tg-pending')) {
-        const g = view.idx.groups.get(el.dataset.pending);
-        const cy = el.offsetTop + el.offsetHeight / 2;
-        if (y.has(g.anchor)) {
-          const cx = laneX(lane.get(g.anchor)), ay = y.get(g.anchor);
-          out.push(`<path class="g-anchor" d="M${cx} ${ay - 6} C${cx} ${ay - 16} ${tx} ${cy + 16} ${tx} ${cy + 6}"/>`);
-        }
-        out.push(diamond(cy, false));
-      }
+      for (const el of list.querySelectorAll('.tg-absent')) out.push(diamond(mid(el), 'is-empty'));
     }
 
     for (const c of view.data.commits) {
       if (!y.has(c.h)) continue;
-      out.push(`<circle class="g-commit${c.p.length > 1 ? ' is-merge' : ''}" cx="${laneX(c.lane)}" cy="${y.get(c.h)}" r="5"/>`);
+      out.push(`<circle class="g-commit${c.p.length > 1 ? ' is-merge' : ''}" cx="${laneX(c.lane)}" cy="${y.get(c.h)}" r="6"/>`);
     }
     svg.innerHTML = out.join('');
   }
 
   /* ───────────────────────────────────────────── the details panel */
 
-  function pill(text, cls) { return `<span class="tg-pill ${cls || ''}">${esc(text)}</span>`; }
+  function pill(text, cls, icon) { return `<span class="tg-pill ${cls || ''}">${icon || ''}${esc(text)}</span>`; }
 
   function thoughtLink(id, label) {
     const t = view.idx.thoughtById.get(id);
     if (!t) return `<span class="tg-dim">${esc(label)} ${esc(id)} (not on record)</span>`;
-    return `<button type="button" class="tg-link" data-thought="${esc(id)}">${shape(t)}<span><span class="tg-link-type">${esc(label)}</span>${esc(t.text)}</span></button>`;
+    return `<button type="button" class="tg-link" data-thought="${esc(id)}">${shape(t)}<span><span class="tg-link-type">${esc(label)}${t.group ? ' · ' + esc(groupOrd(t.group)) : ''}</span>${esc(t.text)}</span></button>`;
   }
 
   const LINK_WORDS = {
@@ -368,15 +440,16 @@
     'lost-to': 'Beat', 'cost-of': 'Its cost', 'derived-from': 'Taught', supports: 'Supported by',
     refines: 'Refined by', supersedes: 'Superseded by', contradicts: 'Contradicted by', 'applied-from': 'Applied from stash'
   };
+  const ARROW_BACK = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M12 7 H2.5 M6 3.5 L2.5 7 L6 10.5" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>';
+  const ARROW_FWD = '<svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2 7 H11.5 M8 3.5 L11.5 7 L8 10.5" stroke="currentColor" stroke-width="1.6" fill="none"/></svg>';
 
   function detailThought(t) {
-    const outcomeCls = 'o-' + t.outcome;
+    const who = { user: 'Decided by you', agent: 'Decided by the agent', 'agent-delegated': 'Agent, delegated by you' }[t.decided_by];
     const pills = [
-      `<span class="tg-pill">${shape(t)}${esc(t.kind)}</span>`,
-      pill(t.outcome, 'tg-pill-' + t.outcome),
-      reopenable(t) ? pill('reopenable', 'tg-pill-open') : '',
-      t.decided_by ? pill(t.decided_by === 'user' ? 'decided by the user' : t.decided_by === 'agent-delegated' ? 'agent, delegated' : 'decided by the agent') : '',
-      pill(t.confirmed ? 'confirmed' : 'draft · unconfirmed', t.confirmed ? '' : 'tg-pill-draft')
+      pill(t.kind[0].toUpperCase() + t.kind.slice(1), '', shape(t)),
+      pill(t.outcome[0].toUpperCase() + t.outcome.slice(1), 'tg-pill-' + t.outcome),
+      reopenable(t) ? pill('Reopenable', 'tg-pill-open') : '',
+      who ? pill(who) : ''
     ].join('');
 
     const forces = (dir, title) => {
@@ -384,9 +457,9 @@
       if (!list.length) return '';
       return `<div class="tg-dsec"><span class="tg-label">${title}</span>${list.map((f) => `
         <div class="tg-force ${dir}">
-          ${f.kind ? `<span class="tg-force-kind">${esc(f.kind)}</span>` : ''}
-          <span>${esc(f.text)}</span>
-          ${f.revisit_if ? `<span class="tg-revisit"><span class="tg-dim">Revisit if</span> ${esc(f.revisit_if)}</span>` : ''}
+          <span class="tg-force-kind">${dir === 'backward' ? ARROW_BACK : ARROW_FWD}${dir === 'backward' ? 'Backward' : 'Forward'} force${f.kind ? ' · ' + esc(f.kind) : ''}</span>
+          <span class="tg-force-text">${esc(f.text)}</span>
+          ${f.revisit_if ? `<span class="tg-revisit"><span class="tg-dim">Revisit if</span><span>${esc(f.revisit_if.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase()))}</span></span>` : ''}
           ${f.superseded_by ? `<span class="tg-dim">No longer holds - see ${esc(f.superseded_by)}</span>` : ''}
         </div>`).join('')}</div>`;
     };
@@ -398,14 +471,14 @@
       ? '<div class="tg-dsec"><span class="tg-label">Lost to</span><span class="tg-dim">Nothing. The whole idea was dropped, not beaten by an alternative.</span></div>' : '';
 
     const commitBtn = (h) => h === 'genesis' ? 'before the first commit'
-      : view.idx.commitAt.has(h) ? `<button type="button" class="tg-inline" data-commit="${esc(h)}">${esc(short(h))}</button>` : esc(short(h));
+      : view.idx.commitAt.has(h) ? `<button type="button" class="tg-inline" data-commit="${esc(h)}">${esc(short(h))}</button> · ${esc(ord(h))}` : esc(short(h));
 
     return `
-      <span class="tg-mono tg-dim">${esc(t.id)}</span>
-      <h2 class="tg-title ${outcomeCls}">${esc(t.text)}</h2>
+      <span class="tg-mono tg-dim">${esc(t.id)} · ${t.confirmed ? 'confirmed' : 'draft'}</span>
+      <h2 class="tg-title">${esc(t.text)}</h2>
       <div class="tg-pills">${pills}</div>
-      ${forces('forward', 'Pushed forward by')}
       ${forces('backward', 'Held back by')}
+      ${forces('forward', 'Pushed forward by')}
       ${lostTo}
       ${links.length ? `<div class="tg-dsec"><span class="tg-label">Links</span>${links.join('')}</div>` : ''}
       ${incoming.length ? `<div class="tg-dsec"><span class="tg-label">Linked from</span>${incoming.join('')}</div>` : ''}
@@ -436,14 +509,14 @@
     else if (pg && pg.lines && pg.lines.length) meta.push(`<span>Line of work</span><span>${esc(pg.lines.join(', '))}</span>`);
     if (pg && pg.t >= 0 && threads[pg.t]) meta.push(`<span>Thread</span><span>${esc(threads[pg.t].name)} <span class="tg-dim">(inferred)</span></span>`);
     meta.push(`<span>Parents</span><span class="tg-mono">${c.p.length ? c.p.map((p) => view.idx.commitAt.has(p)
-      ? `<button type="button" class="tg-inline" data-commit="${esc(p)}">${esc(short(p))}</button>` : esc(short(p))).join(' ') : 'none - first commit'}</span>`);
+      ? `<button type="button" class="tg-inline" data-commit="${esc(p)}">${esc(short(p))}</button> ${esc(ord(p))}` : esc(short(p))).join(' · ') : 'none - first commit'}</span>`);
     const reasoning = all.length
       ? `<div class="tg-dsec"><span class="tg-label">Reasoning behind it</span>
           <div class="tg-counts">${all.length} thought${all.length === 1 ? '' : 's'}${counts(all)}</div>
           <button type="button" class="tg-btn" data-open-groups="${esc(c.h)}">Show them in the graph</button></div>`
       : `<div class="tg-dsec"><span class="tg-label">Reasoning behind it</span><span class="tg-dim">Nothing on record. No discussion was saved for this commit.</span></div>`;
     return `
-      <span class="tg-mono tg-dim">${esc(c.h.slice(0, 12))} · ${esc(stamp(c.d))}</span>
+      <span class="tg-mono tg-dim">${esc(ord(c.h))} · ${esc(c.h.slice(0, 12))} · ${esc(stamp(c.d))}</span>
       <h2 class="tg-title">${esc(c.s)}</h2>
       ${reasoning}
       <div class="tg-dsec"><span class="tg-label">In the graph</span><div class="tg-kv">${meta.join('')}</div></div>
@@ -460,10 +533,10 @@
     if (d && d.fallback) {
       parts.push(`<div class="tg-note">This broker does not serve thoughts yet. Restart it to load <span class="tg-mono">.gitx/thoughts</span> and <span class="tg-mono">.gitx/drafts</span>.</div>`);
     } else if (d && !d.thoughts.length) {
-      parts.push(`<div class="tg-note">No thoughts recorded for this repository yet. They are read from <span class="tg-mono">.gitx/thoughts</span> (confirmed) and <span class="tg-mono">.gitx/drafts</span> (unconfirmed).</div>`);
+      parts.push(`<div class="tg-note">No thoughts recorded for this repository yet, so every commit reads "Nothing on record". Thoughts are read from <span class="tg-mono">.gitx/thoughts</span> (confirmed) and <span class="tg-mono">.gitx/drafts</span> (unconfirmed).</div>`);
     } else if (d) {
       const th = d.thoughts;
-      const withReasoning = new Set([...view.idx.below.keys()]).size;
+      const withReasoning = view.idx.below.size;
       parts.push(`<div class="tg-stats">
         <div><b>${th.length}</b><span>thoughts</span></div>
         <div><b>${d.stats.drafts}</b><span>drafts</span></div>
@@ -515,8 +588,10 @@
     if (s && view.data) {
       const d = view.data;
       s.textContent = d.fallback ? d.commits.length + ' commits' :
-        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.drafts ? ` (${d.stats.drafts} drafts)` : '');
+        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.drafts ? ` · ${d.stats.drafts} drafts` : '');
     }
+    const legend = $('tg-legend');
+    if (legend) legend.hidden = view.mode === 'code';
   }
 
   function render() {
@@ -530,6 +605,7 @@
     if (sel && sel.type === 'thought') {
       const t = view.idx.thoughtById.get(sel.id);
       const g = t && view.idx.groups.get(t.group);
+      if (view.mode === 'code') { view.mode = 'collapsed'; store.set('gitx.thoughtMode', view.mode); }
       if (g && !isOpen(g)) {
         if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
       }
@@ -606,6 +682,7 @@
         if (w !== last) { last = w; drawGraph(); }
       }).observe(list);
     }
+    renderChrome();
     renderList();
     renderDetail();
   }
