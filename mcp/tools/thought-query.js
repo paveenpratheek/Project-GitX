@@ -349,9 +349,12 @@ export function catchUp(repoDir, args = {}) {
     });
   };
 
-  /* Thinking since the last commit: anchored at HEAD and not yet in a commit.
-   * This is what the previous agent was in the middle of. */
-  const pending = ctx.thoughts.filter((t) => !t._behind && t.anchor && t.anchor.commit === headC.hash);
+  /* Thinking not yet in any commit - what the previous agent was in the
+   * middle of. Not only what is anchored at HEAD: a decision made before the
+   * last commit and still waiting for its own is just as unfinished, and
+   * dropping it the moment an unrelated commit lands would hide it. */
+  const pending = ctx.thoughts.filter((t) => !t._behind && t.anchor && ctx.at.has(t.anchor.commit));
+  const olderAnchors = [...new Set(pending.map((t) => t.anchor.commit).filter((h) => h !== headC.hash))];
 
   const recentOut = recent.map((c) => {
     const list = ctx.thoughts.filter((t) => t._behind === c.hash);
@@ -390,8 +393,12 @@ export function catchUp(repoDir, args = {}) {
   return prune({
     ...head,
     in_progress: pending.length
-      ? { note: 'Thinking since the last commit - not in any commit yet.', ...summarise(pending) }
-      : 'Nothing in progress: no thinking is recorded since the last commit.',
+      ? prune({
+        note: 'Thinking not in any commit yet.',
+        started_before_head: olderAnchors.length ? olderAnchors.map((h) => 'since ' + ctx.ref(h)) : undefined,
+        ...summarise(pending)
+      })
+      : 'Nothing in progress: every recorded thought is in a commit.',
     recent_commits: recentOut,
     recent_without_reasoning: bare ? `${bare} of these ${recentOut.length} commits have no thinking on record; their messages are all there is.` : undefined,
     latest_with_reasoning: latest,
