@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>GitX — Agentic Swarm & Lakehouse</title>
+  <title>GitX — Agentic Swarm &amp; Thought Graph</title>
   <!-- Ter-Manager Plugin Host SDK -->
   <script src="/plugin-host.js"></script>
   <!-- GitX Styling -->
@@ -49,60 +49,45 @@
       </div>
     </section>
 
-    <!-- Column 2: Lakehouse Commit Stream (Gold -> Silver -> Bronze) -->
+    <!-- Column 2: the commit graph, with the thinking between commits -->
     <section class="panel main-panel">
       <div class="panel-head">
         <span class="panel-title">
-          <span class="panel-icon">🏛️</span> Lakehouse Commit Stream
+          <span class="panel-icon">⎇</span> Commit &amp; Thought Graph
         </span>
+        <span class="tg-summary" id="tg-summary"></span>
+        <div class="tg-modes" role="group" aria-label="Thoughts in the graph">
+          <button type="button" data-mode="code">Code only</button>
+          <button type="button" data-mode="collapsed">Thoughts collapsed</button>
+          <button type="button" data-mode="expanded">Thoughts expanded</button>
+        </div>
       </div>
-      <div class="panel-body lakehouse-container">
-        
-        <!-- Gold: Curated Features -->
-        <div class="lakehouse-section-title gold">
-          <span>Gold Layer</span> &bull; Curated Features
-        </div>
-        <div id="lakehouse-gold" class="lakehouse-slot"></div>
-
-        <!-- Silver: Linked Feature Streams -->
-        <div class="lakehouse-section-title silver">
-          <span>Silver Layer</span> &bull; Feature Lineage Threads
-        </div>
-        <div id="lakehouse-silver" class="lakehouse-slot"></div>
-
-        <!-- Bronze: Raw Chronological Commits -->
-        <div class="lakehouse-section-title bronze">
-          <span>Bronze Layer</span> &bull; 4-Layer Chronicle Feed
-        </div>
-        <div id="lakehouse-bronze" class="lakehouse-slot"></div>
-
+      <div class="panel-body tg-scroll">
+        <div class="tg-list" id="tg-list"></div>
       </div>
     </section>
 
-    <!-- Column 3: Issue & Prompt Queue -->
+    <!-- Column 3: whatever is selected - a commit, a thought, or the overview -->
     <section class="panel">
       <div class="panel-head">
-        <span class="panel-title">
-          <span class="panel-icon">📋</span> Issue &amp; Prompt Queue
-        </span>
+        <span class="panel-title" id="tg-detail-title">Overview</span>
       </div>
-      <div class="panel-body" id="issues-list">
-        <!-- Populated dynamically by app.js -->
-      </div>
+      <div class="panel-body tg-detail" id="tg-detail"></div>
     </section>
 
   </main>
 
-  <!-- Bottom 4-Layer Search Deck -->
+  <!-- Bottom deck: which outcomes to show, and search over commits and thoughts -->
   <footer class="gitx-search-deck">
-    <div class="layer-toggle-group">
-      <button type="button" class="btn-layer-toggle active" data-layer="1">L1: Motive</button>
-      <button type="button" class="btn-layer-toggle" data-layer="2">L2: Architecture</button>
-      <button type="button" class="btn-layer-toggle" data-layer="3">L3: Code Manifest</button>
-      <button type="button" class="btn-layer-toggle" data-layer="4">L4: Lines &amp; Proof</button>
+    <div class="layer-toggle-group" role="group" aria-label="Show thoughts by outcome">
+      <button type="button" class="btn-layer-toggle active" data-outcome="accepted"><span class="tg-dot o-accepted"></span>Accepted</button>
+      <button type="button" class="btn-layer-toggle active" data-outcome="rejected"><span class="tg-dot o-rejected"></span>Rejected</button>
+      <button type="button" class="btn-layer-toggle active" data-outcome="stashed"><span class="tg-dot o-stashed"></span>Stashed</button>
+      <button type="button" class="btn-layer-toggle active" data-outcome="open"><span class="tg-dot o-open"></span>Open</button>
     </div>
     <div class="search-input-wrapper">
-      <input type="text" class="search-input" id="layer-search-input" placeholder="Search commit chronicle layer (token-frugal query)..." autocomplete="off" spellcheck="false">
+      <label for="layer-search-input" class="tg-sr">Search commits and thoughts</label>
+      <input type="text" class="search-input" id="layer-search-input" placeholder="Search commits and thoughts..." autocomplete="off" spellcheck="false">
     </div>
   </footer>
 
@@ -129,6 +114,7 @@
     </div>
   </div>
 
+  <script src="js/graph-view.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

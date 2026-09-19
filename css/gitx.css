@@ -158,7 +158,7 @@ body {
 .gitx-container {
   flex: 1;
   display: grid;
-  grid-template-columns: 310px 1fr 330px;
+  grid-template-columns: clamp(230px, 20vw, 300px) minmax(0, 1fr) clamp(290px, 26vw, 380px);
   overflow: hidden;
   background: var(--bg);
 }
@@ -342,126 +342,414 @@ body {
   color: var(--warning);
 }
 
-/* Lakehouse Commit Stream (Center Panel) */
-.lakehouse-container {
+/* Commit & Thought Graph (center) and the details panel (right) - graph-view.js.
+ *
+ * Colour says OUTCOME and shape says KIND, so the two never compete: a red
+ * diamond is a rejected decision, a green ring an accepted finding. All four
+ * outcome colours are the palette's own, so a scene or wallpaper that changes
+ * the room never makes a rejection read as anything but a rejection. */
+.o-accepted { color: var(--success); }
+.o-rejected { color: var(--danger); }
+.o-stashed  { color: var(--warning); }
+.o-open     { color: var(--accent); }
+
+.tg-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.tg-mono { font-family: var(--font-mono); }
+.tg-dim { color: var(--text-dim); }
+.tg-grow { flex: 1; }
+
+.main-panel .panel-head { gap: 12px; }
+.main-panel .panel-title { white-space: nowrap; }
+
+.tg-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tg-modes {
+  flex-shrink: 0;
   display: flex;
-  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.tg-modes button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tg-modes button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.tg-scroll { padding: 0; display: block; }
+
+/* A narrow graph column keeps the subject and the chip, and drops what can be
+ * read elsewhere: the date and the per-outcome counts are both in the details. */
+.tg-scroll { container-type: inline-size; }
+@container (max-width: 560px) {
+  .tg-date, .tg-count, .tg-meta { display: none; }
+}
+
+.tg-list {
+  position: relative;
+  padding: 6px 12px 16px var(--tg-gutter, 60px);
+  min-height: 100%;
+}
+
+.tg-lines {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.g-edge { fill: none; stroke: color-mix(in srgb, var(--text) 30%, transparent); stroke-width: 2; }
+.g-commit { fill: var(--text); stroke: var(--bg); stroke-width: 3; }
+.g-commit.is-merge { fill: var(--bg); stroke: var(--text); stroke-width: 2; }
+.g-spine { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 3 4; }
+.g-led { fill: none; stroke: var(--success); stroke-width: 1.6; }
+.g-anchor { fill: none; stroke: var(--text-dim); stroke-width: 1.4; stroke-dasharray: 2 3; }
+.g-thought { fill: var(--bg); stroke: var(--accent); stroke-width: 1.5; }
+.g-thought.is-filled { fill: var(--accent); }
+
+.tg-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  font-size: 13px;
+}
+
+.tg-commit { border-radius: var(--radius-sm); }
+.tg-commit.is-dim { opacity: 0.4; }
+
+.tg-commit-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 36px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tg-commit-btn:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
+.tg-commit.is-selected .tg-commit-btn { background: var(--accent-soft); }
+
+.tg-hash { font-size: 12px; color: var(--text-dim); flex-shrink: 0; }
+.tg-subj { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tg-why { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.tg-date { width: 52px; text-align: right; font-size: 11.5px; color: var(--text-dim); flex-shrink: 0; }
+
+.tg-pending { color: var(--text-dim); font-size: 12px; padding-left: 8px; }
+
+.tg-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 10px 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.tg-chip:hover { border-color: var(--accent); }
+
+.tg-count { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); }
+
+.tg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.tg-none {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px dashed var(--border-active);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tg-box {
+  margin: 4px 0 10px;
+  padding: 12px 14px 14px;
+  background: var(--surface-raised);
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: var(--radius-lg);
+}
+
+.tg-box-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 26px;
+  font-size: 13px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.tg-box-head .tg-dim { font-size: 11.5px; }
+
+.tg-fold {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tg-fold:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
+
+.tg-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
-.lakehouse-section-title {
-  font-size: 11px;
+@media (max-width: 1250px) {
+  .tg-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.tg-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.tg-col:empty { display: none; }
+.tg-sec { display: flex; flex-direction: column; gap: 5px; }
+
+.tg-label {
+  font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.6px;
   text-transform: uppercase;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.lakehouse-section-title.gold { color: var(--gold); }
-.lakehouse-section-title.silver { color: var(--silver); }
-.lakehouse-section-title.bronze { color: var(--bronze); }
-
-.lakehouse-slot {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-/* Gold Cards */
-.gold-card {
-  background: color-mix(in srgb, var(--gold) 8%, var(--surface-raised));
-  border: 1px solid color-mix(in srgb, var(--gold) 24%, transparent);
-  border-radius: var(--radius-md);
-  padding: 10px 14px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.gold-name {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.gold-stat {
-  font-size: 11px;
   color: var(--text-dim);
-  margin-top: 2px;
+  margin-bottom: 2px;
 }
 
-/* Silver Streams */
-.stream-thread {
-  background: var(--surface-raised);
-  border-left: 3px solid var(--accent);
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  padding: 9px 12px;
+.tg-card {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.stream-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--accent);
-}
-
-/* Bronze Commits */
-.commit-chronicle-card {
-  background: var(--surface-raised);
+  align-items: center;
+  gap: 9px;
+  min-height: 32px;
+  padding: 0 10px;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.commit-summary {
-  font-size: 13px;
+.tg-card:hover { border-color: var(--border-active); }
+.tg-card.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); background: var(--accent-soft); }
+.tg-card .tg-text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tg-shape { flex-shrink: 0; }
+.tg-meta { font-size: 10.5px; color: var(--text-dim); white-space: nowrap; }
+.tg-accent { color: var(--accent); font-weight: 600; }
+
+.tg-empty { font-size: 12px; color: var(--text-dim); padding: 12px 8px; }
+
+/* Details panel */
+.tg-detail { gap: 16px; padding: 16px; }
+
+.tg-back {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.tg-title { font-size: 16px; line-height: 1.4; font-weight: 650; color: var(--text); }
+.tg-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.tg-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
   font-weight: 600;
-  font-family: var(--font-mono);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
   color: var(--text);
 }
 
-.commit-meta {
-  font-size: 11px;
-  color: var(--text-dim);
-  display: flex;
-  gap: 12px;
-}
+.tg-pill-accepted { background: var(--success-soft); color: var(--success); }
+.tg-pill-rejected { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.tg-pill-stashed { background: var(--warning-soft); color: var(--warning); }
+.tg-pill-open { background: var(--accent-soft); color: var(--accent); }
+.tg-pill-draft { background: transparent; box-shadow: inset 0 0 0 1px var(--border-active); color: var(--text-dim); }
 
-/* 4-Layer Breakdown */
-.chronicle-layers {
+.tg-dsec { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
+
+.tg-force {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  margin-top: 6px;
+  padding: 9px 11px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 
-.layer-box {
-  background: var(--bg);
+.tg-force-kind { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.tg-force.forward .tg-force-kind { color: var(--success); }
+.tg-force.backward .tg-force-kind { color: var(--danger); }
+.tg-revisit { padding-top: 6px; border-top: 1px solid var(--border); color: var(--accent); }
+.tg-revisit .tg-dim { margin-right: 6px; }
+
+.tg-link {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tg-link:hover { border-color: var(--accent); }
+.tg-link .tg-shape { margin-top: 3px; }
+.tg-link-type { display: block; font-size: 10.5px; font-weight: 700; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.tg-sub { display: block; font-size: 11px; color: var(--accent); margin-top: 2px; }
+
+.tg-kv {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  row-gap: 5px;
+  font-size: 12px;
+}
+
+.tg-kv > span:nth-child(odd) { color: var(--text-dim); }
+
+.tg-inline {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tg-body {
+  white-space: pre-line;
+  font-size: 12px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.tg-files { font-size: 11.5px; line-height: 1.6; }
+.tg-counts { display: flex; align-items: center; gap: 10px; }
+
+.tg-btn {
+  align-self: flex-start;
+  height: 30px;
+  padding: 0 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  padding: 6px 9px;
-  font-size: 11.5px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
 }
 
-.layer-tag {
-  font-weight: 700;
-  font-size: 10px;
-  margin-bottom: 2px;
-  text-transform: uppercase;
-  letter-spacing: 0.4px;
+.tg-btn:hover { border-color: var(--accent); }
+
+.tg-note {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-active);
+  border-radius: var(--radius-md);
+  color: var(--text-dim);
 }
 
-.layer-tag.l1 { color: #58a6ff; }
-.layer-tag.l2 { color: #bc8cff; }
-.layer-tag.l3 { color: #3fb950; }
-.layer-tag.l4 { color: #f0883e; }
+.tg-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.tg-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.tg-stats b { font-size: 18px; }
+.tg-stats small { font-size: 12px; color: var(--text-dim); font-weight: 500; }
+.tg-stats span { font-size: 11px; color: var(--text-dim); }
+
+/* Outcome filters reuse the deck's toggle buttons, but an outcome that is on is
+ * the normal state, so on reads as plain and off reads as faded. */
+.btn-layer-toggle[data-outcome] { display: inline-flex; align-items: center; gap: 6px; }
+.btn-layer-toggle[data-outcome].active { background: var(--surface-raised); color: var(--text); border-color: var(--border-active); }
+.btn-layer-toggle[data-outcome]:not(.active) { opacity: 0.5; }
 
 /* Bottom Search Deck */
 .gitx-search-deck {

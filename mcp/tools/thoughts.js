@@ -1,0 +1,153 @@
+/*
+ * The thought layer: the reasoning behind commits, kept BESIDE the commit graph.
+ *
+ *   .gitx/thoughts/   confirmed thoughts - tracked, safe to share
+ *   .gitx/drafts/     unconfirmed ones, any depth (a backfill writes to
+ *                     drafts/backfill/) - the folder ignores itself
+ *
+ * One file per thought, schema gitx.thought/0. The dependency runs one way: a
+ * thought names the commits it was anchored at and led to, and nothing about a
+ * commit, its message or the index changes because a thought exists. So this is
+ * a reader only - it never writes, and it never feeds the commit index.
+ *
+ * It also carries the git topology the page needs to draw lanes. The commit
+ * index deliberately holds no parents (it is keyed on messages and hunks), and
+ * adding them there would change a shared artifact for one reader's sake - so
+ * the parents come from one `git log` here instead.
+ */
+
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+
+const SCHEMA = 'gitx.thought/0';
+const MAX_DEPTH = 3;          // drafts/<batch>/<file> is the deepest in use
+const MAX_COMMITS = 600;      // same cap as the graph payload
+
+export function thoughtDirs(repoDir) {
+  return {
+    confirmed: path.join(repoDir, '.gitx', 'thoughts'),
+    drafts: path.join(repoDir, '.gitx', 'drafts')
+  };
+}
+
+function jsonFiles(dir, depth = 0, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return out; }
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory() && depth < MAX_DEPTH) jsonFiles(p, depth + 1, out);
+    else if (e.isFile() && e.name.endsWith('.json')) out.push(p);
+  }
+  return out;
+}
+
+/* Every thought on disk. A file that is not a thought (wrong schema, no id,
+ * unreadable) is counted and skipped rather than failing the whole layer. When
+ * the same id is both confirmed and still a draft, confirmed wins: confirming
+ * is moving the file, and a copy left behind should not show twice. */
+export function loadThoughts(repoDir) {
+  const dirs = thoughtDirs(repoDir);
+  const byId = new Map();
+  let skipped = 0, newest = 0;
+  for (const [folder, confirmed] of [[dirs.confirmed, true], [dirs.drafts, false]]) {
+    for (const file of jsonFiles(folder)) {
+      try {
+        const st = fs.statSync(file);
+        newest = Math.max(newest, st.mtimeMs);
+        const t = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (t.schema !== SCHEMA || !t.id || !t.anchor) { skipped++; continue; }
+        if (byId.has(t.id)) continue;
+        byId.set(t.id, { ...t, confirmed });
+      } catch (_) { skipped++; }
+    }
+  }
+  const thoughts = [...byId.values()];
+  const drafts = thoughts.filter((t) => !t.confirmed).length;
+  return {
+    thoughts,
+    stats: {
+      count: thoughts.length,
+      confirmed: thoughts.length - drafts,
+      drafts,
+      skipped,
+      /* Cheap change detector for the page: it refetches only when this moves. */
+      signature: thoughts.length + ':' + drafts + ':' + Math.round(newest)
+    }
+  };
+}
+
+function gitTopology(repoDir) {
+  let raw = '';
+  try {
+    raw = execFileSync('git', ['log', '-n', String(MAX_COMMITS), '--format=%H%x1f%P%x1f%aI%x1f%s%x1e'], {
+      cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore']
+    });
+  } catch (_) { return []; }
+  return raw.split('\x1e').map((r) => r.trim()).filter(Boolean).map((r) => {
+    const [hash, parents, date, subject] = r.split('\x1f');
+    return { hash, parents: parents ? parents.split(' ') : [], date, subject };
+  });
+}
+
+/* Lanes, the way a git graph assigns them: each lane is waiting for one hash.
+ * A commit takes the lane that was waiting for it (the first one, if several
+ * were - the rest end here), its first parent continues that lane, and every
+ * other parent is given a lane of its own. Newest first, same order as git log. */
+function assignLanes(commits) {
+  const lanes = [];
+  let width = 0;
+  for (const c of commits) {
+    let lane = lanes.indexOf(c.hash);
+    if (lane === -1) {
+      lane = lanes.indexOf(null);
+      if (lane === -1) { lane = lanes.length; lanes.push(null); }
+    }
+    for (let i = 0; i < lanes.length; i++) if (i !== lane && lanes[i] === c.hash) lanes[i] = null;
+    c.lane = lane;
+    lanes[lane] = c.parents[0] || null;
+    for (const p of c.parents.slice(1)) {
+      if (lanes.includes(p)) continue;
+      let j = lanes.indexOf(null);
+      if (j === -1) { j = lanes.length; lanes.push(null); }
+      lanes[j] = p;
+    }
+    width = Math.max(width, lanes.length);
+  }
+  return width;
+}
+
+const compact = (t) => ({
+  id: t.id,
+  kind: t.kind,
+  text: t.text,
+  outcome: t.outcome,
+  decided_by: t.decided_by || null,
+  anchor: t.anchor && t.anchor.commit,
+  patch_id: (t.anchor && t.anchor.patch_id) || null,
+  led_to: (t.resulted_in && t.resulted_in.commit) || null,
+  branch: (t.anchor && t.anchor.branch) || null,
+  parent: t.parent || null,
+  session: t.session || null,
+  links: t.links || [],
+  forces: t.forces || [],
+  applied_to: t.applied_to || null,
+  provenance: t.provenance || null,
+  confirmed: t.confirmed,
+  at: (t.sources && t.sources[0] && t.sources[0].at) || t.created || null,
+  sources: (t.sources || []).length
+});
+
+export function thoughtsPayload(repoDir) {
+  const { thoughts, stats } = loadThoughts(repoDir);
+  const commits = gitTopology(repoDir);
+  const lanes = assignLanes(commits);
+  return {
+    repo: path.basename(repoDir),
+    lanes,
+    truncated: commits.length >= MAX_COMMITS,
+    commits: commits.map((c) => ({ h: c.hash, p: c.parents, d: c.date, s: c.subject, lane: c.lane })),
+    thoughts: thoughts.map(compact),
+    stats
+  };
+}

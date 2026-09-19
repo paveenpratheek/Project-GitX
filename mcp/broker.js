@@ -8,6 +8,7 @@ import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
 import { formThreads } from './tools/threads.js';
 import { loadGraph, graphPayload } from './tools/project-graph.js';
+import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,7 +36,11 @@ let state = {
   threadStats: null,
   /* What graph.html draws: commits with their messages in force (.gitx/commits
    * where written, git otherwise), lines of work, threads and stated links. */
-  projectGraph: null
+  projectGraph: null,
+  /* Counts and a change signature only. The thoughts themselves are served by
+   * /api/thoughts on request - they are the one payload here that holds
+   * unconfirmed reasoning, and too large to ship with every SYNC_STATE. */
+  thoughtStats: null
 };
 
 function getBranch(dir) {
@@ -106,6 +111,13 @@ function refreshFromGit(targetDir = null) {
     console.warn('[GitX Broker] Graph build failed, continuing without it:', err.message);
   }
 
+  try {
+    state.thoughtStats = loadThoughts(dir).stats;
+  } catch (err) {
+    state.thoughtStats = { error: err.message };
+    console.warn('[GitX Broker] Thought layer failed to load, continuing without it:', err.message);
+  }
+
   saveState();
   console.log(`[GitX Broker] Loaded ${state.chronicles.length} commits across ${Object.keys(state.streams).length} streams for '${state.activeRepoName}'.`);
 }
@@ -119,7 +131,9 @@ function refreshFromGit(targetDir = null) {
  * They used to be one file, so every time the graph was opened on a different
  * repository the tracked file changed, and Source Control showed a modified
  * state.json that nobody had edited and nobody should commit. */
-const LOCAL_FILE = path.join(DEFAULT_ROOT, '.gitx', 'local.json');
+/* Overridable for the same reason as the port: a second broker opened on
+ * another repository must not rewrite which one the live broker opens next. */
+const LOCAL_FILE = process.env.GITX_LOCAL_FILE || path.join(DEFAULT_ROOT, '.gitx', 'local.json');
 
 function readJson(file) {
   try {
@@ -166,8 +180,29 @@ function saveState() {
 
 loadState();
 
+/* The whole API is for this machine: the state carries the active repo's
+ * absolute path, commit bodies and the issue specs, and the socket accepts
+ * CREATE_ISSUE and SET_ACTIVE_REPO. So a request that carries an Origin must
+ * come from a loopback page (the GitX plugin is served from 127.0.0.1:7070).
+ * No Origin at all (curl, an agent, the MCP server's socket) is local by
+ * construction - the broker only listens on 127.0.0.1 - and a browser always
+ * sends one cross-origin, so no page can get in by leaving it off.
+ * A `null` origin (sandboxed iframe, file://) is refused: any site can
+ * produce one. */
+function originAllowed(origin) {
+  if (!origin) return true;
+  try { return ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(origin).hostname); } catch (_) { return false; }
+}
+
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  res.setHeader('Vary', 'Origin');
+  if (!originAllowed(origin)) {
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'the GitX broker serves local pages only' }));
+    return;
+  }
+  if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
@@ -199,6 +234,20 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  /* Drafts are reasoning nobody has confirmed yet; the Origin check at the top
+   * of this handler is what keeps them off other sites' pages. */
+  if (req.url.split('?')[0] === '/api/thoughts') {
+    try {
+      const body = JSON.stringify(thoughtsPayload(state.activeRepo));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(state));
@@ -209,7 +258,13 @@ const server = http.createServer((req, res) => {
   res.end('Not found');
 });
 
-const wss = new WebSocketServer({ server });
+/* WebSockets are not covered by CORS at all - a foreign page can open one to
+ * any address - so the upgrade gets the same Origin rule as the HTTP routes.
+ * Refused with 403 before the connection is accepted or any state is sent. */
+const wss = new WebSocketServer({
+  server,
+  verifyClient: ({ origin }) => originAllowed(origin)
+});
 
 function broadcast(msg, senderWs = null) {
   const payload = JSON.stringify(msg);
