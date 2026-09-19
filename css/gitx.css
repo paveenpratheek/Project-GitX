@@ -1050,3 +1050,137 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--text) 35%, transparent);
 }
+
+/* ==========================================================================
+   Ground and glass - the same ground Agent Bridge stands on.
+
+   The ground is the host's wallpaper when it has one (app.js copies it in as
+   --host-wallpaper), and otherwise the bridge's colour mesh: four wide radial
+   pools mixed from the accent and the meaning colours, fixed so they do not
+   swim while the graph scrolls. Mixed from the anchors, so a palette change
+   moves the mesh with everything else.
+
+   Glass needs something behind it, and one blur per surface is the rule. A
+   backdrop-filter nested inside another only sees what is inside its parent,
+   never the wallpaper - so the COLUMN is the frosted sheet, and what sits in
+   it (a thought box, a card) is a lighter tinted layer over that frost. That
+   also keeps it to three blurs for the page, not one per box in a list that
+   can hold a hundred.
+   ========================================================================== */
+
+:root {
+  --glass-col:  color-mix(in srgb, var(--surface) 58%, transparent);
+  --glass-bar:  color-mix(in srgb, var(--surface) 70%, transparent);
+  --glass-edge: color-mix(in srgb, var(--text) 10%, transparent);
+  --blur-col:   blur(26px) saturate(170%);
+  --blur-bar:   blur(18px) saturate(180%);
+  /* Where the light falls is about the room, not the palette. */
+  --sheen:      rgba(255, 255, 255, 0.5);
+  --sheen-soft: rgba(255, 255, 255, 0.18);
+  --drop:       0 10px 28px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="dark"] {
+  --sheen:      rgba(255, 255, 255, 0.08);
+  --sheen-soft: rgba(255, 255, 255, 0.04);
+  --drop:       0 10px 28px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+body {
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(58% 52% at 14% 16%, color-mix(in srgb, var(--accent) 20%, transparent) 0%, transparent 68%),
+    radial-gradient(52% 48% at 86% 14%, color-mix(in srgb, var(--warning) 14%, transparent) 0%, transparent 66%),
+    radial-gradient(60% 55% at 78% 84%, color-mix(in srgb, var(--success) 13%, transparent) 0%, transparent 70%),
+    radial-gradient(54% 50% at 22% 88%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 68%);
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+}
+
+:root[data-wallpaper] body {
+  background-image: var(--host-wallpaper);
+  background-size: cover;
+  background-position: center;
+}
+
+.gitx-container { background: transparent; }
+
+/* The three columns: each one frosted sheet over the ground. */
+.panel,
+.panel.main-panel {
+  background: var(--glass-col);
+  backdrop-filter: var(--blur-col);
+  -webkit-backdrop-filter: var(--blur-col);
+  border-right-color: var(--glass-edge);
+}
+
+/* Heads, the column header and the legend sit INSIDE a frosted column, so a
+ * thin tint is enough to mark them - a second blur there would only blur the
+ * column's own fill. */
+.panel-head { background: color-mix(in srgb, var(--surface) 38%, transparent); border-bottom-color: var(--glass-edge); }
+.tg-colhead { border-bottom-color: var(--glass-edge); }
+.tg-legend { background: color-mix(in srgb, var(--surface) 38%, transparent); border-top-color: var(--glass-edge); }
+
+/* The bars above and below are their own sheets. */
+.gitx-header,
+.gitx-search-deck {
+  background: var(--glass-bar);
+  backdrop-filter: var(--blur-bar);
+  -webkit-backdrop-filter: var(--blur-bar);
+  border-color: var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--sheen-soft);
+}
+
+/* Under a photograph the columns take a floor, as the host's sidebar does:
+ * translucency is only worth having while every line stays readable, and the
+ * graph is nothing but small lines. */
+:root[data-wallpaper] .panel,
+:root[data-wallpaper] .panel.main-panel { background: color-mix(in srgb, var(--surface) 72%, transparent); }
+:root[data-wallpaper] .gitx-header,
+:root[data-wallpaper] .gitx-search-deck { background: color-mix(in srgb, var(--surface) 82%, transparent); }
+
+/* The thought box: the same lavender-grey tint, now a frosted sheet lying on
+ * the column - a lit top edge, a highlight that fades down the sheet, a
+ * hairline rim and a soft drop, which together read as glass with depth. */
+.tg-box {
+  background:
+    linear-gradient(180deg, var(--sheen-soft), transparent 46%),
+    color-mix(in srgb, color-mix(in srgb, var(--thought) 8%, var(--surface-raised)) 52%, transparent);
+  border: 1px solid color-mix(in srgb, var(--thought) 24%, var(--glass-edge));
+  box-shadow: inset 0 1px 0 var(--sheen), var(--drop);
+}
+
+.tg-stash {
+  background:
+    linear-gradient(180deg, var(--sheen-soft), transparent 46%),
+    color-mix(in srgb, color-mix(in srgb, var(--warning) 8%, var(--surface-raised)) 52%, transparent);
+  box-shadow: inset 0 1px 0 var(--sheen), var(--drop);
+}
+
+/* What sits in a box holds text, so it stays nearly solid: glass under glass
+ * under a picture would be mush. */
+.tg-card,
+.tg-link,
+.tg-force,
+.tg-body,
+.tg-stats > div,
+.agent-card,
+.issue-card {
+  background: color-mix(in srgb, var(--surface-raised) 80%, transparent);
+  border-color: var(--glass-edge);
+  box-shadow: inset 0 1px 0 var(--sheen-soft);
+}
+
+.tg-card.is-selected { background: color-mix(in srgb, var(--thought) 12%, color-mix(in srgb, var(--surface-raised) 85%, transparent)); }
+
+.tg-chip,
+.tg-modes {
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+  border-color: var(--glass-edge);
+}
+
+/* No backdrop-filter at all: the translucent fills would show the ground
+ * unblurred behind every line of text. Go solid. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .panel, .panel.main-panel, .gitx-header, .gitx-search-deck { background: var(--surface); }
+}

@@ -142,10 +142,55 @@ function initThemeSync() {
   if (window.TerManager && window.TerManager.theme) {
     window.TerManager.theme.onChange((theme) => {
       applyHostTheme(theme);
+      syncHostWallpaper();
     });
     const initial = window.TerManager.theme.get();
     if (initial) applyHostTheme(initial);
   }
+  initHostWallpaper();
+}
+
+/* The host's wallpaper as this page's ground - the picture Agent Bridge carries
+ * in, so the two plugins stand on the same ground as the rest of the window.
+ *
+ * ter-manager paints it as its own body background, and this page is served
+ * from the same origin, so it is read straight off the parent. Nothing behind
+ * the frame can show through it (the host paints the frame element itself), so
+ * copying the picture in is the only way to see it here. Without a wallpaper,
+ * or opened on its own, gitx.css paints a colour mesh from the palette instead.
+ * Set only when it changes: the value is a data URL several megabytes long. */
+let hostWallpaper = null;
+function syncHostWallpaper() {
+  let paper = null;
+  try {
+    if (window.parent && window.parent !== window) {
+      const body = window.parent.document.body;
+      const img = body.style.backgroundImage || getComputedStyle(body).backgroundImage;
+      if (img && img.indexOf('url(') === 0) paper = img;
+    }
+  } catch (_) { /* another origin, or no host - the mesh stands in */ }
+  if (paper === hostWallpaper) return;
+  hostWallpaper = paper;
+  const root = document.documentElement;
+  if (paper) {
+    root.style.setProperty('--host-wallpaper', paper);
+    root.setAttribute('data-wallpaper', '');
+  } else {
+    root.style.removeProperty('--host-wallpaper');
+    root.removeAttribute('data-wallpaper');
+  }
+}
+
+function initHostWallpaper() {
+  syncHostWallpaper();
+  /* Changed in Settings: the host rewrites its body's style, and stores the
+   * picture, which other same-origin frames hear as a storage event. */
+  window.addEventListener('storage', (e) => { if (e.key === 'termanager.wallpaper') syncHostWallpaper(); });
+  try {
+    if (window.parent && window.parent !== window && window.MutationObserver) {
+      new MutationObserver(syncHostWallpaper).observe(window.parent.document.body, { attributes: true, attributeFilter: ['style'] });
+    }
+  } catch (_) { /* not hosted */ }
 }
 
 function applyHostTheme(t) {
