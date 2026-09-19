@@ -3,3 +3,9 @@ node_modules/
 .DS_Store
 # which repo this machine's broker is showing - machine-local, see mcp/broker.js
 .gitx/local.json
+# GitX's own thoughts and stashes: private to whoever owns this clone, like
+# every other repository's (see ensureGitignored in mcp/server.js)
+.gitx/thoughts/
+.gitx/drafts/
+.gitx/stash/
+.gitx/worktrees/

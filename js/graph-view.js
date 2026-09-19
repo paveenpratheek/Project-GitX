@@ -78,7 +78,7 @@
       const pg = (st.projectGraph && st.projectGraph.commits) || [];
       view.data = {
         commits: pg.slice().reverse().map((c) => ({ h: c.h, p: [], d: c.date, s: c.subject, lane: 0 })),
-        thoughts: [], lanes: 1, total: pg.length, fallback: true, error: err.message, stats: { count: 0 }
+        thoughts: [], stashes: [], lanes: 1, total: pg.length, fallback: true, error: err.message, stats: { count: 0 }
       };
     }
     buildIndex();
@@ -121,7 +121,11 @@
       if (t.applied_to) push(incoming, t.applied_to, { type: 'applied-from', from: t.id });
     }
 
-    view.idx = { commitAt, ordinal, thoughtById, groups, below, above, unplaced, incoming };
+    const stashes = d.stashes || [];
+    const stashOf = new Map();
+    for (const s of stashes) for (const id of s.thoughts) stashOf.set(id, s);
+
+    view.idx = { commitAt, ordinal, thoughtById, groups, below, above, unplaced, incoming, stashes, stashOf };
   }
 
   function push(map, k, v) {
@@ -314,11 +318,70 @@
     </div>`;
   }
 
+  /* The stash, for getting an idea back. Stashes first - the ones someone made
+   * on purpose, kept before applied - then stashed thoughts no stash holds,
+   * which is how a backfill records one. A reference is shown as written: it
+   * may name another repository, and nothing here follows or checks it. */
+  function stashView() {
+    const d = view.data;
+    const { stashes, stashOf, thoughtById } = view.idx;
+    const q = view.query;
+    const refLine = (r) => {
+      const here = r.thought && (!r.repo || r.repo === d.repo) && thoughtById.has(r.thought);
+      const what = [r.repo ? `<span class="tg-ref-repo">${esc(r.repo)}</span>` : '',
+        r.thought ? (here ? `<button type="button" class="tg-inline tg-mono" data-thought="${esc(r.thought)}">${esc(r.thought)}</button>` : `<span class="tg-mono">${esc(r.thought)}</span>`) : '',
+        r.commit ? `<span class="tg-mono">${esc(short(r.commit))}${!r.repo || r.repo === d.repo ? ' ' + esc(ord(r.commit)) : ''}</span>` : ''].filter(Boolean).join(' · ');
+      return `<div class="tg-ref"><div class="tg-ref-what">${what}</div>${r.why ? `<div class="tg-ref-why">${esc(r.why)}</div>` : ''}</div>`;
+    };
+    const stashCard = (s) => {
+      const own = s.thoughts.map((id) => thoughtById.get(id)).filter(Boolean).filter((t) => !q || matches(t, q));
+      const refs = s.references || [];
+      if (q && !own.length && !(s.title + ' ' + s.note).toLowerCase().includes(q)) return '';
+      return `<section class="tg-stash is-${esc(s.state)}">
+        <div class="tg-stash-head">
+          <svg class="o-stashed" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">${SHAPES.decision}</svg>
+          <b>${esc(s.title)}</b>
+          <span class="tg-pill ${s.state === 'applied' ? 'tg-pill-accepted' : 'tg-pill-stashed'}">${s.state === 'applied' ? 'applied' : 'kept for later'}</span>
+          <span class="tg-grow"></span>
+          <span class="tg-dim tg-mono">${esc(s.id)}${s.created ? ' · ' + esc(day(s.created)) : ''}</span>
+        </div>
+        ${s.note ? `<p class="tg-stash-note">${esc(s.note)}</p>` : ''}
+        ${s.applied_to ? `<div class="tg-dim">Applied to ${thoughtById.has(s.applied_to) ? `<button type="button" class="tg-inline" data-thought="${esc(s.applied_to)}">${esc(s.applied_to)}</button>` : esc(s.applied_to)}</div>` : ''}
+        ${own.length ? `<div class="tg-sec"><span class="tg-label">Its thoughts</span>${own.map((t) => card(t)).join('')}</div>` : ''}
+        ${refs.length ? `<div class="tg-sec"><span class="tg-label">Noted for later · ${refs.length} reference${refs.length === 1 ? '' : 's'}, not followed</span>${refs.map(refLine).join('')}</div>` : ''}
+      </section>`;
+    };
+    const ordered = stashes.slice().sort((a, b) => (a.state === b.state ? 0 : a.state === 'kept' ? -1 : 1));
+    const loose = d.thoughts.filter((t) => t.outcome === 'stashed' && !stashOf.has(t.id) && (!q || matches(t, q)));
+    loose.sort((a, b) => (view.idx.commitAt.get(a.led_to || a.anchor) ?? 1e9) - (view.idx.commitAt.get(b.led_to || b.anchor) ?? 1e9));
+
+    const parts = [];
+    const cards = ordered.map(stashCard).filter(Boolean);
+    parts.push(`<div class="tg-stash-title"><b>Stashed for later</b><span class="tg-dim">${stashes.length} stash${stashes.length === 1 ? '' : 'es'} · ${loose.length} stashed thought${loose.length === 1 ? '' : 's'} outside a stash</span></div>`);
+    if (cards.length) parts.push(cards.join(''));
+    if (loose.length) {
+      parts.push(`<div class="tg-sec tg-loose"><span class="tg-label">Stashed thoughts not in a stash</span>${loose.map((t) => {
+        const where = ord(t.group && view.idx.groups.get(t.group) ? (view.idx.groups.get(t.group).ledTo || t.anchor) : t.anchor);
+        return `<div class="tg-loose-row">${card(t)}<span class="tg-crossnote">${t.applied_to ? 'applied' : 'not applied'}${where ? ' · raised at ' + esc(where) : ''}</span></div>`;
+      }).join('')}</div>`);
+    }
+    if (!cards.length && !loose.length) {
+      parts.push(`<div class="tg-empty">${q ? 'Nothing stashed matches this search.' : 'Nothing is stashed in this repository. A stash keeps an idea that was set aside on purpose, so it can be picked up later instead of rediscovered.'}</div>`);
+    }
+    return parts.join('');
+  }
+
   function renderList() {
     const list = $('tg-list');
     if (!list) return;
     const d = view.data;
     if (!d) { list.innerHTML = '<div class="tg-empty">Loading the graph…</div>'; return; }
+    if (view.mode === 'stashed') {
+      list.innerHTML = stashView();
+      list.dataset.mode = 'stashed';
+      list.style.setProperty('--tg-gutter', '16px');
+      return;
+    }
     if (!d.commits.length) { list.innerHTML = '<div class="tg-empty">This repository has no commits yet.</div>'; return; }
 
     const { below, above, unplaced } = view.idx;
@@ -482,6 +545,10 @@
       ${lostTo}
       ${links.length ? `<div class="tg-dsec"><span class="tg-label">Links</span>${links.join('')}</div>` : ''}
       ${incoming.length ? `<div class="tg-dsec"><span class="tg-label">Linked from</span>${incoming.join('')}</div>` : ''}
+      ${view.idx.stashOf.has(t.id) ? (() => {
+        const s = view.idx.stashOf.get(t.id);
+        return `<div class="tg-dsec"><span class="tg-label">In a stash</span><span><b>${esc(s.title)}</b> <span class="tg-dim">· ${s.state === 'applied' ? 'applied' : 'kept for later'} · ${esc(s.id)}</span></span>${s.note ? `<span class="tg-dim">${esc(s.note)}</span>` : ''}${(s.references || []).length ? `<span class="tg-dim">${s.references.length} reference${s.references.length === 1 ? '' : 's'} noted - open "Thoughts stashed" to read them.</span>` : ''}</div>`;
+      })() : ''}
       <div class="tg-dsec"><span class="tg-label">Where it sits</span>
         <div class="tg-kv">
           <span>Anchored at</span><span class="tg-mono">${commitBtn(t.anchor)}</span>
@@ -591,7 +658,9 @@
         `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.drafts ? ` · ${d.stats.drafts} drafts` : '');
     }
     const legend = $('tg-legend');
-    if (legend) legend.hidden = view.mode === 'code';
+    if (legend) legend.hidden = view.mode === 'code' || view.mode === 'stashed';
+    const colhead = $('tg-colhead');
+    if (colhead) colhead.hidden = view.mode === 'stashed';
   }
 
   function render() {
@@ -600,12 +669,19 @@
     renderDetail();
   }
 
+  const toGraph = () => { view.mode = 'collapsed'; store.set('gitx.thoughtMode', view.mode); };
+
   function select(sel, scroll) {
     view.sel = sel;
+    /* Going TO something the current view cannot show switches to the graph:
+     * a commit, or a thought that is not in the stash view, followed from the
+     * details panel while the stash is open. */
+    if (sel && sel.type === 'commit' && scroll && view.mode === 'stashed') toGraph();
     if (sel && sel.type === 'thought') {
       const t = view.idx.thoughtById.get(sel.id);
       const g = t && view.idx.groups.get(t.group);
-      if (view.mode === 'code') { view.mode = 'collapsed'; store.set('gitx.thoughtMode', view.mode); }
+      const inStash = t && (t.outcome === 'stashed' || view.idx.stashOf.has(t.id));
+      if (view.mode === 'code' || (view.mode === 'stashed' && !inStash)) toGraph();
       if (g && !isOpen(g)) {
         if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
       }
@@ -638,7 +714,7 @@
       for (const g of view.idx.below.get(t.dataset.openGroups) || []) {
         if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
       }
-      if (view.mode === 'code') { view.mode = 'collapsed'; store.set('gitx.thoughtMode', view.mode); }
+      if (view.mode === 'code' || view.mode === 'stashed') toGraph();
       select(view.sel, false);
       const el = document.querySelector(`#tg-list [data-row="${CSS.escape(t.dataset.openGroups)}"]`);
       if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });

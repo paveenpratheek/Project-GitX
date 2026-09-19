@@ -26,13 +26,15 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const SCHEMA = 'gitx.thought/0';
+const STASH_SCHEMA = 'gitx.stash/0';
 const MAX_DEPTH = 3;          // drafts/<batch>/<file> is the deepest in use
 const MAX_COMMITS = 600;      // same cap as the graph payload
 
 export function thoughtDirs(repoDir) {
   return {
     confirmed: path.join(repoDir, '.gitx', 'thoughts'),
-    drafts: path.join(repoDir, '.gitx', 'drafts')
+    drafts: path.join(repoDir, '.gitx', 'drafts'),
+    stash: path.join(repoDir, '.gitx', 'stash')
   };
 }
 
@@ -69,6 +71,12 @@ export function loadThoughts(repoDir) {
   }
   const thoughts = [...byId.values()];
   const drafts = thoughts.filter((t) => !t.confirmed).length;
+  /* Stash files move the signature too, so the page refetches when one is
+   * added or applied - they are only stat'ed here, and parsed by loadStashes. */
+  let stashes = 0;
+  for (const file of jsonFiles(dirs.stash, MAX_DEPTH)) {
+    try { newest = Math.max(newest, fs.statSync(file).mtimeMs); stashes++; } catch (_) { /* gone meanwhile */ }
+  }
   return {
     thoughts,
     stats: {
@@ -76,10 +84,42 @@ export function loadThoughts(repoDir) {
       confirmed: thoughts.length - drafts,
       drafts,
       skipped,
+      stashes,
       /* Cheap change detector for the page: it refetches only when this moves. */
-      signature: thoughts.length + ':' + drafts + ':' + Math.round(newest)
+      signature: thoughts.length + ':' + drafts + ':' + stashes + ':' + Math.round(newest)
     }
   };
+}
+
+/* A stash sets thoughts aside for later: an idea not taken up now, kept so it
+ * can be picked up again instead of rediscovered.
+ *
+ *   .gitx/stash/s-<id>.json   { schema: gitx.stash/0, id, title, note,
+ *                               state: kept | applied, applied_to,
+ *                               thoughts: [ids of this repo's stashed thoughts],
+ *                               references: [{ repo, thought, commit, why }],
+ *                               created, by }
+ *
+ * thoughts are the stash's OWN - thoughts in this repo with outcome
+ * "stashed"; deleting a stash deletes them. references are only written
+ * down: a thought or commit elsewhere, possibly in another repository, noted
+ * for whoever picks the stash up. Nothing follows or checks them yet - linking
+ * across repositories is itself a stashed idea - and removing a stash can
+ * never touch what a reference names. Private, like the thoughts. */
+export function loadStashes(repoDir) {
+  const out = [];
+  for (const file of jsonFiles(thoughtDirs(repoDir).stash, MAX_DEPTH)) {
+    try {
+      const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (s.schema !== STASH_SCHEMA || !s.id) continue;
+      out.push({
+        id: s.id, title: s.title || s.id, note: s.note || '', state: s.state === 'applied' ? 'applied' : 'kept',
+        applied_to: s.applied_to || null, thoughts: Array.isArray(s.thoughts) ? s.thoughts : [],
+        references: Array.isArray(s.references) ? s.references : [], created: s.created || null, by: s.by || null
+      });
+    } catch (_) { /* not a stash - skipped, like a bad thought file */ }
+  }
+  return out.sort((a, b) => String(b.created).localeCompare(String(a.created)));
 }
 
 /* How many commits HEAD has, so the page can number them #1..#N from the first
@@ -164,6 +204,7 @@ export function thoughtsPayload(repoDir) {
     truncated: commits.length >= MAX_COMMITS,
     commits: commits.map((c) => ({ h: c.hash, p: c.parents, d: c.date, s: c.subject, lane: c.lane })),
     thoughts: thoughts.map(compact),
+    stashes: loadStashes(repoDir),
     stats
   };
 }

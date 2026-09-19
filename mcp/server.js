@@ -63,7 +63,7 @@ const ROOT_DIR = getRepoRoot();
  * ensureGitignored is what keeps the promise of "without disturbing the
  * user's code" - and it ignores only what is PRIVATE. The commit graph
  * (.gitx/commits, the fuller messages) belongs to the repository and is shared
- * with it; thoughts, drafts, task state and sandbox checkouts belong to the
+ * with it; thoughts, drafts, stashes, task state and sandbox checkouts belong to the
  * person who owns this clone and never leave it. A bare ".gitx/" would have
  * hidden the graph along with them.
  *
@@ -72,7 +72,7 @@ const ROOT_DIR = getRepoRoot();
  * call. Same defensive shape as every other .gitignore writer in this stack -
  * skip a pattern already present, enforce a trailing newline before
  * appending, or the new line grafts onto whatever the last line was. */
-const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/worktrees/', '.gitx/state.json'];
+const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/stash/', '.gitx/worktrees/', '.gitx/state.json'];
 
 function ensureGitignored(dir) {
   try {

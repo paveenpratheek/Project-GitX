@@ -20,7 +20,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { loadThoughts, gitTopology, commitCount } from './thoughts.js';
+import { loadThoughts, loadStashes, gitTopology, commitCount } from './thoughts.js';
 import { tokenize } from './git-extract.js';
 
 const SEARCH_LIMIT = 15;
@@ -74,7 +74,11 @@ function context(repoDir) {
     return at.has(h) ? at.get(h) : Number.MAX_SAFE_INTEGER;
   };
 
-  return { thoughts, stats, commits, total, at, byId, incoming, ref, recency };
+  const stashes = loadStashes(repoDir);
+  const stashOf = new Map();
+  for (const s of stashes) for (const id of s.thoughts) stashOf.set(id, s);
+
+  return { thoughts, stats, commits, total, at, byId, incoming, ref, recency, stashes, stashOf };
 }
 
 function push(map, k, v) {
@@ -133,6 +137,7 @@ function full(ctx, t) {
     })),
     linked_from: inc.length ? inc : undefined,
     applied_to: t.applied_to || undefined,
+    in_stash: ctx.stashOf.has(t.id) ? { id: ctx.stashOf.get(t.id).id, title: ctx.stashOf.get(t.id).title, state: ctx.stashOf.get(t.id).state } : undefined,
     anchored_at: ctx.ref(t.anchor && t.anchor.commit),
     patch_id: t.anchor && t.anchor.patch_id ? t.anchor.patch_id.slice(0, 12) : undefined,
     led_to: t.resulted_in ? ctx.ref(t.resulted_in.commit) : (t.outcome === 'rejected' ? 'no commit - rejected' : undefined),
@@ -341,7 +346,18 @@ export function catchUp(repoDir, args = {}) {
   const byRecency = (list) => list.slice().sort((a, b) => ctx.recency(a) - ctx.recency(b));
   const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open'));
   const back = byRecency(ctx.thoughts.filter(reopenable));
-  const stashed = byRecency(ctx.thoughts.filter((t) => t.outcome === 'stashed' && !t.applied_to));
+  /* Stashes first, as the containers someone made on purpose; then stashed
+   * thoughts no stash holds (a backfill records the outcome without one). */
+  const kept = ctx.stashes.filter((s) => s.state === 'kept');
+  const loose = byRecency(ctx.thoughts.filter((t) => t.outcome === 'stashed' && !t.applied_to && !ctx.stashOf.has(t.id)));
+  const stashedOut = (kept.length || loose.length) ? prune({
+    stashes: kept.length ? kept.map((s) => prune({
+      id: s.id, title: s.title, note: s.note ? cap(s.note, 240) : undefined,
+      thoughts: s.thoughts.map((id) => { const t = ctx.byId.get(id); return { id, text: t ? t.text : '(not on record)' }; }),
+      references: s.references.length ? s.references.map((r) => prune({ repo: r.repo, thought: r.thought, commit: r.commit ? r.commit.slice(0, 7) : undefined, why: r.why })) : undefined
+    })) : undefined,
+    not_in_a_stash: loose.length ? loose.slice(0, 8).map((t) => ({ id: t.id, text: t.text })) : undefined
+  }) : undefined;
   const learned = byRecency(ctx.thoughts.filter((t) => t.kind === 'learned' && t.outcome === 'accepted'));
 
   return prune({
@@ -354,8 +370,8 @@ export function catchUp(repoDir, args = {}) {
     latest_with_reasoning: latest,
     still_open: open.length ? { count: open.length, newest: open.slice(0, 8).map((t) => ({ id: t.id, text: t.text, raised_at: ctx.ref(t._behind || t.anchor.commit) })) } : undefined,
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
-    stashed_for_later: stashed.length ? stashed.slice(0, 8).map((t) => ({ id: t.id, text: t.text })) : undefined,
+    stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids; every thought here is ' + (ctx.stats.drafts === ctx.stats.count ? 'an unconfirmed draft.' : 'marked with its standing in gitx_thought_search.')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids; every thought here is ' + (ctx.stats.drafts === ctx.stats.count ? 'an unconfirmed draft.' : 'marked with its standing in gitx_thought_search.')
   });
 }
