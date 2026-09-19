@@ -84,7 +84,7 @@ export function loadThoughts(repoDir) {
 
 /* How many commits HEAD has, so the page can number them #1..#N from the first
  * commit even when only the newest MAX_COMMITS are sent. */
-function commitCount(repoDir) {
+export function commitCount(repoDir) {
   try {
     return Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], {
       cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
@@ -92,7 +92,7 @@ function commitCount(repoDir) {
   } catch (_) { return 0; }
 }
 
-function gitTopology(repoDir) {
+export function gitTopology(repoDir) {
   let raw = '';
   try {
     raw = execFileSync('git', ['log', '-n', String(MAX_COMMITS), '--format=%H%x1f%P%x1f%aI%x1f%s%x1e'], {

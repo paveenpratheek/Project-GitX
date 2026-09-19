@@ -12,6 +12,7 @@ import { loadOrBuildIndex } from './tools/commit-index.js';
 import { stagedRegions, findRelated } from './tools/retrieval.js';
 import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
+import { searchThoughts, catchUp } from './tools/thought-query.js';
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
  * the way parseMessage already reads one. */
@@ -308,6 +309,43 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
       required: ['hash']
+    }
+  },
+  /* The thought layer: what commits never carry - alternatives turned down and
+   * why, questions still open, ideas stashed for later, rules learned from a
+   * correction. Read-only; thoughts are the repo owner's own and never leave
+   * their clone. Writing them is a later, separate set of tools. */
+  {
+    name: 'gitx_thought_catch_up',
+    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: { type: 'string', description: 'Optional commit hash: summarise every commit after it instead of the last 5.' },
+        limit: { type: 'number', description: 'Maximum commits to summarise (up to 30).' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'gitx_thought_search',
+    description: 'Search the reasoning recorded BESIDE the commits: decisions, findings, costs kept, rules learned - including alternatives that were considered and TURNED DOWN, with what held them back. Use it before proposing an approach (it may already have been rejected, and why), when asked why something is the way it is, or to see what was weighed behind one commit. Filter by any mix of: query (your words), commit (the thinking behind one commit), paths (thinking behind commits that touched these files - per commit, not per line, so a thought may be about another part of that commit), outcome, kind, reopenable. Pass id for one thought in full with every link both ways. An empty result says which kind of empty it is: no thoughts in this repo, none for that commit, or none matching your words - never read it as "nothing was considered".',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Words describing what you are looking for, e.g. "publish over a tunnel". Matched against each thought and the forces behind it.' },
+        commit: { type: 'string', description: 'Commit hash or prefix (4+ characters): the thinking that led to this commit.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'Files or directories (a trailing / for a directory). "file::function" narrows to the file.' },
+        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only these outcomes. "rejected" lists what was turned down.' },
+        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
+        reopenable: { type: 'boolean', description: 'Only rejected thoughts held back by something that can change - each comes with its revisit_if condition.' },
+        confirmed_only: { type: 'boolean', description: 'Only thoughts the repository owner has confirmed; drafts are left out.' },
+        id: { type: 'string', description: 'One thought id (t-...) to read in full: every force, every link both ways, where it sits, and its source.' },
+        limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
     }
   }
 ];
@@ -901,6 +939,17 @@ async function handleToolCall(name, args) {
       if (name === 'gitx_graph_area') return reply({ ...head, ...graphArea(graph, args.name) });
       if (name === 'gitx_graph_chain') return reply({ ...head, ...graphChain(graph, args.hash, args.limit) });
       return reply({ ...head, ...graphCommit(graph, args.hash) });
+    }
+
+    case 'gitx_thought_search':
+    case 'gitx_thought_catch_up': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+      /* Read-only: thoughts, drafts and git are only read, nothing is written. */
+      const head = { repo: target.dir };
+      if (name === 'gitx_thought_search') return reply({ ...head, ...searchThoughts(target.dir, args) });
+      return reply({ ...head, ...catchUp(target.dir, args) });
     }
 
     default:
