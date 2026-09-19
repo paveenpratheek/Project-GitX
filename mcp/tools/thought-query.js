@@ -50,8 +50,35 @@ function context(repoDir) {
   for (const list of byAnchor.values()) {
     const votes = new Map();
     for (const t of list) if (t.resulted_in) votes.set(t.resulted_in.commit, (votes.get(t.resulted_in.commit) || 0) + 1);
-    const shared = [...votes.entries()].sort((a, b) => b[1] - a[1])[0];
-    for (const t of list) t._behind = (t.resulted_in && t.resulted_in.commit) || (shared && shared[0]) || null;
+    /* Ties go to the earliest commit, as on the page. */
+    const shared = [...votes.entries()].sort((a, b) => (b[1] - a[1]) || ((at.get(b[0]) ?? -1) - (at.get(a[0]) ?? -1)))[0];
+    /* Same rule as the page: a thought with no commit of its own follows the
+     * thought it is tied to within this talk - lost-to, cost-of, derived-from
+     * first, then the decision whose force cites it, then what it cites. */
+    const local = new Map(list.map((x) => [x.id, x]));
+    const citedBy = new Map();
+    for (const x of list) for (const f of x.forces || []) for (const c of f.cites || []) push(citedBy, c, x);
+    /* Decided but not committed stays pending, with everything tied to it. */
+    const PENDING = '-';
+    const follow = (x, depth) => {
+      if (x.resulted_in) return x.resulted_in.commit;
+      if (x.outcome === 'accepted' && (x.kind === 'decision' || x.kind === 'cost')) return PENDING;
+      if (depth > 2) return null;
+      const next = [
+        ...(x.links || []).filter((l) => l.type === 'lost-to' || l.type === 'cost-of' || l.type === 'derived-from').map((l) => local.get(l.to)),
+        ...(citedBy.get(x.id) || []),
+        ...(x.forces || []).flatMap((f) => (f.cites || []).map((c) => local.get(c)))
+      ];
+      for (const y of next) {
+        const r = y && y !== x && follow(y, depth + 1);
+        if (r) return r;
+      }
+      return null;
+    };
+    for (const t of list) {
+      const found = follow(t, 0);
+      t._behind = found === PENDING ? null : (found || (shared && shared[0]) || null);
+    }
   }
 
   const incoming = new Map();

@@ -98,9 +98,40 @@
     for (const [anchor, list] of byAnchor) {
       const votes = new Map();
       for (const t of list) if (t.led_to) votes.set(t.led_to, (votes.get(t.led_to) || 0) + 1);
-      const shared = [...votes.entries()].sort((a, b) => b[1] - a[1])[0];
+      /* A tie goes to the earliest commit (the first thing the talk produced),
+       * so the fallback cannot flip between runs. */
+      const shared = [...votes.entries()].sort((a, b) => (b[1] - a[1]) || ((commitAt.get(b[0]) ?? -1) - (commitAt.get(a[0]) ?? -1)))[0];
+      /* A thought with no commit of its own follows the one it is tied to -
+       * the choice a rejection lost to, the decision a cost belongs to, the
+       * rejection a rule was learned from - within the same talk, so it sits
+       * beside it even when that choice led to a later commit than the rest. */
+      /* Then by citation: a finding goes with the decision whose force cites
+       * it, and a thought with neither follows what its own forces cite. */
+      const local = new Map(list.map((x) => [x.id, x]));
+      const citedBy = new Map();
+      for (const x of list) for (const f of x.forces) for (const c of f.cites || []) push(citedBy, c, x);
+      /* An accepted decision or cost with no commit is decided but not yet
+       * committed - it, and whatever is tied to it, stays "not in a commit
+       * yet" rather than being filed under a commit that did not carry it. */
+      const PENDING = '-';
+      const follow = (x, depth) => {
+        if (x.led_to) return x.led_to;
+        if (x.outcome === 'accepted' && (x.kind === 'decision' || x.kind === 'cost')) return PENDING;
+        if (depth > 2) return null;
+        const next = [
+          ...x.links.filter((l) => l.type === 'lost-to' || l.type === 'cost-of' || l.type === 'derived-from').map((l) => local.get(l.to)),
+          ...(citedBy.get(x.id) || []),
+          ...x.forces.flatMap((f) => (f.cites || []).map((c) => local.get(c)))
+        ];
+        for (const y of next) {
+          const r = y && y !== x && follow(y, depth + 1);
+          if (r) return r;
+        }
+        return null;
+      };
       for (const t of list) {
-        const ledTo = t.led_to || (shared && shared[0]) || null;
+        const found = follow(t, 0);
+        const ledTo = found === PENDING ? null : (found || (shared && shared[0]) || null);
         const key = anchor + '>' + (ledTo || '-');
         if (!groups.has(key)) groups.set(key, { key, anchor, ledTo, thoughts: [] });
         groups.get(key).thoughts.push(t);
