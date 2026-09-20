@@ -10,9 +10,22 @@
   <link rel="stylesheet" href="css/gitx.css">
 </head>
 <body>
+  <!-- Liquid Glass refraction: a soft, low-frequency noise field bends what is
+       behind a floating control, the way a lens of uneven glass would. Used as
+       backdrop-filter: url(#lg-refract) - Chromium renders it; other engines
+       keep the plain frost declared before it in gitx.css. -->
+  <svg class="lg-defs" width="0" height="0" aria-hidden="true" focusable="false">
+    <filter id="lg-refract" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.006 0.011" numOctaves="2" seed="11" result="noise"/>
+      <feGaussianBlur in="noise" stdDeviation="3" result="soft"/>
+      <feDisplacementMap in="SourceGraphic" in2="soft" scale="34" xChannelSelector="R" yChannelSelector="G" result="bent"/>
+      <feGaussianBlur in="bent" stdDeviation="1.4"/>
+    </filter>
+  </svg>
+
 
   <!-- Top Header Bar -->
-  <header class="gitx-header">
+  <header class="gitx-header lg">
     <div class="gitx-logo">
       <span class="logo-icon">⎇</span>
       <span class="logo-text">GitX</span>
@@ -57,6 +70,7 @@
         </span>
         <span class="tg-summary" id="tg-summary"></span>
         <div class="tg-modes" role="group" aria-label="Thoughts in the graph">
+          <span class="tg-thumb" aria-hidden="true"></span>
           <button type="button" data-mode="code">Code only</button>
           <button type="button" data-mode="collapsed">Thoughts collapsed</button>
           <button type="button" data-mode="expanded">Thoughts expanded</button>
@@ -100,7 +114,7 @@
   </main>
 
   <!-- Bottom deck: which outcomes to show, and search over commits and thoughts -->
-  <footer class="gitx-search-deck">
+  <footer class="gitx-search-deck lg">
     <div class="layer-toggle-group" role="group" aria-label="Show thoughts by outcome">
       <button type="button" class="btn-layer-toggle active" data-outcome="accepted"><span class="tg-dot o-accepted"></span>Accepted</button>
       <button type="button" class="btn-layer-toggle active" data-outcome="rejected"><span class="tg-dot o-rejected"></span>Rejected</button>

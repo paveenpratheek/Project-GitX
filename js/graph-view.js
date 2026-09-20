@@ -675,8 +675,23 @@
 
   /* ───────────────────────────────────────────── chrome */
 
+  /* The glass thumb under the chosen mode. Placed without its spring the first
+   * time, so the page does not open with the thumb sliding in from the left. */
+  function placeThumb() {
+    const modes = document.querySelector('.tg-modes');
+    const thumb = modes && modes.querySelector('.tg-thumb');
+    const on = modes && modes.querySelector('[data-mode][aria-pressed="true"]');
+    if (!thumb || !on || !on.offsetWidth) return;
+    const first = !thumb.dataset.placed;
+    if (first) thumb.style.transition = 'none';
+    thumb.style.setProperty('--tx', on.offsetLeft + 'px');
+    thumb.style.setProperty('--tw', on.offsetWidth + 'px');
+    if (first) { void thumb.offsetWidth; thumb.style.transition = ''; thumb.dataset.placed = '1'; }
+  }
+
   function renderChrome() {
     for (const b of document.querySelectorAll('[data-mode]')) b.setAttribute('aria-pressed', String(b.dataset.mode === view.mode));
+    placeThumb();
     for (const b of document.querySelectorAll('[data-outcome]')) {
       const on = view.outcomes.has(b.dataset.outcome);
       b.classList.toggle('active', on);
@@ -781,6 +796,8 @@
         timer = setTimeout(() => { view.query = input.value.trim().toLowerCase(); renderChrome(); renderList(); }, 120);
       });
     }
+    window.addEventListener('resize', placeThumb);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(placeThumb);
     const list = $('tg-list');
     if (list && window.ResizeObserver) {
       let last = 0;

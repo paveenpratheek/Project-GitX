@@ -169,20 +169,95 @@ function syncHostWallpaper() {
       if (img && img.indexOf('url(') === 0) paper = img;
     }
   } catch (_) { /* another origin, or no host - the mesh stands in */ }
-  if (paper === hostWallpaper) return;
-  hostWallpaper = paper;
   const root = document.documentElement;
-  if (paper) {
-    root.style.setProperty('--host-wallpaper', paper);
-    root.setAttribute('data-wallpaper', '');
-  } else {
-    root.style.removeProperty('--host-wallpaper');
-    root.removeAttribute('data-wallpaper');
+  if (paper !== hostWallpaper) {
+    hostWallpaper = paper;
+    paperSize = null;
+    if (paper) {
+      /* Straight onto body, not through a custom property: Chrome silently
+       * refuses a custom property longer than about 2MB - setProperty returns
+       * and the value reads back empty - and a wallpaper is a data URL well
+       * past that once the picture is not 16:9, because the long edge is
+       * capped at 1920 and a squarer picture then carries more pixels. The
+       * rule read var(--host-wallpaper), so the image resolved to none and the
+       * page went white while the host showed the picture perfectly. */
+      document.body.style.backgroundImage = paper;
+      root.setAttribute('data-wallpaper', '');
+      if (getComputedStyle(document.body).backgroundImage === 'none') {
+        /* Whatever the reason, the mesh is a better answer than a blank page. */
+        document.body.style.backgroundImage = '';
+        root.removeAttribute('data-wallpaper');
+        hostWallpaper = null;
+        console.warn('[GitX] The host wallpaper could not be painted; using the palette mesh.');
+      } else {
+        measurePaper(paper);
+      }
+    } else {
+      document.body.style.backgroundImage = '';
+      root.removeAttribute('data-wallpaper');
+    }
   }
+  placeHostWallpaper();
+}
+
+/* The picture's own size, read once per wallpaper: cover needs the ratio, and
+ * a data URL carries no dimensions until it is decoded. */
+let paperSize = null;
+function measurePaper(paper) {
+  const src = /^url\(\s*"?(.*?)"?\s*\)$/.exec(paper);
+  if (!src) return;
+  const img = new Image();
+  img.onload = () => {
+    if (hostWallpaper !== paper) return;          // a newer wallpaper won the race
+    paperSize = { w: img.naturalWidth, h: img.naturalHeight };
+    placeHostWallpaper();
+  };
+  img.src = src[1];
+}
+
+/* Continue the host's wallpaper rather than re-fitting it.
+ *
+ * ter-manager covers ITS window with the picture, keeping the image's own
+ * ratio. A plugin frame is a different size and shape, so running cover again
+ * in here crops somewhere else entirely - with a portrait or square wallpaper
+ * that means a deep zoom into the middle of the picture, which is what made
+ * anything but 16:9 look broken.
+ *
+ * So the host's geometry is worked out here (the same cover arithmetic against
+ * the host's window) and then shifted by where this frame sits in it. The frame
+ * shows exactly the part of the picture behind it, as a window onto a desktop
+ * does. Opened on its own, with no host to line up with, plain cover is right. */
+function placeHostWallpaper() {
+  const clear = () => { document.body.style.backgroundSize = ''; document.body.style.backgroundPosition = ''; };
+  if (!hostWallpaper || !paperSize) return clear();
+  let hostW = 0, hostH = 0, rect = null;
+  try {
+    if (window.parent && window.parent !== window && window.frameElement) {
+      hostW = window.parent.innerWidth;
+      hostH = window.parent.innerHeight;
+      rect = window.frameElement.getBoundingClientRect();
+    }
+  } catch (_) { /* not hosted */ }
+  if (!rect || !hostW || !hostH) return clear();
+  const scale = Math.max(hostW / paperSize.w, hostH / paperSize.h);
+  const w = paperSize.w * scale, h = paperSize.h * scale;
+  document.body.style.backgroundSize = w.toFixed(1) + 'px ' + h.toFixed(1) + 'px';
+  document.body.style.backgroundPosition = ((hostW - w) / 2 - rect.left).toFixed(1) + 'px ' + ((hostH - h) / 2 - rect.top).toFixed(1) + 'px';
 }
 
 function initHostWallpaper() {
   syncHostWallpaper();
+  /* The frame moves and resizes with the host window and its sidebar, and the
+   * picture has to follow, or it drifts out of line with the host's. */
+  let frame = null;
+  const replace = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(placeHostWallpaper); };
+  window.addEventListener('resize', replace);
+  /* A hidden window measures zero, and the picture would stay on plain cover
+   * until something resized: place it again when the page is shown. */
+  window.addEventListener('focus', replace);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) replace(); });
+  try { if (window.parent && window.parent !== window) window.parent.addEventListener('resize', replace); } catch (_) { /* not hosted */ }
+  if (window.ResizeObserver) new ResizeObserver(replace).observe(document.documentElement);
   /* Changed in Settings: the host rewrites its body's style, and stores the
    * picture, which other same-origin frames hear as a storage event. */
   window.addEventListener('storage', (e) => { if (e.key === 'termanager.wallpaper') syncHostWallpaper(); });
@@ -420,10 +495,29 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+/* Liquid Glass light: the glow inside a toolbar follows the pointer, the way
+ * iOS 26's highlights answer the device's movement. Off when the reader asks
+ * for less motion - the sheen stays, it just stops moving. */
+function initLiquidLight() {
+  if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const el of document.querySelectorAll('.lg')) {
+    el.addEventListener('pointermove', (e) => {
+      const r = el.getBoundingClientRect();
+      el.style.setProperty('--lx', ((e.clientX - r.left) / r.width * 100).toFixed(1) + '%');
+      el.style.setProperty('--ly', ((e.clientY - r.top) / r.height * 100).toFixed(1) + '%');
+    });
+    el.addEventListener('pointerleave', () => {
+      el.style.removeProperty('--lx');
+      el.style.removeProperty('--ly');
+    });
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   initThemeSync();
   initSessionSync();
   connectBroker();
   initModal();
+  initLiquidLight();
   if (window.GraphView) window.GraphView.init({ httpBase: BROKER_HTTP });
 });

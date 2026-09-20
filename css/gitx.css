@@ -1054,8 +1054,8 @@ body {
 /* ==========================================================================
    Ground and glass - the same ground Agent Bridge stands on.
 
-   The ground is the host's wallpaper when it has one (app.js copies it in as
-   --host-wallpaper), and otherwise the bridge's colour mesh: four wide radial
+   The ground is the host's wallpaper when it has one (app.js copies it onto
+   body, with the host's own size and position), and otherwise the colour mesh: four wide radial
    pools mixed from the accent and the meaning colours, fixed so they do not
    swim while the graph scrolls. Mixed from the anchors, so a palette change
    moves the mesh with everything else.
@@ -1098,7 +1098,11 @@ body {
 }
 
 :root[data-wallpaper] body {
-  background-image: var(--host-wallpaper);
+  /* The picture itself is set on body by app.js, not through a variable: a
+   * custom property over ~2MB is silently dropped by Chrome, and a wallpaper
+   * that is not 16:9 is easily that large. app.js also replaces the size and
+   * position below with the host's own geometry, so the picture continues
+   * through this frame; these are what a page opened on its own gets. */
   background-size: cover;
   background-position: center;
 }
@@ -1183,4 +1187,186 @@ body {
  * unblurred behind every line of text. Go solid. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .panel, .panel.main-panel, .gitx-header, .gitx-search-deck { background: var(--surface); }
+}
+
+/* ==========================================================================
+   Liquid Glass - iOS 26's material, where the web can follow it.
+
+   Apple's rule is also the one that keeps this fast: the liquid material is
+   for CONTROLS FLOATING OVER content, never for the content itself. So:
+
+   - the toolbars (.lg) are the liquid layer - clear, refracting the ground
+     through an SVG lens, lit by a specular rim and a light that follows the
+     pointer;
+   - the columns and thought boxes stay frosted (earlier in this file) and only
+     take the same bright rim, so the page reads as one material.
+
+   Refraction needs the ground directly behind it: a backdrop-filter nested in
+   another one sees only its parent. The toolbars and the floating columns sit
+   straight on the ground, which is why the layout floats now.
+   ========================================================================== */
+
+:root {
+  --lg-edge:    rgba(255, 255, 255, 0.62);
+  --lg-spec:    rgba(255, 255, 255, 0.95);
+  --lg-spec-lo: rgba(255, 255, 255, 0.42);
+  --lg-glow:    rgba(255, 255, 255, 0.38);
+  --lg-sheen:   rgba(255, 255, 255, 0.30);
+  --lg-lift:    0 14px 34px rgba(40, 20, 60, 0.14), 0 2px 6px rgba(0, 0, 0, 0.06);
+  --lg-radius:  20px;
+  --lg-spring:  cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+:root[data-theme="dark"] {
+  --lg-edge:    rgba(255, 255, 255, 0.12);
+  --lg-spec:    rgba(255, 255, 255, 0.55);
+  --lg-spec-lo: rgba(255, 255, 255, 0.16);
+  --lg-glow:    rgba(255, 255, 255, 0.12);
+  --lg-sheen:   rgba(255, 255, 255, 0.07);
+  --lg-lift:    0 14px 34px rgba(0, 0, 0, 0.45), 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.lg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+
+/* Floating layout: toolbars and columns lift off the ground with a margin
+ * around them, the way iPadOS 26 floats its sidebar and toolbars. */
+body { padding: 10px; gap: 10px; }
+.gitx-container { gap: 10px; min-height: 0; }
+
+.gitx-header,
+.gitx-search-deck { border: 0; border-radius: var(--lg-radius); }
+.gitx-header { height: 54px; padding: 0 12px 0 18px; }
+.gitx-search-deck { height: 56px; padding: 0 12px; }
+
+.panel,
+.panel.main-panel {
+  border: 1px solid color-mix(in srgb, var(--lg-edge) 70%, var(--glass-edge));
+  border-radius: var(--lg-radius);
+  box-shadow: inset 0 1px 0 var(--lg-sheen), var(--lg-lift);
+}
+.panel:last-child { border-right: 1px solid color-mix(in srgb, var(--lg-edge) 70%, var(--glass-edge)); }
+
+/* The liquid material. */
+.lg {
+  position: relative;
+  isolation: isolate;
+  background: color-mix(in srgb, var(--surface) 30%, transparent);
+  -webkit-backdrop-filter: blur(12px) saturate(190%);
+  backdrop-filter: blur(12px) saturate(190%);
+  /* Chromium: bend the ground through the lens, then soften it. An engine
+   * that cannot draw url() here keeps the frost above. */
+  backdrop-filter: url(#lg-refract) blur(5px) saturate(195%) brightness(1.04);
+  box-shadow: var(--lg-lift);
+}
+
+/* The specular rim: bright where the light falls (top-left), dim opposite. */
+.lg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  padding: 1.25px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(135deg, var(--lg-spec) 0%, var(--lg-spec-lo) 22%, transparent 45%, transparent 62%, var(--lg-spec-lo) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+}
+
+/* The light inside the glass: a sheen from above, and a soft glow that follows
+ * the pointer (app.js sets --lx / --ly). Behind the content, over the fill. */
+.lg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    radial-gradient(260px 130px at var(--lx, 18%) var(--ly, 0%), var(--lg-glow), transparent 70%),
+    linear-gradient(180deg, var(--lg-sheen), transparent 60%);
+  transition: background-position 0.2s ease;
+}
+
+/* Controls inside a toolbar: small glass capsules. They sit on the refracting
+ * bar, so they are tinted and lit rather than refracted again. */
+.lg .active-project-badge,
+.lg .status-indicator,
+.lg .search-input-wrapper,
+.lg .btn-layer-toggle {
+  border-radius: 999px;
+  border: 1px solid var(--lg-edge);
+  background: color-mix(in srgb, var(--surface-raised) 52%, transparent);
+  box-shadow: inset 0 1px 0 var(--lg-sheen), 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.lg .search-input-wrapper { padding: 0 16px; height: 36px; }
+.lg .btn-layer-toggle { padding: 6px 12px; }
+.lg .btn-layer-toggle[data-outcome].active { background: color-mix(in srgb, var(--surface-raised) 78%, transparent); }
+
+.lg .btn-header {
+  border-radius: 999px;
+  padding: 7px 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 16px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+/* The mode switch: one capsule, and a glass thumb that slides to the chosen
+ * mode on a spring (graph-view.js places it). */
+.tg-modes {
+  position: relative;
+  padding: 3px;
+  border-radius: 999px;
+  border: 1px solid var(--lg-edge);
+  background: color-mix(in srgb, var(--surface-raised) 42%, transparent);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+.tg-modes button,
+.tg-modes button[aria-pressed="true"] {
+  position: relative;
+  z-index: 1;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  transition: color 0.25s ease;
+}
+.tg-thumb {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 0;
+  z-index: 0;
+  width: var(--tw, 0);
+  transform: translateX(var(--tx, 0));
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, var(--lg-sheen), transparent 70%),
+    color-mix(in srgb, var(--surface-raised) 90%, transparent);
+  box-shadow: inset 0 1px 0 var(--lg-spec), inset 0 0 0 1px var(--lg-spec-lo), 0 3px 10px rgba(0, 0, 0, 0.12);
+  transition: transform 0.45s var(--lg-spring), width 0.45s var(--lg-spring);
+}
+
+/* Content takes the same bright edge so it belongs to the material. */
+.tg-box { border-color: color-mix(in srgb, var(--thought) 22%, var(--lg-edge)); }
+.tg-chip { border-color: var(--lg-edge); border-radius: 999px; }
+
+/* Accessibility - glass gives way when the reader asks it to. */
+@media (prefers-reduced-transparency: reduce) {
+  .lg, .panel, .panel.main-panel {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--surface);
+  }
+  .lg::after { display: none; }
+}
+@media (prefers-contrast: more) {
+  .lg, .panel, .panel.main-panel {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: var(--surface);
+    border: 1px solid var(--border-active);
+  }
+  .lg::before, .lg::after { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tg-thumb, .lg::after { transition: none; }
 }
