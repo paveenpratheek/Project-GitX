@@ -877,6 +877,30 @@ body {
 .tg-loose-row { display: flex; flex-direction: column; gap: 3px; }
 .tg-loose-row .tg-crossnote { padding-left: 4px; }
 
+/* The change log, shown on a thought: what it used to say, and a warning
+ * when the log itself no longer verifies. */
+.tg-hist {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--border-active);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tg-hist b { font-weight: 650; }
+.tg-hist-when { color: var(--text-dim); font-size: 11px; }
+.tg-hist-field { padding-left: 2px; }
+.tg-hist-field s { color: var(--text-dim); text-decoration-thickness: 1px; }
+
+.tg-note.tg-warn {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--text);
+}
+
 /* Outcome filters reuse the deck's toggle buttons, but an outcome that is on is
  * the normal state, so on reads as plain and off reads as faded. */
 .btn-layer-toggle[data-outcome] { display: inline-flex; align-items: center; gap: 6px; }

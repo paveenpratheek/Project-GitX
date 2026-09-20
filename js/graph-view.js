@@ -34,6 +34,10 @@
   const view = {
     httpBase: '',
     state: null,
+    /* The change log, read beside the thoughts: what one used to say, and
+     * whether the log still verifies. Fetched per thought, once. */
+    history: {},
+    logStatus: null,
     data: null,             // { commits, thoughts, lanes, total, fallback, error, truncated }
     idx: null,              // derived lookups, rebuilt with data
     fetchedFor: '',
@@ -50,6 +54,7 @@
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   const short = (h) => (h && h !== 'genesis' ? h.slice(0, 7) : h || '');
+  const cap = (s, n) => (!s || s.length <= n ? s : s.slice(0, n).replace(/\s+\S*$/, '') + '…');
   const day = (iso) => {
     const d = new Date(iso);
     return isNaN(d) ? '' : d.getDate() + ' ' + MONTHS[d.getMonth()];
@@ -83,6 +88,32 @@
     }
     buildIndex();
     render();
+    checkLog();
+  }
+
+  /* One read on load: how much has been recorded, and whether the chain holds.
+   * A log that does not verify is worth saying loudly - it means an entry was
+   * changed or removed after it was written. */
+  async function checkLog() {
+    view.history = {};
+    view.logStatus = null;
+    try {
+      const res = await fetch(view.httpBase + '/api/thoughts/log?limit=1', { cache: 'no-store' });
+      if (!res.ok) return;
+      const log = await res.json();
+      view.logStatus = { recorded: log.recorded || 0, tampered: log.tampered || null };
+    } catch (_) { /* an older broker has no log; the page simply does not show one */ }
+    renderDetail();
+  }
+
+  async function loadHistory(id) {
+    if (view.history[id]) return;
+    view.history[id] = { loading: true };
+    try {
+      const res = await fetch(view.httpBase + '/api/thoughts/log?limit=20&id=' + encodeURIComponent(id), { cache: 'no-store' });
+      view.history[id] = res.ok ? await res.json() : { entries: [] };
+    } catch (_) { view.history[id] = { entries: [] }; }
+    if (view.sel && view.sel.type === 'thought' && view.sel.id === id) renderDetail();
   }
 
   function buildIndex() {
@@ -598,7 +629,40 @@
       </div>
       <div class="tg-dsec"><span class="tg-label">Source</span>
         <span>${t.sources ? 'Transcript' + (t.sources > 1 ? ` · ${t.sources} messages` : '') + (t.at ? ' · ' + esc(stamp(t.at)) : '') : '<span class="tg-dim">none recorded</span>'}</span>
-      </div>`;
+      </div>
+      ${historySection(t)}`;
+  }
+
+  /* What this thought used to say. Nothing guards these files, so the log is
+   * the only record that an edit happened at all - and the only copy of what
+   * was there before. */
+  const FIELD_WORDS = { text: 'what it says', outcome: 'outcome', decided_by: 'decided by', links: 'links', forces: 'forces', anchor: 'anchor', resulted_in: 'the commit it led to', applied_to: 'applied to', provenance: 'provenance', confirmed: 'confirmed', sources: 'sources', kind: 'kind', parent: 'parent', session: 'session' };
+  const asText = (v) => {
+    if (v === null || v === undefined) return 'nothing';
+    if (typeof v === 'string') return v;
+    if (Array.isArray(v)) return v.length + (v.length === 1 ? ' entry' : ' entries');
+    if (typeof v === 'object') return v.commit ? short(v.commit) : 'a value';
+    return String(v);
+  };
+
+  function historySection(t) {
+    const log = view.history[t.id];
+    if (!log) { loadHistory(t.id); return ''; }
+    if (log.loading) return '';
+    const entries = log.entries || [];
+    const warn = log.tampered || (view.logStatus && view.logStatus.tampered);
+    if (!entries.length && !warn) return '';
+    const rows = entries.slice(0, 6).map((e) => {
+      const when = `<span class="tg-hist-when">${esc(stamp(e.at))}${e.seen === 'while-unwatched' ? ' · noticed later' : ''}</span>`;
+      if (e.event === 'removed') return `<div class="tg-hist"><b>deleted</b> ${when}<span class="tg-dim">a full copy is kept in the log, so it can be put back</span></div>`;
+      if (e.event === 'added') return `<div class="tg-hist"><b>recorded</b> ${when}</div>`;
+      const fields = Object.entries(e.fields || {}).map(([f, v]) =>
+        `<div class="tg-hist-field"><span class="tg-dim">${esc(FIELD_WORDS[f] || f)}</span> <s>${esc(cap(asText(v.was), 90))}</s> → ${esc(cap(asText(v.now), 90))}</div>`).join('');
+      return `<div class="tg-hist"><b>changed</b> ${when}${fields}</div>`;
+    }).join('');
+    return `<div class="tg-dsec"><span class="tg-label">History${entries.length > 6 ? ' · newest 6 of ' + entries.length : ''}</span>
+      ${warn ? `<div class="tg-note tg-warn">The change log does not verify: ${esc(warn)}. An entry has been changed or removed since it was written, so this history may be incomplete.</div>` : ''}
+      ${rows || '<span class="tg-dim">No change recorded since the watcher first saw it.</span>'}</div>`;
   }
 
   function detailCommit(c) {
@@ -633,6 +697,9 @@
     const st = view.state || {};
     const issues = st.issues || [];
     const parts = [`<span class="tg-mono tg-dim">${esc(st.activeRepoName || '')}</span><h2 class="tg-title">Reasoning on record</h2>`];
+    if (view.logStatus && view.logStatus.tampered) {
+      parts.push(`<div class="tg-note tg-warn"><b>The change log does not verify.</b> ${esc(view.logStatus.tampered)}. Every change to a thought is logged with what it used to say; an entry has been changed or removed since it was written.</div>`);
+    }
 
     if (d && d.fallback) {
       parts.push(`<div class="tg-note">This broker does not serve thoughts yet. Restart it to load <span class="tg-mono">.gitx/thoughts</span> and <span class="tg-mono">.gitx/drafts</span>.</div>`);
