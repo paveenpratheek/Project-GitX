@@ -174,6 +174,9 @@ function loadState() {
   /* local.json first; an older state.json that still carries activeRepo is
    * honoured once, and the next save moves it across. */
   state.activeRepo = (local && local.activeRepo) || (shared && shared.activeRepo) || DEFAULT_ROOT;
+  /* A folder remembered from last time, so a restart writes its log where the
+   * last one did without asking anybody. */
+  if (!watcher.dataDir && local && local.dataDir) watcher.dataDir = local.dataDir;
   refreshFromGit(state.activeRepo);
 }
 
@@ -184,13 +187,41 @@ function saveState() {
     console.error('[GitX Broker] Failed to persist state.json:', err.message);
   }
   try {
-    writeJson(LOCAL_FILE, { activeRepo: state.activeRepo });
+    writeJson(LOCAL_FILE, { activeRepo: state.activeRepo, dataDir: watcher.dataDir || undefined });
   } catch (err) {
     console.error('[GitX Broker] Failed to persist local.json:', err.message);
   }
 }
 
 loadState();
+
+/* Where the watcher's log goes, without anyone having to say so.
+ *
+ * The log must live outside the repository it watches, and the host already
+ * keeps a folder for every plugin under the save directory - so ask it, once,
+ * and remember the answer in local.json. GITX_DATA_DIR still wins when it is
+ * set, and a host that is not running, or has no save directory, leaves the
+ * log in .gitx/thought-log/ where the ignore rules already keep it private.
+ *
+ * No Origin header is sent by this process, which ter-manager treats as local
+ * by construction - a browser is the confused deputy its check is about. */
+async function findDataDir() {
+  if (watcher.dataDir) return;
+  const host = process.env.TERMANAGER_URL || 'http://127.0.0.1:7070';
+  try {
+    const res = await fetch(host + '/api/plugins/data-dir?id=gitx', { signal: AbortSignal.timeout(2500) });
+    if (!res.ok) throw new Error('HTTP ' + res.status + (res.status === 409 ? ' - no save directory is set in ter-manager' : ''));
+    const body = await res.json();
+    if (!body || !body.dir) throw new Error('no folder in the answer');
+    watcher.dataDir = body.dir;
+    console.log('[GitX Broker] Thought log:', body.dir);
+    saveState();
+    if (state.activeRepo) watcher.open(state.activeRepo);
+  } catch (err) {
+    console.log('[GitX Broker] Thought log stays in the repository (' + err.message + ').');
+  }
+}
+findDataDir();
 
 /* The whole API is for this machine: the state carries the active repo's
  * absolute path, commit bodies and the issue specs, and the socket accepts
