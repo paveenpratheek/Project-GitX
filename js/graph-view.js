@@ -180,6 +180,12 @@
       f.direction === 'backward' && f.kind === 'contingent' && f.revisit_if && !f.superseded_by);
   }
 
+  /* A thought is never rewritten - a later one supersedes it - so a question
+   * answered that way stops counting as open. */
+  function superseded(t) {
+    return (view.idx.incoming.get(t.id) || []).some((l) => l.type === 'supersedes');
+  }
+
   function matches(t, q) {
     if (!q) return true;
     if ((t.text || '').toLowerCase().includes(q) || t.id.includes(q)) return true;
@@ -643,8 +649,8 @@
       const listOf = (title, items, note) => items.length
         ? `<div class="tg-dsec"><span class="tg-label">${title} · ${items.length}</span>${items.slice(0, 8).map((t) =>
           `<button type="button" class="tg-link" data-thought="${esc(t.id)}">${shape(t)}<span>${esc(t.text)}${note ? `<span class="tg-sub">${esc(note(t))}</span>` : ''}</span></button>`).join('')}${items.length > 8 ? `<span class="tg-dim">and ${items.length - 8} more</span>` : ''}</div>` : '';
-      parts.push(listOf('Still open', th.filter((t) => t.outcome === 'open')));
-      parts.push(listOf('Can come back', th.filter(reopenable), (t) => 'if ' + t.forces.filter((f) => f.revisit_if).map((f) => f.revisit_if.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase())).join(' · ')));
+      parts.push(listOf('Still open', th.filter((t) => t.outcome === 'open' && !superseded(t))));
+      parts.push(listOf('Can come back', th.filter((t) => reopenable(t) && !superseded(t)), (t) => 'if ' + t.forces.filter((f) => f.revisit_if).map((f) => f.revisit_if.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase())).join(' · ')));
       parts.push(listOf('Stashed', th.filter((t) => t.outcome === 'stashed'), (t) => t.applied_to ? 'applied' : 'not applied yet'));
     }
 

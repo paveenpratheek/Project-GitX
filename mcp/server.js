@@ -13,6 +13,7 @@ import { stagedRegions, findRelated } from './tools/retrieval.js';
 import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
 import { searchThoughts, catchUp } from './tools/thought-query.js';
+import { readLog } from './tools/thought-watch.js';
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
  * the way parseMessage already reads one. */
@@ -72,7 +73,7 @@ const ROOT_DIR = getRepoRoot();
  * call. Same defensive shape as every other .gitignore writer in this stack -
  * skip a pattern already present, enforce a trailing newline before
  * appending, or the new line grafts onto whatever the last line was. */
-const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/stash/', '.gitx/worktrees/', '.gitx/state.json'];
+const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/stash/', '.gitx/thought-log/', '.gitx/worktrees/', '.gitx/state.json'];
 
 function ensureGitignored(dir) {
   try {
@@ -343,6 +344,19 @@ const TOOLS = [
         confirmed_only: { type: 'boolean', description: 'Only thoughts the repository owner has confirmed; drafts are left out.' },
         id: { type: 'string', description: 'One thought id (t-...) to read in full: every force, every link both ways, where it sits, and its source.' },
         limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
+    }
+  },
+  {
+    name: 'gitx_thought_history',
+    description: 'What a thought used to say, and what has changed in the thought graph. Nothing guards these files - any agent, including you, can rewrite or delete a thought - so what exists instead is a record of every change with the OLD values kept. Use it to see how a thought reached its current wording, to find what a deleted one said (the entry holds a full copy, so it can be put back), or to check whether anything changed while you were away. Pass id for one thought. The log verifies itself: each entry is chained to the one before, and the answer says so if that chain is broken.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string', description: 'One thought id (t-...): its own history, newest first.' },
+        limit: { type: 'number', description: 'How many entries. Defaults to 50.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
       required: []
@@ -939,6 +953,13 @@ async function handleToolCall(name, args) {
       if (name === 'gitx_graph_area') return reply({ ...head, ...graphArea(graph, args.name) });
       if (name === 'gitx_graph_chain') return reply({ ...head, ...graphChain(graph, args.hash, args.limit) });
       return reply({ ...head, ...graphCommit(graph, args.hash) });
+    }
+
+    case 'gitx_thought_history': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
+      return reply({ repo: target.dir, ...readLog(target.dir, { id: args.id, limit: args.limit, dataDir: process.env.GITX_DATA_DIR || null }) });
     }
 
     case 'gitx_thought_search':

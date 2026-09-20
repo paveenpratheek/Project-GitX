@@ -9,6 +9,7 @@ import { loadOrBuildIndex } from './tools/commit-index.js';
 import { formThreads } from './tools/threads.js';
 import { loadGraph, graphPayload } from './tools/project-graph.js';
 import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
+import { ThoughtWatcher, readLog } from './tools/thought-watch.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +18,16 @@ const STATE_FILE = path.join(DEFAULT_ROOT, '.gitx', 'state.json');
 /* Overridable so a second instance can run beside a live one - otherwise the
  * only way to try a change is to stop the broker someone is using. */
 const PORT = Number(process.env.GITX_BROKER_PORT) || 7771;
+
+/* The watcher: there is no gate on the thought files and cannot be one, so
+ * what is kept instead is a record of every change, with the old values. Its
+ * log lives outside the repository when a data folder is given
+ * (GITX_DATA_DIR - ter-manager hands each plugin one), because a log beside
+ * the files it watches is edited by whatever edited them. */
+const watcher = new ThoughtWatcher({
+  dataDir: process.env.GITX_DATA_DIR || null,
+  context: () => ({ agents: Object.values(state.agents).filter((a) => a.status === 'Online').map((a) => a.id) })
+});
 
 let state = {
   activeRepo: DEFAULT_ROOT,
@@ -113,6 +124,7 @@ function refreshFromGit(targetDir = null) {
 
   try {
     state.thoughtStats = loadThoughts(dir).stats;
+    watcher.open(dir);
   } catch (err) {
     state.thoughtStats = { error: err.message };
     console.warn('[GitX Broker] Thought layer failed to load, continuing without it:', err.message);
@@ -236,6 +248,35 @@ const server = http.createServer((req, res) => {
 
   /* Drafts are reasoning nobody has confirmed yet; the Origin check at the top
    * of this handler is what keeps them off other sites' pages. */
+  /* The log reads under the same rule as the thoughts themselves: local pages
+   * only. It holds what a thought used to say, which is as private as the
+   * thought. */
+  if (req.url.split('?')[0] === '/api/thoughts/log') {
+    const origin = req.headers.origin;
+    let loopback = false;
+    try { loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(new URL(origin).hostname); } catch (_) {}
+    res.setHeader('Vary', 'Origin');
+    if (origin && !loopback) {
+      res.removeHeader('Access-Control-Allow-Origin');
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'the thought log is served to local pages only' }));
+      return;
+    }
+    if (origin) res.setHeader('Access-Control-Allow-Origin', origin);
+    const q = new URL(req.url, 'http://127.0.0.1').searchParams;
+    try {
+      const body = JSON.stringify(readLog(state.activeRepo, {
+        id: q.get('id'), limit: Number(q.get('limit')) || 50, dataDir: process.env.GITX_DATA_DIR || null
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   if (req.url.split('?')[0] === '/api/thoughts') {
     try {
       const body = JSON.stringify(thoughtsPayload(state.activeRepo));

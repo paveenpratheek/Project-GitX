@@ -8,4 +8,5 @@ node_modules/
 .gitx/thoughts/
 .gitx/drafts/
 .gitx/stash/
+.gitx/thought-log/
 .gitx/worktrees/

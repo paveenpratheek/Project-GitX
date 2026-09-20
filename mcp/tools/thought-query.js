@@ -118,6 +118,14 @@ function reopenable(t) {
     f.direction === 'backward' && f.kind === 'contingent' && f.revisit_if && !f.superseded_by);
 }
 
+/* A thought is never rewritten - a later one supersedes it - so a question
+ * that has been answered that way must stop counting as open, or the open
+ * list fills with decisions that were settled long ago. */
+function supersededBy(ctx, t) {
+  const by = (ctx.incoming.get(t.id) || []).find((l) => l.type === 'supersedes');
+  return by ? by.from : null;
+}
+
 /* How much weight a thought can bear, in one phrase: was it said at the time
  * or pieced together later, and has its owner checked it. */
 const standing = (t) => `${t.provenance === 'inferred' ? 'inferred later' : 'recorded at the time'}, ${t.confirmed ? 'confirmed by the owner' : 'unconfirmed draft'}`;
@@ -133,7 +141,8 @@ function brief(ctx, t) {
     id: t.id,
     kind: t.kind,
     outcome: t.outcome,
-    status: reopenable(t) ? 'reopenable - held back only by something that can change' : undefined,
+    status: supersededBy(ctx, t) ? 'superseded by ' + supersededBy(ctx, t)
+      : reopenable(t) ? 'reopenable - held back only by something that can change' : undefined,
     text: t.text,
     decided_by: t.decided_by || undefined,
     behind: t._behind ? ctx.ref(t._behind) : undefined,
@@ -374,8 +383,8 @@ export function catchUp(repoDir, args = {}) {
   }
 
   const byRecency = (list) => list.slice().sort((a, b) => ctx.recency(a) - ctx.recency(b));
-  const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open'));
-  const back = byRecency(ctx.thoughts.filter(reopenable));
+  const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open' && !supersededBy(ctx, t)));
+  const back = byRecency(ctx.thoughts.filter((t) => reopenable(t) && !supersededBy(ctx, t)));
   /* Stashes first, as the containers someone made on purpose; then stashed
    * thoughts no stash holds (a backfill records the outcome without one). */
   const kept = ctx.stashes.filter((s) => s.state === 'kept');
