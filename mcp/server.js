@@ -331,7 +331,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_thought_search',
-    description: 'Search the reasoning recorded BESIDE the commits: decisions, findings, costs kept, rules learned - including alternatives that were considered and TURNED DOWN, with what held them back. Use it before proposing an approach (it may already have been rejected, and why), when asked why something is the way it is, or to see what was weighed behind one commit. Filter by any mix of: query (your words), commit (the thinking behind one commit), paths (thinking behind commits that touched these files - per commit, not per line, so a thought may be about another part of that commit), outcome, kind, reopenable. Pass id for one thought in full with every link both ways. An empty result says which kind of empty it is: no thoughts in this repo, none for that commit, or none matching your words - never read it as "nothing was considered".',
+    description: 'Search the reasoning recorded BESIDE the commits: decisions, findings, costs kept, rules learned - including alternatives that were considered and TURNED DOWN, with what held them back. Use it before proposing an approach (it may already have been rejected, and why), when asked why something is the way it is, or to see what was weighed behind one commit. Filter by any mix of: query (your words), commit (the thinking behind one commit), paths (thinking behind commits that touched these files - per commit, not per line, so a thought may be about another part of that commit), outcome, kind, reopenable. Pass id for one thought in full with every link both ways. Each result carries its standing: a thought marked "inferred later" was reconstructed from a transcript rather than stated outright. An empty result says which kind of empty it is: no thoughts in this repo, none for that commit, or none matching your words - never read it as "nothing was considered".',
     inputSchema: {
       type: 'object',
       properties: {
@@ -341,7 +341,6 @@ const TOOLS = [
         outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only these outcomes. "rejected" lists what was turned down.' },
         kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
         reopenable: { type: 'boolean', description: 'Only rejected thoughts held back by something that can change - each comes with its revisit_if condition.' },
-        confirmed_only: { type: 'boolean', description: 'Only thoughts the repository owner has confirmed; drafts are left out.' },
         id: { type: 'string', description: 'One thought id (t-...) to read in full: every force, every link both ways, where it sits, and its source.' },
         limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }

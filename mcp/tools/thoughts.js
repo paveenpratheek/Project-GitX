@@ -1,14 +1,22 @@
 /*
  * The thought layer: the reasoning behind commits, kept BESIDE the commit graph.
  *
- *   .gitx/thoughts/   confirmed thoughts - reviewed by the owner
- *   .gitx/drafts/     unconfirmed ones, any depth (a backfill writes to
- *                     drafts/backfill/)
+ *   .gitx/thoughts/   every thought
+ *   .gitx/drafts/     a batch still being written, any depth (a backfill
+ *                     writes to drafts/backfill/ until it is done)
  *
- * Both are PRIVATE: the owner's own reasoning, git-ignored, never pushed.
- * Confirming a thought means its owner has checked it, not that it may be
- * shared. What IS shared is the commit graph beside it - .gitx/commits - and
+ * Both are PRIVATE: the owner's own reasoning, git-ignored, never pushed. What
+ * IS shared is the commit graph beside it - .gitx/commits - and
  * ensureGitignored in server.js is what draws that line in each repository.
+ *
+ * There used to be a third idea here: thoughts/ held CONFIRMED thoughts, and
+ * confirming was the act of publishing one. That reason went when thoughts
+ * became private whether confirmed or not, and confirming was redefined as the
+ * owner reviewing a thought - which then went too, because thoughts are written
+ * after a discussion is settled and agents edit them directly. Nothing reviews
+ * them, so nothing is a draft awaiting review, and the word is gone rather than
+ * redefined a third time. What a thought is worth is said by its PROVENANCE:
+ * recorded at the time, or inferred later from a transcript.
  *
  * One file per thought, schema gitx.thought/0. The dependency runs one way: a
  * thought names the commits it was anchored at and led to, and nothing about a
@@ -33,7 +41,7 @@ const MAX_COMMITS = 600;      // same cap as the graph payload
 
 export function thoughtDirs(repoDir) {
   return {
-    confirmed: path.join(repoDir, '.gitx', 'thoughts'),
+    thoughts: path.join(repoDir, '.gitx', 'thoughts'),
     drafts: path.join(repoDir, '.gitx', 'drafts'),
     stash: path.join(repoDir, '.gitx', 'stash')
   };
@@ -54,10 +62,9 @@ function jsonFiles(dir, depth = 0, out = []) {
  * no id, no anchor - is skipped rather than failing the whole layer, and SAID:
  * which file and why. A write in the wrong shape is the one mistake nothing
  * else can catch, because the thought never exists to be missed, so the skip is
- * reported rather than counted. When the same id is both confirmed and still a
- * draft, confirmed wins: confirming is moving the file, and a copy left behind
- * should not show twice - but two files claiming one id on the SAME side of
- * that line is a collision, and one of them is being dropped. */
+ * reported rather than counted. Two files claiming one id is a collision: the
+ * first read wins and the second is reported, because one id is one thought
+ * wherever its file happens to sit. */
 export function loadThoughts(repoDir) {
   const dirs = thoughtDirs(repoDir);
   const byId = new Map();
@@ -73,7 +80,7 @@ export function loadThoughts(repoDir) {
     hash: crypto.createHash('sha256').update(raw === undefined ? file : raw).digest('hex').slice(0, 16)
   });
 
-  for (const [folder, confirmed] of [[dirs.confirmed, true], [dirs.drafts, false]]) {
+  for (const folder of [dirs.thoughts, dirs.drafts]) {
     for (const file of jsonFiles(folder)) {
       let raw;
       try {
@@ -94,16 +101,18 @@ export function loadThoughts(repoDir) {
 
       const held = claimed.get(t.id);
       if (held) {
-        if (held.confirmed === confirmed) bad(file, 'id ' + t.id + ' is already held by ' + held.file + ' - this file is not being read', raw);
+        bad(file, 'id ' + t.id + ' is already held by ' + held.file + ' - this file is not being read', raw);
         continue;
       }
-      claimed.set(t.id, { file: rel(file), confirmed });
-      byId.set(t.id, { ...t, confirmed });
+      claimed.set(t.id, { file: rel(file) });
+      byId.set(t.id, t);
     }
   }
 
   const thoughts = [...byId.values()];
-  const drafts = thoughts.filter((t) => !t.confirmed).length;
+  /* The one grade a thought carries: said at the time, or reconstructed after
+   * the fact from a transcript. The second is worth reading twice. */
+  const inferred = thoughts.filter((t) => t.provenance === 'inferred').length;
   /* Stash files move the signature too, so the page refetches when one is
    * added or applied - they are only stat'ed here, and parsed by loadStashes. */
   let stashes = 0;
@@ -114,14 +123,13 @@ export function loadThoughts(repoDir) {
     thoughts,
     stats: {
       count: thoughts.length,
-      confirmed: thoughts.length - drafts,
-      drafts,
+      inferred,
       skipped: unreadable.length,
       unreadable,
       stashes,
       /* Cheap change detector for the page: it refetches only when this moves.
        * A skipped file counts, or deleting one would move nothing. */
-      signature: thoughts.length + ':' + drafts + ':' + stashes + ':' + unreadable.length + ':' + Math.round(newest)
+      signature: thoughts.length + ':' + inferred + ':' + stashes + ':' + unreadable.length + ':' + Math.round(newest)
     }
   };
 }
@@ -223,7 +231,6 @@ const compact = (t) => ({
   forces: t.forces || [],
   applied_to: t.applied_to || null,
   provenance: t.provenance || null,
-  confirmed: t.confirmed,
   at: (t.sources && t.sources[0] && t.sources[0].at) || t.created || null,
   sources: (t.sources || []).length
 });

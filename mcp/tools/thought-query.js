@@ -128,7 +128,7 @@ function supersededBy(ctx, t) {
 
 /* How much weight a thought can bear, in one phrase: was it said at the time
  * or pieced together later, and has its owner checked it. */
-const standing = (t) => `${t.provenance === 'inferred' ? 'inferred later' : 'recorded at the time'}, ${t.confirmed ? 'confirmed by the owner' : 'unconfirmed draft'}`;
+const standing = (t) => (t.provenance === 'inferred' ? 'inferred later from a transcript - read it twice' : 'recorded at the time');
 
 /* ─────────────────────────────────────────────── shapes */
 
@@ -241,7 +241,7 @@ function score(qTokens, t) {
 
 export function searchThoughts(repoDir, args = {}) {
   const ctx = context(repoDir);
-  const head = { thoughts_on_record: ctx.stats.count, of_them_drafts: ctx.stats.drafts };
+  const head = { thoughts_on_record: ctx.stats.count, of_them_inferred: ctx.stats.inferred };
   if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
 
   if (args.id) {
@@ -286,7 +286,6 @@ export function searchThoughts(repoDir, args = {}) {
     if (outcomes) pool = pool.filter((t) => outcomes.includes(t.outcome));
     if (kinds) pool = pool.filter((t) => kinds.includes(t.kind));
     if (args.reopenable) pool = pool.filter(reopenable);
-    if (args.confirmed_only) pool = pool.filter((t) => t.confirmed);
     if (!pool.length) absence = 'No thought matches these filters' + (scope.commit || scope.paths ? ' here' : '') + '.';
   }
 
@@ -312,7 +311,7 @@ export function searchThoughts(repoDir, args = {}) {
     returned: results.length,
     results,
     more: ranked.length > results.length ? `${ranked.length - results.length} more - raise limit or narrow the search.` : undefined,
-    how_to_use: 'Each result is one thought: a decision, a finding, a cost kept, or a rule learned. "behind" is the commit it led to. Rejected thoughts are alternatives that were turned down - do not re-propose one without answering its held_back_by. Pass id for one thought in full, with every link both ways. Cite thought ids and commit numbers; say when a thought is an unconfirmed draft.'
+    how_to_use: 'Each result is one thought: a decision, a finding, a cost kept, or a rule learned. "behind" is the commit it led to. Rejected thoughts are alternatives that were turned down - do not re-propose one without answering its held_back_by. Pass id for one thought in full, with every link both ways. Cite thought ids and commit numbers; a thought whose standing says "inferred later" was reconstructed from a transcript rather than stated, so weigh it accordingly.'
   });
 }
 
@@ -322,7 +321,7 @@ export function catchUp(repoDir, args = {}) {
   const ctx = context(repoDir);
   if (!ctx.commits.length) return { error: 'This repository has no commits yet.' };
   const headC = ctx.commits[0];
-  const head = { head: ctx.ref(headC.hash), thoughts_on_record: ctx.stats.count, of_them_drafts: ctx.stats.drafts };
+  const head = { head: ctx.ref(headC.hash), thoughts_on_record: ctx.stats.count, of_them_inferred: ctx.stats.inferred };
   if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
 
   let recent = ctx.commits.slice(0, RECENT_DEFAULT);
@@ -417,6 +416,6 @@ export function catchUp(repoDir, args = {}) {
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
     stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids; every thought here is ' + (ctx.stats.drafts === ctx.stats.count ? 'an unconfirmed draft.' : 'marked with its standing in gitx_thought_search.')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought_search says which.' : '')
   });
 }

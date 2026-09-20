@@ -1,7 +1,7 @@
 /* GitX — the commit graph with the thinking between its commits.
  *
  * Two graphs drawn as one. Code commits come from git; thought commits come
- * from .gitx/thoughts (confirmed) and .gitx/drafts (unconfirmed), served by the
+ * from .gitx/thoughts and .gitx/drafts, served by the
  * broker at /api/thoughts. They share a picture and nothing else: the thought
  * lane sits beside the commit lanes, each group of thoughts hangs between the
  * commit it was ANCHORED at (what HEAD was while the talk happened) and the
@@ -307,8 +307,7 @@
 
   function card(t, extraCls) {
     const sel = view.sel && view.sel.type === 'thought' && view.sel.id === t.id ? ' is-selected' : '';
-    const draft = t.confirmed ? '' : ' is-draft';
-    return `<button type="button" class="tg-card${sel}${draft}${extraCls ? ' ' + extraCls : ''}" data-thought="${esc(t.id)}" title="${esc(t.text)}">
+    return `<button type="button" class="tg-card${sel}${extraCls ? ' ' + extraCls : ''}" data-thought="${esc(t.id)}" title="${esc(t.text)}">
       ${shape(t)}<span class="tg-text">${esc(t.text)}</span>${cardMeta(t)}</button>`;
   }
 
@@ -605,7 +604,7 @@
       : view.idx.commitAt.has(h) ? `<button type="button" class="tg-inline" data-commit="${esc(h)}">${esc(short(h))}</button> · ${esc(ord(h))}` : esc(short(h));
 
     return `
-      <span class="tg-mono tg-dim">${esc(t.id)} · ${t.confirmed ? 'confirmed' : 'draft'}</span>
+      <span class="tg-mono tg-dim">${esc(t.id)}${t.provenance === 'inferred' ? ' · inferred later from a transcript' : ''}</span>
       <h2 class="tg-title">${esc(t.text)}</h2>
       <div class="tg-pills">${pills}</div>
       ${forces('backward', 'Held back by')}
@@ -636,7 +635,7 @@
   /* What this thought used to say. Nothing guards these files, so the log is
    * the only record that an edit happened at all - and the only copy of what
    * was there before. */
-  const FIELD_WORDS = { text: 'what it says', outcome: 'outcome', decided_by: 'decided by', links: 'links', forces: 'forces', anchor: 'anchor', resulted_in: 'the commit it led to', applied_to: 'applied to', provenance: 'provenance', confirmed: 'confirmed', sources: 'sources', kind: 'kind', parent: 'parent', session: 'session' };
+  const FIELD_WORDS = { text: 'what it says', outcome: 'outcome', decided_by: 'decided by', links: 'links', forces: 'forces', anchor: 'anchor', resulted_in: 'the commit it led to', applied_to: 'applied to', provenance: 'provenance', sources: 'sources', kind: 'kind', parent: 'parent', session: 'session' };
   const asText = (v) => {
     if (v === null || v === undefined) return 'nothing';
     if (typeof v === 'string') return v;
@@ -702,15 +701,15 @@
     }
 
     if (d && d.fallback) {
-      parts.push(`<div class="tg-note">This broker does not serve thoughts yet. Restart it to load <span class="tg-mono">.gitx/thoughts</span> and <span class="tg-mono">.gitx/drafts</span>.</div>`);
+      parts.push(`<div class="tg-note">This broker does not serve thoughts yet. Restart it to load <span class="tg-mono">.gitx/thoughts</span>.</div>`);
     } else if (d && !d.thoughts.length) {
-      parts.push(`<div class="tg-note">No thoughts recorded for this repository yet, so every commit reads "Nothing on record". Thoughts are read from <span class="tg-mono">.gitx/thoughts</span> (confirmed) and <span class="tg-mono">.gitx/drafts</span> (unconfirmed).</div>`);
+      parts.push(`<div class="tg-note">No thoughts recorded for this repository yet, so every commit reads "Nothing on record". Thoughts are read from <span class="tg-mono">.gitx/thoughts</span>.</div>`);
     } else if (d) {
       const th = d.thoughts;
       const withReasoning = view.idx.below.size;
       parts.push(`<div class="tg-stats">
         <div><b>${th.length}</b><span>thoughts</span></div>
-        <div><b>${d.stats.drafts}</b><span>drafts</span></div>
+        ${typeof d.stats.inferred === 'number' ? `<div><b>${d.stats.inferred}</b><span>inferred later</span></div>` : ''}
         <div><b>${withReasoning}<small>/${d.commits.length}</small></b><span>commits with reasoning</span></div>
       </div>`);
       const listOf = (title, items, note) => items.length
@@ -774,7 +773,7 @@
     if (s && view.data) {
       const d = view.data;
       s.textContent = d.fallback ? d.commits.length + ' commits' :
-        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.drafts ? ` · ${d.stats.drafts} drafts` : '');
+        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.inferred ? ` · ${d.stats.inferred} inferred` : '');
     }
     const legend = $('tg-legend');
     if (legend) legend.hidden = view.mode === 'code' || view.mode === 'stashed';

@@ -79,7 +79,7 @@ function snapshot(repoDir) {
 
 /* Which fields differ, with what they used to say. Whole thoughts are kept for
  * a removal - that is the copy a restore comes from. */
-const WATCHED_FIELDS = ['kind', 'text', 'outcome', 'decided_by', 'anchor', 'resulted_in', 'links', 'forces', 'applied_to', 'provenance', 'confirmed', 'parent', 'session', 'sources'];
+const WATCHED_FIELDS = ['kind', 'text', 'outcome', 'decided_by', 'anchor', 'resulted_in', 'links', 'forces', 'applied_to', 'provenance', 'parent', 'session', 'sources'];
 
 function diff(before, after) {
   const events = [];
@@ -165,7 +165,7 @@ export class ThoughtWatcher {
 
   watch() {
     const dirs = thoughtDirs(this.repoDir);
-    for (const dir of [dirs.confirmed, dirs.drafts, dirs.stash]) {
+    for (const dir of [dirs.thoughts, dirs.drafts, dirs.stash]) {
       try {
         fs.mkdirSync(dir, { recursive: true });
         const w = fs.watch(dir, { recursive: true }, () => this.bump());
