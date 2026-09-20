@@ -351,11 +351,11 @@ const TOOLS = [
   },
   {
     name: 'gitx_thought_history',
-    description: 'What a thought used to say, and what has changed in the thought graph. Nothing guards these files - any agent, including you, can rewrite or delete a thought - so what exists instead is a record of every change with the OLD values kept. Use it to see how a thought reached its current wording, to find what a deleted one said (the entry holds a full copy, so it can be put back), or to check whether anything changed while you were away. Pass id for one thought. The log verifies itself: each entry is chained to the one before, and the answer says so if that chain is broken.',
+    description: 'What a thought used to say, and what has changed in the thought graph. Nothing guards these files - any agent, including you, can rewrite or delete a thought - so what exists instead is a record of every change with the OLD values kept. It also records files under .gitx that are NOT readable as thoughts - wrong schema, no id, no anchor, not JSON - which the reader otherwise skips in silence, so a thought written in the wrong shape says so instead of simply never existing. Use it to see how a thought reached its current wording, to find what a deleted one said (the entry holds a full copy, so it can be put back), to check whether anything changed while you were away, or to find out why a thought you just wrote is not showing up. Pass id for one thought. The log verifies itself: each entry is chained to the one before, and the answer says so if that chain is broken.',
     inputSchema: {
       type: 'object',
       properties: {
-        id: { type: 'string', description: 'One thought id (t-...): its own history, newest first.' },
+        id: { type: 'string', description: 'One thought id (t-...): its own history, newest first. A file path under .gitx works too, for a file that never became a thought.' },
         limit: { type: 'number', description: 'How many entries. Defaults to 50.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },

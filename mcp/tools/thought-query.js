@@ -242,6 +242,7 @@ function score(qTokens, t) {
 export function searchThoughts(repoDir, args = {}) {
   const ctx = context(repoDir);
   const head = { thoughts_on_record: ctx.stats.count, of_them_drafts: ctx.stats.drafts };
+  if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
 
   if (args.id) {
     const id = String(args.id).trim();
@@ -322,6 +323,7 @@ export function catchUp(repoDir, args = {}) {
   if (!ctx.commits.length) return { error: 'This repository has no commits yet.' };
   const headC = ctx.commits[0];
   const head = { head: ctx.ref(headC.hash), thoughts_on_record: ctx.stats.count, of_them_drafts: ctx.stats.drafts };
+  if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
 
   let recent = ctx.commits.slice(0, RECENT_DEFAULT);
   if (args.since) {

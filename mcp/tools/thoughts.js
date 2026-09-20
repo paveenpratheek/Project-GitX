@@ -23,6 +23,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const SCHEMA = 'gitx.thought/0';
@@ -49,26 +50,58 @@ function jsonFiles(dir, depth = 0, out = []) {
   return out;
 }
 
-/* Every thought on disk. A file that is not a thought (wrong schema, no id,
- * unreadable) is counted and skipped rather than failing the whole layer. When
- * the same id is both confirmed and still a draft, confirmed wins: confirming
- * is moving the file, and a copy left behind should not show twice. */
+/* Every thought on disk. A file that is not a thought - not JSON, wrong schema,
+ * no id, no anchor - is skipped rather than failing the whole layer, and SAID:
+ * which file and why. A write in the wrong shape is the one mistake nothing
+ * else can catch, because the thought never exists to be missed, so the skip is
+ * reported rather than counted. When the same id is both confirmed and still a
+ * draft, confirmed wins: confirming is moving the file, and a copy left behind
+ * should not show twice - but two files claiming one id on the SAME side of
+ * that line is a collision, and one of them is being dropped. */
 export function loadThoughts(repoDir) {
   const dirs = thoughtDirs(repoDir);
   const byId = new Map();
-  let skipped = 0, newest = 0;
+  const claimed = new Map();                 // id -> the file that already holds it
+  const unreadable = [];
+  let newest = 0;
+  const rel = (file) => path.relative(repoDir, file).replace(/\\/g, '/');
+  /* Hashed on its contents, so an unreadable file edited and still wrong reads
+   * as new; one that cannot be read at all is hashed on its name instead, which
+   * keeps it from re-reporting on every pass. */
+  const bad = (file, why, raw) => unreadable.push({
+    file: rel(file), why,
+    hash: crypto.createHash('sha256').update(raw === undefined ? file : raw).digest('hex').slice(0, 16)
+  });
+
   for (const [folder, confirmed] of [[dirs.confirmed, true], [dirs.drafts, false]]) {
     for (const file of jsonFiles(folder)) {
+      let raw;
       try {
-        const st = fs.statSync(file);
-        newest = Math.max(newest, st.mtimeMs);
-        const t = JSON.parse(fs.readFileSync(file, 'utf8'));
-        if (t.schema !== SCHEMA || !t.id || !t.anchor) { skipped++; continue; }
-        if (byId.has(t.id)) continue;
-        byId.set(t.id, { ...t, confirmed });
-      } catch (_) { skipped++; }
+        newest = Math.max(newest, fs.statSync(file).mtimeMs);
+        raw = fs.readFileSync(file, 'utf8');
+      } catch (_) { bad(file, 'the file could not be read'); continue; }
+
+      let t;
+      try { t = JSON.parse(raw); } catch (err) { bad(file, 'not valid JSON: ' + err.message, raw); continue; }
+      if (!t || typeof t !== 'object' || Array.isArray(t)) { bad(file, 'not a JSON object', raw); continue; }
+      if (t.schema !== SCHEMA) {
+        bad(file, t.schema ? 'schema is "' + t.schema + '", not "' + SCHEMA + '"'
+                           : 'no schema field - a thought needs "schema": "' + SCHEMA + '"', raw);
+        continue;
+      }
+      if (!t.id) { bad(file, 'no id - a thought needs one of its own, like "t-1a2b3c4d5e"', raw); continue; }
+      if (!t.anchor) { bad(file, 'no anchor - a thought needs anchor: { commit, patch_id }, the state it was thought at', raw); continue; }
+
+      const held = claimed.get(t.id);
+      if (held) {
+        if (held.confirmed === confirmed) bad(file, 'id ' + t.id + ' is already held by ' + held.file + ' - this file is not being read', raw);
+        continue;
+      }
+      claimed.set(t.id, { file: rel(file), confirmed });
+      byId.set(t.id, { ...t, confirmed });
     }
   }
+
   const thoughts = [...byId.values()];
   const drafts = thoughts.filter((t) => !t.confirmed).length;
   /* Stash files move the signature too, so the page refetches when one is
@@ -83,10 +116,12 @@ export function loadThoughts(repoDir) {
       count: thoughts.length,
       confirmed: thoughts.length - drafts,
       drafts,
-      skipped,
+      skipped: unreadable.length,
+      unreadable,
       stashes,
-      /* Cheap change detector for the page: it refetches only when this moves. */
-      signature: thoughts.length + ':' + drafts + ':' + stashes + ':' + Math.round(newest)
+      /* Cheap change detector for the page: it refetches only when this moves.
+       * A skipped file counts, or deleting one would move nothing. */
+      signature: thoughts.length + ':' + drafts + ':' + stashes + ':' + unreadable.length + ':' + Math.round(newest)
     }
   };
 }

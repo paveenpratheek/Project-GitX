@@ -8,7 +8,13 @@
  * mistaken rewrite is both noticed and recoverable. Prevention was never
  * available; detection is.
  *
- * Three things it is careful about:
+ * Four things it is careful about:
+ *
+ *   FILES, NOT ONLY THOUGHTS. A file in the wrong shape never becomes a
+ *   thought, so it cannot appear as one being added - it is skipped by the
+ *   reader without a word, and the write looks like it worked. Those files are
+ *   watched by path and recorded with the reason, which makes a badly written
+ *   thought the one kind of mistake that says so.
  *
  *   OUTSIDE THE REPOSITORY. The log lives in GitX's own data folder under the
  *   host's save directory, not in .gitx/ - a log sitting beside the files it
@@ -60,9 +66,14 @@ function readIndex(home) {
 }
 
 function snapshot(repoDir) {
-  const { thoughts } = loadThoughts(repoDir);
-  const out = {};
-  for (const t of thoughts) out[t.id] = t;
+  const { thoughts, stats } = loadThoughts(repoDir);
+  const out = { thoughts: {}, files: {} };
+  for (const t of thoughts) out.thoughts[t.id] = t;
+  /* A file that is not readable as a thought never becomes one, so it can never
+   * show up as an "added" thought - it is the one change that would otherwise
+   * go unreported, and the worst one to miss, because the write LOOKS like it
+   * worked. Kept by path, with the reason and a hash of what it says. */
+  for (const u of stats.unreadable) out.files[u.file] = { why: u.why, hash: u.hash };
   return out;
 }
 
@@ -88,13 +99,32 @@ function diff(before, after) {
   return events;
 }
 
+/* The same for files that are not thoughts: one appearing, one still wrong
+ * after an edit, and one that stops being wrong - by being fixed, or deleted. */
+function diffFiles(repoDir, before, after) {
+  const events = [];
+  for (const file of Object.keys(after)) {
+    const was = before[file];
+    if (!was) events.push({ event: 'unreadable', file, why: after[file].why });
+    /* Changed and still wrong: worth an entry of its own, and worth saying
+     * when it is wrong in a NEW way rather than the same one. */
+    else if (was.hash !== after[file].hash) events.push({ event: 'unreadable', file, why: after[file].why, before: was.why === after[file].why ? undefined : was.why });
+  }
+  for (const file of Object.keys(before)) {
+    if (after[file]) continue;
+    const still = fs.existsSync(path.join(repoDir, file));
+    events.push({ event: 'readable', file, how: still ? 'it reads as a thought now' : 'the file is gone', before: before[file].why });
+  }
+  return events;
+}
+
 export class ThoughtWatcher {
   constructor({ dataDir = null, context = () => ({}) } = {}) {
     this.dataDir = dataDir;
     this.context = context;              // what the broker knows: agents online, etc.
     this.repoDir = null;
     this.home = null;
-    this.before = {};
+    this.before = { thoughts: {}, files: {} };
     this.timer = null;
     this.watchers = [];
     this.lastHash = null;
@@ -114,15 +144,22 @@ export class ThoughtWatcher {
     /* Anything that moved while nothing was watching is still recorded, marked
      * as such: the time is when it was NOTICED, not when it happened. */
     if (saved && saved.thoughts) {
-      const missed = diff(saved.thoughts, now);
+      const missed = [...diff(saved.thoughts, now.thoughts), ...diffFiles(repoDir, saved.files || {}, now.files)];
       if (missed.length) {
         this.append(missed.map((e) => ({ ...e, seen: 'while-unwatched' })));
         this.stats.unwatched += missed.length;
       }
     }
     this.before = now;
+    this.stats.unreadable = Object.keys(now.files).length;
     this.save();
     this.watch();
+    /* Said out loud, once, because an agent that wrote a thought in the wrong
+     * shape has no other way of hearing that it does not exist. */
+    if (this.stats.unreadable) {
+      console.warn('[GitX Watcher] ' + this.stats.unreadable + ' file(s) under .gitx are not readable as thoughts, and are being skipped:');
+      for (const [file, u] of Object.entries(now.files)) console.warn('  ' + file + ' - ' + u.why);
+    }
     return this;
   }
 
@@ -147,13 +184,13 @@ export class ThoughtWatcher {
     if (!this.repoDir) return;
     let now;
     try { now = snapshot(this.repoDir); } catch (_) { return; }
-    const events = diff(this.before, now);
-    /* A file that stopped parsing reads as a removal, and it is worth saying
-     * which it was: the reader drops such a thought without a word. */
-    const { stats } = loadThoughts(this.repoDir);
-    if (stats.skipped) this.stats.unreadable = stats.skipped;
+    const events = [...diff(this.before.thoughts, now.thoughts), ...diffFiles(this.repoDir, this.before.files, now.files)];
     if (events.length) this.append(events);
+    /* An edit that breaks a thought reads as a removal AND an unreadable file;
+     * both are recorded, and the second is the one that says why. */
+    for (const e of events) if (e.event === 'unreadable') console.warn('[GitX Watcher] ' + e.file + ' is not readable as a thought - ' + e.why);
     this.before = now;
+    this.stats.unreadable = Object.keys(now.files).length;
     this.save();
   }
 
@@ -177,7 +214,7 @@ export class ThoughtWatcher {
   save() {
     try {
       fs.writeFileSync(path.join(this.home, 'index.json'),
-        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before }, null, 1));
+        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before.thoughts, files: this.before.files }, null, 1));
     } catch (_) { /* the log is what matters; the index rebuilds itself */ }
   }
 
@@ -208,7 +245,9 @@ export function readLog(repoDir, { id = null, limit = 50, dataDir = null } = {})
     prev = hash;
     all.push(e);
   }
-  const picked = (id ? all.filter((e) => e.id === id) : all).slice(-Math.min(limit, MAX_READ)).reverse();
+  /* A file that is not readable has no id to ask for, so the same argument
+   * matches its path - "t-1a2b" or ".gitx/drafts/x.json" both work. */
+  const picked = (id ? all.filter((e) => e.id === id || e.file === id) : all).slice(-Math.min(limit, MAX_READ)).reverse();
   return {
     entries: picked,
     recorded: all.length,
