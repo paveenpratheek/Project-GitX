@@ -14,6 +14,11 @@ import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
 import { searchThoughts, catchUp } from './tools/thought-query.js';
 import { readLog } from './tools/thought-watch.js';
+/* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
+ * its own folder; the only coupling is the two calls below. */
+import { TrailRecorder } from './tools/trail-recorder.js';
+const trails = new TrailRecorder();
+process.on('exit', () => trails.end());
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
  * the way parseMessage already reads one. */
@@ -996,6 +1001,7 @@ rl.on('line', async (line) => {
     const { id, method, params } = request;
 
     if (method === 'initialize') {
+      trails.start(params && params.clientInfo);
       sendResponse({
         jsonrpc: '2.0',
         id,
@@ -1022,16 +1028,21 @@ rl.on('line', async (line) => {
     if (method === 'tools/call') {
       const toolName = params?.name;
       const toolArgs = params?.arguments || {};
+      const t0 = Date.now();
+      let result = null, failure = null;
       try {
-        const result = await handleToolCall(toolName, toolArgs);
+        result = await handleToolCall(toolName, toolArgs);
         sendResponse({ jsonrpc: '2.0', id, result });
       } catch (err) {
+        failure = err;
         sendResponse({
           jsonrpc: '2.0',
           id,
           error: { code: -32000, message: err.message }
         });
       }
+      /* After the answer has gone, so recording never delays or fails a call. */
+      trails.record(toolName, toolArgs, resolveTargetRepo(toolArgs.cwd).dir, result, failure, Date.now() - t0);
       return;
     }
 
