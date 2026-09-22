@@ -66,6 +66,66 @@ function getBranch(dir) {
   }
 }
 
+function getHead(dir) {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (_) {
+    return null;
+  }
+}
+
+/* HEAD moves without GitX being told.
+ *
+ * The broker re-read git only when it started, when the repository changed,
+ * or when a commit came through gitx_commit_chronicle. A commit made from
+ * ter-manager's Source Control or the command line, and a branch switch, went
+ * unnoticed - so the page kept drawing the history it had, under a header
+ * that already named the new branch.
+ *
+ * Git records where HEAD is in two places: the HEAD file (which branch, or
+ * which commit when detached) and the branch tips under refs/heads, plus
+ * packed-refs. Those are watched and nothing else - the index changes on
+ * every stage, and re-reading history for that would be most of the work for
+ * none of the news. A burst (a rebase moves HEAD many times) settles before
+ * anything is re-read, and nothing is re-read unless HEAD or the branch
+ * actually changed. */
+let headWatchers = [];
+let headWatchedDir = null;
+let headTimer = null;
+function watchHead(dir) {
+  if (headWatchedDir === dir && headWatchers.length) return;
+  for (const w of headWatchers) { try { w.close(); } catch (_) {} }
+  headWatchers = [];
+  headWatchedDir = dir;
+  let gitDir, common;
+  try {
+    gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    common = path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+  } catch (_) { return; }   // not a repository: nothing to watch
+  const moved = () => {
+    clearTimeout(headTimer);
+    headTimer = setTimeout(() => {
+      if (state.activeRepo !== dir) return;
+      const head = getHead(dir), branch = getBranch(dir);
+      if (head === state.head && branch === state.activeBranch) return;
+      console.log('[GitX Broker] HEAD moved outside GitX (' + String(state.head || '').slice(0, 7) + ' ' + state.activeBranch
+        + ' -> ' + String(head || '').slice(0, 7) + ' ' + branch + '); re-reading.');
+      refreshFromGit(dir);
+      broadcast({ type: 'SYNC_STATE', state });
+    }, 400);
+  };
+  const watchOne = (target, recursive, keep) => {
+    try {
+      const w = fs.watch(target, { recursive }, (ev, name) => { if (!keep || keep(String(name || ''))) moved(); });
+      w.on('error', () => { /* a folder that goes away is not a crash */ });
+      headWatchers.push(w);
+    } catch (_) { /* unwatchable: the manual refresh still works */ }
+  };
+  watchOne(gitDir, false, (n) => n === 'HEAD');
+  watchOne(common, false, (n) => n === 'packed-refs');
+  watchOne(path.join(common, 'refs', 'heads'), true, null);
+}
+
 function refreshFromGit(targetDir = null) {
   const dir = targetDir || state.activeRepo || DEFAULT_ROOT;
   if (!fs.existsSync(dir)) return;
@@ -73,6 +133,8 @@ function refreshFromGit(targetDir = null) {
   state.activeRepo = dir;
   state.activeRepoName = path.basename(dir) || dir;
   state.activeBranch = getBranch(dir);
+  state.head = getHead(dir);
+  watchHead(dir);
 
   console.log(`[GitX Broker] Scanning Git history for '${state.activeRepoName}' (${dir}) on branch [${state.activeBranch}]`);
   const gitCommits = scanGitHistory(dir, 100);

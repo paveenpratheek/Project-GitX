@@ -67,9 +67,13 @@
 
   /* ───────────────────────────────────────────── data */
 
+  /* One key for 'what this page was drawn from', used by fetchData and onState
+   * alike - built two ways, every state message would look like a change. */
+  const keyOf = (st) => (st.activeRepo || '') + '|' + (st.head || '') + '|' + ((st.thoughtStats && st.thoughtStats.signature) || '');
+
   async function fetchData() {
     const st = view.state || {};
-    const key = (st.activeRepo || '') + '|' + ((st.thoughtStats && st.thoughtStats.signature) || '');
+    const key = keyOf(st);
     view.fetchedFor = key;
     try {
       const res = await fetch(view.httpBase + '/api/thoughts', { cache: 'no-store' });
@@ -883,12 +887,15 @@
     renderDetail();
   }
 
-  /* Called with every state the broker sends. Thoughts are refetched only when
-   * the repository or the thought signature moved, so an agent connecting or a
-   * task being created does not pull the whole layer again. */
+  /* Called with every state the broker sends. Refetched only when the
+   * repository, the commit HEAD is on, or the thought signature moved - so an
+   * agent connecting or a task being created does not pull everything again,
+   * but a commit or a branch switch does. HEAD was missing from this key, and
+   * a new commit left the page drawing the history it had, under a header
+   * that already named the new branch. */
   function onState(state) {
     view.state = state;
-    const key = (state.activeRepo || '') + '|' + ((state.thoughtStats && state.thoughtStats.signature) || '');
+    const key = keyOf(state);
     if (key !== view.fetchedFor) {
       if (view.data && !key.startsWith(view.fetchedFor.split('|')[0] + '|')) {
         view.open.clear(); view.closed.clear(); view.sel = null;
