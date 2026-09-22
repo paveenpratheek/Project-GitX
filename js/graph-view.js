@@ -127,10 +127,14 @@
     const ordinal = new Map(d.commits.map((c, i) => [c.h, total - i]));
     const thoughtById = new Map(d.thoughts.map((t) => [t.id, t]));
 
+    /* Pooled by anchor AND talk, exactly as the reader pools them - see
+     * thought-query.js. A thought without a talk (the backfill) pools by its
+     * anchor alone, as before. */
     const byAnchor = new Map();
-    for (const t of d.thoughts) push(byAnchor, t.anchor, t);
+    for (const t of d.thoughts) push(byAnchor, t.anchor + '|' + (t.talk || ''), t);
     const groups = new Map();
-    for (const [anchor, list] of byAnchor) {
+    for (const list of byAnchor.values()) {
+      const anchor = list[0].anchor;
       const votes = new Map();
       for (const t of list) if (t.led_to) votes.set(t.led_to, (votes.get(t.led_to) || 0) + 1);
       /* A tie goes to the earliest commit (the first thing the talk produced),

@@ -227,6 +227,8 @@ const compact = (t) => ({
   branch: (t.anchor && t.anchor.branch) || null,
   parent: t.parent || null,
   session: t.session || null,
+  /* Which talk it was written in - see the grouping in thought-query.js. */
+  talk: t.talk || null,
   links: t.links || [],
   forces: t.forces || [],
   applied_to: t.applied_to || null,

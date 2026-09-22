@@ -45,8 +45,15 @@ function context(repoDir) {
    * commit; its led_to is the one its accepted thoughts share, so a rejected
    * alternative sits with the choice that beat it. None at all means thinking
    * that has not produced a commit yet. */
+  /* Pooled by anchor AND talk. The fallback below hands an untied thought to
+   * the commit the rest of its pool led to, which is right when a pool is one
+   * talk - a backfill window, where everything anchored at one commit came out
+   * of one conversation. A live session breaks that: three separate talks
+   * happened while HEAD sat on one commit, only one of them produced a commit,
+   * and the vote filed the other two under it. A thought records the talk it
+   * came from; one without a talk (the whole backfill) pools as it always did. */
   const byAnchor = new Map();
-  for (const t of thoughts) push(byAnchor, t.anchor && t.anchor.commit, t);
+  for (const t of thoughts) push(byAnchor, (t.anchor && t.anchor.commit) + '|' + (t.talk || ''), t);
   for (const list of byAnchor.values()) {
     const votes = new Map();
     for (const t of list) if (t.resulted_in) votes.set(t.resulted_in.commit, (votes.get(t.resulted_in.commit) || 0) + 1);
