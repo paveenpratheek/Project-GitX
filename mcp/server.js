@@ -12,7 +12,7 @@ import { loadOrBuildIndex } from './tools/commit-index.js';
 import { stagedRegions, findRelated } from './tools/retrieval.js';
 import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
-import { searchThoughts, catchUp } from './tools/thought-query.js';
+import { searchThoughts, catchUp, searchContext } from './tools/thought-query.js';
 import { readLog } from './tools/thought-watch.js';
 /* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
  * its own folder; the only coupling is the two calls below. */
@@ -337,7 +337,7 @@ const TOOLS = [
    * their clone. Writing them is a later, separate set of tools. */
   {
     name: 'gitx_thought_catch_up',
-    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
+    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, a one-line count of the thinking waiting in the context graph (read that with gitx_context), questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -361,6 +361,26 @@ const TOOLS = [
         kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
         reopenable: { type: 'boolean', description: 'Only rejected thoughts held back by something that can change - each comes with its revisit_if condition.' },
         id: { type: 'string', description: 'One thought id (t-...) to read in full: every force, every link both ways, where it sits, and its source.' },
+        limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
+    }
+  },
+  /* The context graph: thinking no commit has settled yet. Kept out of the
+   * two tools above on purpose - catch-up only counts it - so an agent reads it
+   * when its task calls for it rather than on every start. */
+  {
+    name: 'gitx_context',
+    description: 'The context graph: thinking that no commit has settled yet - discussion still going, ideas, decisions made but not built, open questions, findings, and stashes. gitx_thought_search and gitx_thought_catch_up do NOT read it (catch-up only counts it), so ask here when your task touches something that may already have been discussed, BEFORE working it out again. Ask by query (your words), outcome or kind, or pass id for one thought in full; stashes: true lists the stashes. Each result says which commit the discussion came after ("since"). A thought leaves the context graph for the thought graph when a commit settles it. An empty answer says which kind of empty it is.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Words describing what you are looking for. Matched against each thought and the forces behind it.' },
+        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only these outcomes. "open" lists questions nobody has settled; "accepted" here means decided but not yet built.' },
+        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
+        id: { type: 'string', description: 'One thought id (t-...) to read in full, with every link both ways - including links into the thought graph.' },
+        stashes: { type: 'boolean', description: 'List the stashes in the context graph: ideas set aside on purpose, each with its thoughts and references.' },
         limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
@@ -981,13 +1001,15 @@ async function handleToolCall(name, args) {
     }
 
     case 'gitx_thought_search':
-    case 'gitx_thought_catch_up': {
+    case 'gitx_thought_catch_up':
+    case 'gitx_context': {
       const target = resolveTargetRepo(args.cwd);
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: thoughts, drafts and git are only read, nothing is written. */
       const head = { repo: target.dir };
       if (name === 'gitx_thought_search') return reply({ ...head, ...searchThoughts(target.dir, args) });
+      if (name === 'gitx_context') return reply({ ...head, ...searchContext(target.dir, args) });
       return reply({ ...head, ...catchUp(target.dir, args) });
     }
 

@@ -160,12 +160,26 @@ next one starts.
   400 ms later would still be logged as an add and a removal. The migration
   and promotion therefore rename.
 
-### 3. `gitx_context` and the catch-up line
+### 3. `gitx_context` and the catch-up line — done
 - `mcp/server.js`: the new tool, read-only.
 - `mcp/tools/thought-query.js`: the counts line; `still_open` and
   `stashed_for_later` read from the context graph.
 - **Check:** catch-up in both repos prints the line, and `gitx_context` finds a
   known wanderer by words and by id.
+- **As built:** `context()` takes a `store`. Filing under commits happens
+  within one graph, and links are looked up in both, so a crossing link reads
+  as its thought and says which graph it is in. `loadStashes` takes the same
+  option. The catch-up line counts what is waiting, open, stashed and written
+  since HEAD. It also appears when the thought graph is empty.
+- **Changed from the plan:** `still_open` and `stashed_for_later` still show
+  what remains in the thought graph, in full. After step 4 moves those items
+  they empty on their own. Switching them to counts now would have hidden 7
+  open questions and 2 stashes in the gap between the steps.
+- Asking for an id in the wrong graph names the graph that holds it.
+- Checked over MCP stdio with an isolated server: 13 cases, and 1040
+  placements unchanged.
+- **Open:** `gitx_context` visits are not recorded in the trails. The context
+  graph has no layer in the recorder yet.
 
 ### 4. Migration (runs once, per repo)
 - A script classifies every thought by the rule under Definitions and prints a

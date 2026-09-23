@@ -33,8 +33,14 @@ const lowerFirst = (s) => s.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCas
 
 /* ─────────────────────────────────────────────── one pass over everything */
 
-function context(repoDir) {
-  const { thoughts, stats } = loadThoughts(repoDir);
+/* `store` picks the graph read: the thought graph (the default, for search and
+ * catch-up) or the context graph (for gitx_context). Filing thoughts under
+ * commits happens within that graph alone. Links are looked up in BOTH, so a
+ * link that crosses from one graph to the other reads as the thought it names
+ * rather than "not on record". */
+function context(repoDir, { store = 'thought' } = {}) {
+  const { thoughts, stats } = loadThoughts(repoDir, { store });
+  const other = loadThoughts(repoDir, { store: store === 'context' ? 'thought' : 'context' }).thoughts;
   const commits = gitTopology(repoDir);                     // newest first
   const total = commitCount(repoDir) || commits.length;
   const at = new Map(commits.map((c, i) => [c.hash, i]));
@@ -88,11 +94,15 @@ function context(repoDir) {
     }
   }
 
+  const lookup = new Map([...other.map((t) => [t.id, t]), ...thoughts.map((t) => [t.id, t])]);
   const incoming = new Map();
-  for (const t of thoughts) {
+  for (const t of [...thoughts, ...other]) {
     for (const l of t.links || []) push(incoming, l.to, { type: l.type, from: t.id });
     if (t.applied_to) push(incoming, t.applied_to, { type: 'applied-from', from: t.id });
   }
+  /* Which graph a linked thought is in, said only when it is not this one. */
+  const otherName = store === 'context' ? 'thought graph' : 'context graph';
+  const elsewhere = (id) => (!byId.has(id) && lookup.has(id) ? otherName : undefined);
 
   const ref = (h) => {
     if (!h) return undefined;
@@ -108,11 +118,11 @@ function context(repoDir) {
     return at.has(h) ? at.get(h) : Number.MAX_SAFE_INTEGER;
   };
 
-  const stashes = loadStashes(repoDir);
+  const stashes = loadStashes(repoDir, { store });
   const stashOf = new Map();
   for (const s of stashes) for (const id of s.thoughts) stashOf.set(id, s);
 
-  return { thoughts, stats, commits, total, at, byId, incoming, ref, recency, stashes, stashOf };
+  return { store, thoughts, stats, commits, total, at, byId, lookup, elsewhere, incoming, ref, recency, stashes, stashOf };
 }
 
 function push(map, k, v) {
@@ -157,8 +167,8 @@ function brief(ctx, t) {
     why: forward.length ? forward.slice(0, 2) : undefined,
     held_back_by: back.length ? back : undefined,
     links: (t.links || []).length ? t.links.map((l) => {
-      const o = ctx.byId.get(l.to);
-      return { type: l.type, to: l.to, text: o ? cap(o.text, 110) : '(not on record)' };
+      const o = ctx.lookup.get(l.to);
+      return prune({ type: l.type, to: l.to, text: o ? cap(o.text, 110) : '(not on record)', in: ctx.elsewhere(l.to) });
     }) : undefined,
     standing: standing(t)
   };
@@ -167,8 +177,8 @@ function brief(ctx, t) {
 
 function full(ctx, t) {
   const inc = (ctx.incoming.get(t.id) || []).map((l) => {
-    const o = ctx.byId.get(l.from);
-    return { type: l.type, from: l.from, text: o ? cap(o.text, 140) : '(not on record)' };
+    const o = ctx.lookup.get(l.from);
+    return prune({ type: l.type, from: l.from, text: o ? cap(o.text, 140) : '(not on record)', in: ctx.elsewhere(l.from) });
   });
   return prune({
     ...brief(ctx, t),
@@ -254,7 +264,10 @@ export function searchThoughts(repoDir, args = {}) {
   if (args.id) {
     const id = String(args.id).trim();
     const t = ctx.byId.get(id) || ctx.thoughts.find((x) => x.id.startsWith(id));
-    if (!t) return { ...head, error: 'No thought ' + id + ' in this repository.' };
+    if (!t) {
+      const there = ctx.lookup.get(id) || [...ctx.lookup.values()].find((x) => x.id.startsWith(id));
+      return { ...head, error: there ? there.id + ' is in the context graph, waiting for a commit - gitx_context with id reads it.' : 'No thought ' + id + ' in this repository.' };
+    }
     return { ...head, thought: full(ctx, t) };
   }
 
@@ -322,7 +335,105 @@ export function searchThoughts(repoDir, args = {}) {
   });
 }
 
+/* ─────────────────────────────────────────────── the context graph */
+
+/* gitx_context: thinking no commit has settled yet - discussion, ideas, open
+ * questions, findings - and the stashes. Same ranking and the same shapes as
+ * gitx_thought_search, so a thought reads the same in either graph; "since"
+ * names the commit the discussion came after. */
+export function searchContext(repoDir, args = {}) {
+  const ctx = context(repoDir, { store: 'context' });
+  const head = prune({
+    context_graph: ctx.stats.count,
+    stashes: ctx.stashes.length || undefined,
+    not_readable: ctx.stats.skipped ? ctx.stats.skipped + ' file(s) in the context graph are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.' : undefined
+  });
+
+  if (args.id) {
+    const id = String(args.id).trim();
+    const t = ctx.byId.get(id) || ctx.thoughts.find((x) => x.id.startsWith(id));
+    if (t) return { ...head, thought: full(ctx, t) };
+    const there = ctx.lookup.get(id) || [...ctx.lookup.values()].find((x) => x.id.startsWith(id));
+    return { ...head, error: there ? there.id + ' is in the thought graph, not here - gitx_thought_search with id reads it.' : 'No thought ' + id + ' in this repository.' };
+  }
+
+  if (args.stashes) {
+    /* Until the migration moves them, older stashes are still in .gitx/stash/,
+     * where catch-up shows them - said, so an empty list is not misread. */
+    const legacy = loadStashes(repoDir).length;
+    const stillThere = legacy ? legacy + ' older stash(es) are still in .gitx/stash/ and show in gitx_thought_catch_up until they are moved here.' : undefined;
+    if (!ctx.stashes.length) return prune({ ...head, stashes: [], nothing_on_record: 'No stash in the context graph.', elsewhere: stillThere });
+    return prune({
+      ...head,
+      stashes: ctx.stashes.map((s) => prune({
+        id: s.id, title: s.title, state: s.state, note: s.note ? cap(s.note, 240) : undefined,
+        applied_to: s.applied_to ? ctx.ref(s.applied_to) : undefined,
+        thoughts: s.thoughts.map((id) => { const t = ctx.lookup.get(id); return prune({ id, text: t ? t.text : '(not on record)', in: ctx.elsewhere(id) }); }),
+        references: s.references.length ? s.references.map((r) => prune({ repo: r.repo, thought: r.thought, commit: r.commit ? r.commit.slice(0, 7) : undefined, why: r.why })) : undefined
+      })),
+      elsewhere: stillThere
+    });
+  }
+
+  if (!ctx.stats.count) {
+    return { ...head, results: [], nothing_on_record: 'The context graph is empty: every thought on record is in the thought graph, settled by a commit or tied to one.' };
+  }
+
+  let pool = ctx.thoughts;
+  const scope = {};
+  let absence = null;
+  const want = (v) => (v ? (Array.isArray(v) ? v : [v]).map(String) : null);
+  const outcomes = want(args.outcome), kinds = want(args.kind);
+  if (outcomes) pool = pool.filter((t) => outcomes.includes(t.outcome));
+  if (kinds) pool = pool.filter((t) => kinds.includes(t.kind));
+  if (!pool.length) absence = 'No thought in the context graph matches these filters.';
+
+  let ranked = pool.map((t) => ({ t, s: 0 }));
+  const q = String(args.query || '').trim();
+  if (!absence && q) {
+    const qTokens = [...new Set(tokenize(q))];
+    if (!qTokens.length) return { ...head, error: 'The query has no searchable words (3+ letters, not stopwords).' };
+    scope.query = q;
+    ranked = ranked.map((r) => ({ t: r.t, s: score(qTokens, r.t) })).filter((r) => r.s > 0);
+    if (!ranked.length) absence = `Nothing waiting in the context graph mentions "${q}". It may have been settled already - gitx_thought_search reads the thought graph.`;
+  }
+  if (absence) return { ...head, ...scope, results: [], nothing_on_record: absence };
+
+  /* Best match first; otherwise newest discussion first. */
+  ranked.sort((a, b) => (b.s - a.s) || (ctx.recency(a.t) - ctx.recency(b.t)) || String(b.t.created).localeCompare(String(a.t.created)));
+  const limit = Math.max(1, Math.min(SEARCH_MAX, Number(args.limit) || SEARCH_LIMIT));
+  const results = ranked.slice(0, limit).map((r) => brief(ctx, r.t));
+  return prune({
+    ...head,
+    ...scope,
+    matched: ranked.length,
+    returned: results.length,
+    results,
+    more: ranked.length > results.length ? `${ranked.length - results.length} more - raise limit or narrow the search.` : undefined,
+    how_to_use: 'These are thoughts no commit has settled yet: discussion that is waiting, ideas, open questions, findings. "since" is the commit the discussion came after. An accepted decision here was decided but has not been built; a rejected one was turned down - do not re-propose it without answering its held_back_by. Build on what is here instead of working it out again, and link a new thought to the one it continues. A thought moves to the thought graph when a commit settles it. Pass id for one thought in full.'
+  });
+}
+
 /* ─────────────────────────────────────────────── catch up */
+
+/* One line for catch-up: what is waiting in the context graph, counted and
+ * never shown, because that graph is read only when an agent asks for it.
+ * "Written since HEAD" is the in-progress signal - new thinking lands in the
+ * context graph first, so this is where the last session's unfinished work is. */
+function contextSummary(repoDir, headHash) {
+  const { thoughts, stats } = loadThoughts(repoDir, { store: 'context' });
+  const stashes = loadStashes(repoDir, { store: 'context' });
+  if (!thoughts.length && !stashes.length && !stats.skipped) return 'empty - no thought is waiting for a commit';
+  const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+  const parts = [
+    n(thoughts.filter((t) => t.outcome === 'open').length, 'open question', 'open questions'),
+    n(thoughts.filter((t) => t.outcome === 'stashed').length, 'stashed', 'stashed'),
+    n(thoughts.filter((t) => t.anchor && t.anchor.commit === headHash).length, 'written since HEAD', 'written since HEAD')
+  ];
+  if (stashes.length) parts.push(n(stashes.length, 'stash', 'stashes'));
+  if (stats.skipped) parts.push(n(stats.skipped, 'file not readable', 'files not readable'));
+  return n(thoughts.length, 'thought', 'thoughts') + ' waiting for a commit (' + parts.join(', ') + ') - read them with gitx_context';
+}
 
 export function catchUp(repoDir, args = {}) {
   const ctx = context(repoDir);
@@ -330,6 +441,7 @@ export function catchUp(repoDir, args = {}) {
   const headC = ctx.commits[0];
   const head = { head: ctx.ref(headC.hash), thoughts_on_record: ctx.stats.count, of_them_inferred: ctx.stats.inferred };
   if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
+  const waiting = contextSummary(repoDir, headC.hash);
 
   let recent = ctx.commits.slice(0, RECENT_DEFAULT);
   if (args.since) {
@@ -345,7 +457,8 @@ export function catchUp(repoDir, args = {}) {
   if (!ctx.stats.count) {
     return {
       ...head,
-      nothing_on_record: 'This repository records no thoughts. There is no reasoning beyond commit messages to catch up on - gitx_graph_map is the way in.'
+      context_graph: waiting,
+      nothing_on_record: 'The thought graph records nothing: no commit here has reasoning on record beyond its message - gitx_graph_map is the way in.' + (waiting.startsWith('empty') ? '' : ' Thoughts are waiting in the context graph, though - see context_graph.')
     };
   }
 
@@ -400,7 +513,7 @@ export function catchUp(repoDir, args = {}) {
   const stashedOut = (kept.length || loose.length) ? prune({
     stashes: kept.length ? kept.map((s) => prune({
       id: s.id, title: s.title, note: s.note ? cap(s.note, 240) : undefined,
-      thoughts: s.thoughts.map((id) => { const t = ctx.byId.get(id); return { id, text: t ? t.text : '(not on record)' }; }),
+      thoughts: s.thoughts.map((id) => { const t = ctx.lookup.get(id); return { id, text: t ? t.text : '(not on record)' }; }),
       references: s.references.length ? s.references.map((r) => prune({ repo: r.repo, thought: r.thought, commit: r.commit ? r.commit.slice(0, 7) : undefined, why: r.why })) : undefined
     })) : undefined,
     not_in_a_stash: loose.length ? loose.slice(0, 8).map((t) => ({ id: t.id, text: t.text })) : undefined
@@ -416,6 +529,7 @@ export function catchUp(repoDir, args = {}) {
         ...summarise(pending)
       })
       : 'Nothing in progress: every recorded thought is in a commit.',
+    context_graph: waiting,
     recent_commits: recentOut,
     recent_without_reasoning: bare ? `${bare} of these ${recentOut.length} commits have no thinking on record; their messages are all there is.` : undefined,
     latest_with_reasoning: latest,
@@ -423,6 +537,6 @@ export function catchUp(repoDir, args = {}) {
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
     stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought_search says which.' : '')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, read it with gitx_context before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought_search says which.' : '')
   });
 }

@@ -166,10 +166,14 @@ export function loadThoughts(repoDir, { store = 'thought' } = {}) {
  * down: a thought or commit elsewhere, possibly in another repository, noted
  * for whoever picks the stash up. Nothing follows or checks them yet - linking
  * across repositories is itself a stashed idea - and removing a stash can
- * never touch what a reference names. Private, like the thoughts. */
-export function loadStashes(repoDir) {
+ * never touch what a reference names. Private, like the thoughts.
+ *
+ * `store` as in loadThoughts: the default reads .gitx/stash/, 'context' reads
+ * .gitx/context/stash/, where the stashes move with the context graph. */
+export function loadStashes(repoDir, { store = 'thought' } = {}) {
   const out = [];
-  for (const file of jsonFiles(thoughtDirs(repoDir).stash, MAX_DEPTH)) {
+  const dirs = thoughtDirs(repoDir);
+  for (const file of jsonFiles(store === 'context' ? dirs.contextStash : dirs.stash, MAX_DEPTH)) {
     try {
       const s = JSON.parse(fs.readFileSync(file, 'utf8'));
       if (s.schema !== STASH_SCHEMA || !s.id) continue;
