@@ -19,11 +19,22 @@ discussion that got there lives in the context graph.
   every thought tool, as today.
 - **Context graph**: `.gitx/context/`. Thoughts not settled by a commit yet,
   plus stashes. Read **only when an agent asks for it**.
-- **Stays** (in the thought graph): a thought tied to a commit by something
-  stated, never by a guess. Either it has its own `resulted_in`, or a link or
-  force citation connects it, in either direction, to a thought that stays.
-  This is followed transitively. `parent` is **not** a tie, because it records
-  the order thoughts were written in, not what they are about.
+- **Stays** (in the thought graph): what made a commit happen, by something
+  stated, never by a guess. It starts from a thought with its own
+  `resulted_in`, and from every learned rule. From each of those it follows:
+  the evidence it cites; what it supersedes, refines or derives from; and
+  what was weighed against it (`lost-to`, `cost-of` and `supports` pointing
+  at it). Then the same again from each thought reached. A *later* thought
+  that only points back at a staying one, by citing, refining or
+  contradicting it, is unfinished work and does not stay. `parent` is
+  **not** a tie, because it records the order thoughts were written in, not
+  what they are about.
+  - *This is the "directional" rule, and it replaced the first version.* The
+    first version followed every link in both directions. On ter-manager it
+    kept four unfinished follow-ups, among them the open question about the
+    GitHub token. It also would have moved 15 lessons away from the eight
+    learned rules they explain. The numbers under Measured were taken with
+    that first version.
 - **Learned rule**: `kind: "learned"`. A standing instruction.
 - **Wanderer**: anything that neither stays nor is a learned rule.
 
@@ -192,8 +203,31 @@ next one starts.
 - **Check:** before and after placement snapshots (the method used for
   `881c2a1`). Every thought that stays is filed exactly where it was. The
   number of thoughts leaving the thought graph matches the dry run.
+- **As built:** `mcp/migrate-context.js`, shipped in GitX so that every
+  repository that recorded thoughts before the context graph can run it.
+  - With no flags it does a dry run and compares both rules. `--apply`
+    refuses to run unless the rule is named, as in `--rule=directional`.
+  - Moves are renames, recorded in `.gitx/context/migration.json`. If it
+    fails part-way it puts back what it had done, and `--undo` restores
+    every re-pointed file from its original text.
+  - A staying thought's parent is re-pointed whenever the parent does not
+    stay, including a parent already in the context graph. The session
+    writer had chained four thoughts that way.
+- **Dry run, directional rule:** GitX keeps 98 and moves 59, with 7 parents
+  re-pointed and 2 stashes moved. ter-manager keeps 790 and moves 100,
+  with 67 parents re-pointed. In GitX both rules move the same set.
+- **Proven on clones of both repositories, 24 checks.** Moves matched the
+  dry run, and every staying thought stayed filed where it was. The watcher
+  logged one move per thought and no removals. Undo restored 1070 files
+  byte for byte.
+- **Not yet applied.** It waits for the owner to approve the dry run, and
+  for the broker to run the watcher from step 2. A broker started before
+  that would log each move as a removal.
 
 ### 5. Promotion by trailer
+- **Promotion follows the same directional rule.** A thought that moves
+  into the thought graph brings with it the context-graph thoughts it
+  cites, supersedes, refines or derives from.
 - `mcp/tools/git-extract.js`: register `thoughts` as a known trailer key.
   **Trap:** unknown trailer keys are removed from the message without any
   warning today. `GitX-Root` was once lost exactly this way. If the key is not
