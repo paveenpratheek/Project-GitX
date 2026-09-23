@@ -69,25 +69,39 @@ const ROOT_DIR = getRepoRoot();
  * ensureGitignored is what keeps the promise of "without disturbing the
  * user's code" - and it ignores only what is PRIVATE. The commit graph
  * (.gitx/commits, the fuller messages) belongs to the repository and is shared
- * with it; thoughts, drafts, stashes, task state and sandbox checkouts belong to the
+ * with it; thoughts, drafts, the context graph, stashes, task state and sandbox checkouts belong to the
  * person who owns this clone and never leave it. A bare ".gitx/" would have
  * hidden the graph along with them.
  *
+ * It is written as ignore-everything-then-share-one, not as a list of private
+ * folders. A list is private only for the folders someone remembered to name:
+ * every folder added later - the context graph was the first - would have been
+ * pushed with the next commit until a line was added to every repository.
+ * Git's last matching rule wins, so the share line must come AFTER the ignore
+ * line; a share line that only appears earlier is appended again.
+ *
  * A repository that already ignores the whole folder is left alone: that is
  * a choice someone made, and widening what gets pushed is not this function's
- * call. Same defensive shape as every other .gitignore writer in this stack -
- * skip a pattern already present, enforce a trailing newline before
+ * call. Lines from the old list are left where they are - they are harmless
+ * under the new rule, and editing someone's own lines is not this function's
+ * call either. Same defensive shape as every other .gitignore writer in this
+ * stack: skip what is already there, enforce a trailing newline before
  * appending, or the new line grafts onto whatever the last line was. */
-const PRIVATE_GITX = ['.gitx/thoughts/', '.gitx/drafts/', '.gitx/stash/', '.gitx/thought-log/', '.gitx/worktrees/', '.gitx/state.json'];
+const GITX_IGNORE = '.gitx/*';
+const GITX_SHARE = '!.gitx/commits/';
 
 function ensureGitignored(dir) {
   try {
     const giFile = path.join(dir, '.gitignore');
     let text = '';
     try { text = fs.readFileSync(giFile, 'utf8'); } catch (_) { /* none yet - creating it */ }
-    const lines = new Set(text.split(/\r?\n/).map((l) => l.trim()));
-    if (lines.has('.gitx') || lines.has('.gitx/')) return;
-    const missing = PRIVATE_GITX.filter((p) => !lines.has(p));
+    const lines = text.split(/\r?\n/).map((l) => l.trim());
+    if (lines.includes('.gitx') || lines.includes('.gitx/')) return;
+    const ignoreAt = lines.lastIndexOf(GITX_IGNORE);
+    const shareAt = lines.lastIndexOf(GITX_SHARE);
+    const missing = ignoreAt < 0 ? [GITX_IGNORE, GITX_SHARE]
+      : shareAt < ignoreAt ? [GITX_SHARE]
+      : [];
     if (!missing.length) return;
     const sep = (text === '' || text.endsWith('\n')) ? '' : '\n';
     fs.writeFileSync(giFile, text + sep + missing.join('\n') + '\n', 'utf8');

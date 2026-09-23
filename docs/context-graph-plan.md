@@ -90,7 +90,10 @@ Anything added under `.gitx/` from now on is private by default. This also
 settles two loose ends:
 - GitX currently tracks `.gitx/state.json` and ter-manager ignores it. With
   this rule both ignore it, and GitX needs `git rm --cached .gitx/state.json`.
-- `.gitx/drafts/` is empty, left over from `#37 fa6ebdb`. It is removed.
+- `.gitx/drafts/` stays. It is empty, but it is not a leftover: `#37 fa6ebdb`
+  kept it on purpose as somewhere a batch can be written before it is done,
+  `loadThoughts` still reads it, and the watcher recreates it at startup.
+  Whether the context graph takes over that job is a later decision.
 
 ## Lifecycle
 
@@ -128,10 +131,16 @@ settles two loose ends:
 Every step works on its own, and each has a check that must pass before the
 next one starts.
 
-### 1. Storage and ignore rule
+### 1. Storage and ignore rule — done
 - `mcp/tools/thoughts.js`: `thoughtDirs()` gains `context` and `contextStash`.
 - `.gitignore` in both repos: the inverted rule. `git rm --cached .gitx/state.json` in GitX.
+- `mcp/server.js`: `ensureGitignored()` writes the inverted rule into any repo
+  GitX works in, so the rule does not depend on hand edits.
 - **Check:** `git status` shows nothing new after a file is created in `.gitx/context/`.
+- **Found while doing it:** GitX's `.gitx/state.json` had the skip-worktree bit
+  set, a hand-made way of hiding the churn of a private file that had been
+  committed. Git reports that bit as "outside your sparse-checkout", which is
+  misleading. The bit was cleared so the file could be untracked.
 
 ### 2. Watcher covers the context graph
 - `mcp/tools/thought-watch.js`: watch `.gitx/context/thoughts/`. When a

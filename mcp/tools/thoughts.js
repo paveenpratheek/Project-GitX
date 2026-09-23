@@ -1,11 +1,14 @@
 /*
  * The thought layer: the reasoning behind commits, kept BESIDE the commit graph.
  *
- *   .gitx/thoughts/   every thought
+ *   .gitx/thoughts/   the thought graph: what made each commit happen
  *   .gitx/drafts/     a batch still being written, any depth (a backfill
  *                     writes to drafts/backfill/ until it is done)
+ *   .gitx/context/    the context graph: thoughts no commit has settled yet,
+ *                     and the stashes - read only when an agent asks for it.
+ *                     See docs/context-graph-plan.md.
  *
- * Both are PRIVATE: the owner's own reasoning, git-ignored, never pushed. What
+ * All of them are PRIVATE: the owner's own reasoning, git-ignored, never pushed. What
  * IS shared is the commit graph beside it - .gitx/commits - and
  * ensureGitignored in server.js is what draws that line in each repository.
  *
@@ -43,7 +46,11 @@ export function thoughtDirs(repoDir) {
   return {
     thoughts: path.join(repoDir, '.gitx', 'thoughts'),
     drafts: path.join(repoDir, '.gitx', 'drafts'),
-    stash: path.join(repoDir, '.gitx', 'stash')
+    stash: path.join(repoDir, '.gitx', 'stash'),
+    /* The context graph. Every caller names the folders it reads, so these are
+     * read by nothing until the context graph is wired in. */
+    context: path.join(repoDir, '.gitx', 'context', 'thoughts'),
+    contextStash: path.join(repoDir, '.gitx', 'context', 'stash')
   };
 }
 

@@ -1,12 +1,10 @@
 node_modules/
 *.log
 .DS_Store
-# which repo this machine's broker is showing - machine-local, see mcp/broker.js
-.gitx/local.json
-# GitX's own thoughts and stashes: private to whoever owns this clone, like
-# every other repository's (see ensureGitignored in mcp/server.js)
-.gitx/thoughts/
-.gitx/drafts/
-.gitx/stash/
-.gitx/thought-log/
-.gitx/worktrees/
+# GitX: only the commit graph (.gitx/commits) is shared with the repo.
+# Everything else under .gitx - thoughts, the context graph, stashes, the
+# thought log, worktrees, task state - is private to whoever owns this clone.
+# Ignore-all-then-share-one, so a folder added later is private without
+# anyone remembering a line for it (see ensureGitignored in mcp/server.js).
+.gitx/*
+!.gitx/commits/
