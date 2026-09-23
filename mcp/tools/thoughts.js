@@ -71,9 +71,17 @@ function jsonFiles(dir, depth = 0, out = []) {
  * else can catch, because the thought never exists to be missed, so the skip is
  * reported rather than counted. Two files claiming one id is a collision: the
  * first read wins and the second is reported, because one id is one thought
- * wherever its file happens to sit. */
-export function loadThoughts(repoDir) {
+ * wherever its file happens to sit.
+ *
+ * `store` picks the graph: 'thought' (the default - thoughts/ and drafts/) or
+ * 'context' (context/thoughts/). Each is read on its own and neither ever
+ * includes the other, so everything that reads the thought graph today reads
+ * exactly what it read before the context graph existed. Only the watcher
+ * reads both, because only it has to see a thought pass from one to the other. */
+export function loadThoughts(repoDir, { store = 'thought' } = {}) {
   const dirs = thoughtDirs(repoDir);
+  const folders = store === 'context' ? [dirs.context] : [dirs.thoughts, dirs.drafts];
+  const stashDir = store === 'context' ? dirs.contextStash : dirs.stash;
   const byId = new Map();
   const claimed = new Map();                 // id -> the file that already holds it
   const unreadable = [];
@@ -87,7 +95,7 @@ export function loadThoughts(repoDir) {
     hash: crypto.createHash('sha256').update(raw === undefined ? file : raw).digest('hex').slice(0, 16)
   });
 
-  for (const folder of [dirs.thoughts, dirs.drafts]) {
+  for (const folder of folders) {
     for (const file of jsonFiles(folder)) {
       let raw;
       try {
@@ -123,11 +131,14 @@ export function loadThoughts(repoDir) {
   /* Stash files move the signature too, so the page refetches when one is
    * added or applied - they are only stat'ed here, and parsed by loadStashes. */
   let stashes = 0;
-  for (const file of jsonFiles(dirs.stash, MAX_DEPTH)) {
+  for (const file of jsonFiles(stashDir, MAX_DEPTH)) {
     try { newest = Math.max(newest, fs.statSync(file).mtimeMs); stashes++; } catch (_) { /* gone meanwhile */ }
   }
   return {
     thoughts,
+    /* Which file holds each thought, for a report that has to name one. Kept
+     * out of stats: the broker sends stats with every state message. */
+    fileOf: Object.fromEntries([...claimed].map(([id, c]) => [id, c.file])),
     stats: {
       count: thoughts.length,
       inferred,

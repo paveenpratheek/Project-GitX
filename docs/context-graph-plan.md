@@ -142,11 +142,23 @@ next one starts.
   committed. Git reports that bit as "outside your sparse-checkout", which is
   misleading. The bit was cleared so the file could be untracked.
 
-### 2. Watcher covers the context graph
+### 2. Watcher covers the context graph — done
 - `mcp/tools/thought-watch.js`: watch `.gitx/context/thoughts/`. When a
   delete in one store is followed by an add of the same id in the other, log
   it as a **move**, not as a delete and an add.
 - **Check:** renaming a test thought between the two stores logs a single move entry.
+- **As built:** `loadThoughts(repo, { store })` reads one graph at a time, and
+  its default is unchanged (1005 placements before and after, 0 moved). The
+  watcher reads both and keeps `where` beside the thoughts in its index. A
+  move carries any fields changed with it, so a promotion is one entry that
+  includes `resulted_in`. The same id in both graphs is reported as an
+  unreadable file, and the thought-graph copy is the one read. An index saved
+  before this step has no `where`, which means "all in the thought graph", so
+  a restart logs no false moves.
+- **Limit:** a move is recognised when both halves land in the same sweep.
+  A rename does, because it is atomic. A copy followed by a delete more than
+  400 ms later would still be logged as an add and a removal. The migration
+  and promotion therefore rename.
 
 ### 3. `gitx_context` and the catch-up line
 - `mcp/server.js`: the new tool, read-only.
@@ -158,8 +170,11 @@ next one starts.
 ### 4. Migration (runs once, per repo)
 - A script classifies every thought by the rule under Definitions and prints a
   dry run: what moves, what stays, and which `parent` pointers are re-pointed.
-- **The owner approves the dry run.** Then the thoughts move and the stash
-  containers move, and the watcher logs each move with a full copy.
+- **The owner approves the dry run.** Then the thoughts and the stash
+  containers move, by rename. The watcher logs each thought as one `moved`
+  entry (step 2). A re-pointed `parent` belongs to a thought that stays, so
+  it is logged as a `changed` entry on that thought, `was_parent` included.
+  Undoing it is renaming back: a move loses nothing, so no copy is needed.
 - **Check:** before and after placement snapshots (the method used for
   `881c2a1`). Every thought that stays is filed exactly where it was. The
   number of thoughts leaving the thought graph matches the dry run.

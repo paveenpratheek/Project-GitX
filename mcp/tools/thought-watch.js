@@ -8,7 +8,17 @@
  * mistaken rewrite is both noticed and recoverable. Prevention was never
  * available; detection is.
  *
- * Four things it is careful about:
+ * Five things it is careful about:
+ *
+ *   TWO GRAPHS, ONE RECORD. A thought lives in the thought graph
+ *   (.gitx/thoughts/) or in the context graph (.gitx/context/thoughts/), and
+ *   passes from the second to the first when a commit settles it. Each store
+ *   read alone would see that as a removal in one place and an unrelated
+ *   addition in the other, and the history of the thought would break in two.
+ *   Both are watched together, so an id that changes store is ONE entry,
+ *   "moved", carrying any fields that changed with it. The same id in both
+ *   stores at once is reported as an unreadable file: a thought cannot be in
+ *   two graphs, and the thought-graph copy is the one read.
  *
  *   FILES, NOT ONLY THOUGHTS. A file in the wrong shape never becomes a
  *   thought, so it cannot appear as one being added - it is skipped by the
@@ -65,36 +75,63 @@ function readIndex(home) {
   try { return JSON.parse(fs.readFileSync(path.join(home, 'index.json'), 'utf8')); } catch (_) { return null; }
 }
 
+/* Both graphs, and which one each thought is in. `where` is kept beside the
+ * thoughts rather than inside them, so a thought is recorded exactly as it is
+ * on disk. */
 function snapshot(repoDir) {
-  const { thoughts, stats } = loadThoughts(repoDir);
-  const out = { thoughts: {}, files: {} };
-  for (const t of thoughts) out.thoughts[t.id] = t;
+  const graph = loadThoughts(repoDir);
+  const context = loadThoughts(repoDir, { store: 'context' });
+  const out = { thoughts: {}, where: {}, files: {} };
+  for (const t of graph.thoughts) { out.thoughts[t.id] = t; out.where[t.id] = 'thought'; }
   /* A file that is not readable as a thought never becomes one, so it can never
    * show up as an "added" thought - it is the one change that would otherwise
    * go unreported, and the worst one to miss, because the write LOOKS like it
    * worked. Kept by path, with the reason and a hash of what it says. */
-  for (const u of stats.unreadable) out.files[u.file] = { why: u.why, hash: u.hash };
+  for (const u of [...graph.stats.unreadable, ...context.stats.unreadable]) out.files[u.file] = { why: u.why, hash: u.hash };
+  for (const t of context.thoughts) {
+    if (out.thoughts[t.id]) {
+      out.files[context.fileOf[t.id]] = {
+        why: 'id ' + t.id + ' is also in the thought graph, at ' + graph.fileOf[t.id] + ' - a thought cannot be in both graphs, and only the thought-graph copy is read',
+        hash: sha(JSON.stringify(t))
+      };
+      continue;
+    }
+    out.thoughts[t.id] = t;
+    out.where[t.id] = 'context';
+  }
   return out;
 }
 
 /* Which fields differ, with what they used to say. Whole thoughts are kept for
  * a removal - that is the copy a restore comes from. */
-const WATCHED_FIELDS = ['kind', 'text', 'outcome', 'decided_by', 'anchor', 'resulted_in', 'links', 'forces', 'applied_to', 'provenance', 'parent', 'session', 'sources'];
+const WATCHED_FIELDS = ['kind', 'text', 'outcome', 'decided_by', 'anchor', 'resulted_in', 'links', 'forces', 'applied_to', 'provenance', 'parent', 'was_parent', 'session', 'sources'];
 
-function diff(before, after) {
+/* An index saved before the context graph existed has no `where`: everything
+ * it recorded was in the thought graph, so that is what an unrecorded store
+ * means - and restarting on an old index logs no false moves. */
+const storeOf = (where, id) => (where && where[id]) || 'thought';
+
+function diff(before, after, wasIn, isIn) {
   const events = [];
   for (const id of Object.keys(after)) {
-    if (!before[id]) { events.push({ event: 'added', id, text: after[id].text }); continue; }
+    const to = storeOf(isIn, id);
+    if (!before[id]) { events.push({ event: 'added', id, store: to, text: after[id].text }); continue; }
     const fields = {};
     for (const f of WATCHED_FIELDS) {
       const a = JSON.stringify(before[id][f] === undefined ? null : before[id][f]);
       const b = JSON.stringify(after[id][f] === undefined ? null : after[id][f]);
       if (a !== b) fields[f] = { was: JSON.parse(a), now: JSON.parse(b) };
     }
-    if (Object.keys(fields).length) events.push({ event: 'changed', id, text: after[id].text, fields });
+    const changed = Object.keys(fields).length > 0;
+    const from = storeOf(wasIn, id);
+    /* One entry for a move, with whatever changed on the way - a promotion
+     * sets resulted_in in the same step, and splitting that into a move and an
+     * edit would record one act as two. */
+    if (from !== to) events.push({ event: 'moved', id, from, to, text: after[id].text, fields: changed ? fields : undefined });
+    else if (changed) events.push({ event: 'changed', id, store: to, text: after[id].text, fields });
   }
   for (const id of Object.keys(before)) {
-    if (!after[id]) events.push({ event: 'removed', id, text: before[id].text, thought: before[id] });
+    if (!after[id]) events.push({ event: 'removed', id, store: storeOf(wasIn, id), text: before[id].text, thought: before[id] });
   }
   return events;
 }
@@ -124,7 +161,7 @@ export class ThoughtWatcher {
     this.context = context;              // what the broker knows: agents online, etc.
     this.repoDir = null;
     this.home = null;
-    this.before = { thoughts: {}, files: {} };
+    this.before = { thoughts: {}, where: {}, files: {} };
     this.timer = null;
     this.watchers = [];
     this.lastHash = null;
@@ -144,7 +181,7 @@ export class ThoughtWatcher {
     /* Anything that moved while nothing was watching is still recorded, marked
      * as such: the time is when it was NOTICED, not when it happened. */
     if (saved && saved.thoughts) {
-      const missed = [...diff(saved.thoughts, now.thoughts), ...diffFiles(repoDir, saved.files || {}, now.files)];
+      const missed = [...diff(saved.thoughts, now.thoughts, saved.where, now.where), ...diffFiles(repoDir, saved.files || {}, now.files)];
       if (missed.length) {
         this.append(missed.map((e) => ({ ...e, seen: 'while-unwatched' })));
         this.stats.unwatched += missed.length;
@@ -165,7 +202,10 @@ export class ThoughtWatcher {
 
   watch() {
     const dirs = thoughtDirs(this.repoDir);
-    for (const dir of [dirs.thoughts, dirs.drafts, dirs.stash]) {
+    /* A rename between the two graphs fires in two folders at once; the
+     * debounce lets both land before one sweep reads them, which is what makes
+     * a move one entry rather than a removal and an addition. */
+    for (const dir of [dirs.thoughts, dirs.drafts, dirs.stash, dirs.context, dirs.contextStash]) {
       try {
         fs.mkdirSync(dir, { recursive: true });
         const w = fs.watch(dir, { recursive: true }, () => this.bump());
@@ -184,7 +224,7 @@ export class ThoughtWatcher {
     if (!this.repoDir) return;
     let now;
     try { now = snapshot(this.repoDir); } catch (_) { return; }
-    const events = [...diff(this.before.thoughts, now.thoughts), ...diffFiles(this.repoDir, this.before.files, now.files)];
+    const events = [...diff(this.before.thoughts, now.thoughts, this.before.where, now.where), ...diffFiles(this.repoDir, this.before.files, now.files)];
     if (events.length) this.append(events);
     /* An edit that breaks a thought reads as a removal AND an unreadable file;
      * both are recorded, and the second is the one that says why. */
@@ -214,7 +254,7 @@ export class ThoughtWatcher {
   save() {
     try {
       fs.writeFileSync(path.join(this.home, 'index.json'),
-        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before.thoughts, files: this.before.files }, null, 1));
+        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before.thoughts, where: this.before.where, files: this.before.files }, null, 1));
     } catch (_) { /* the log is what matters; the index rebuilds itself */ }
   }
 
