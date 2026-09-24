@@ -41,13 +41,21 @@
     data: null,             // { commits, thoughts, lanes, total, fallback, error, truncated }
     idx: null,              // derived lookups, rebuilt with data
     fetchedFor: '',
-    mode: store.get('gitx.thoughtMode', 'collapsed'),   // code | collapsed | expanded
+    mode: store.get('gitx.thoughtMode', 'collapsed'),   // code | collapsed | expanded | context
     open: new Set(),        // groups opened by hand in collapsed mode
     closed: new Set(),      // groups closed by hand in expanded mode
     sel: null,              // { type: 'commit' | 'thought', id }
     outcomes: new Set(OUTCOMES),
-    query: ''
+    query: '',
+    /* The context graph view: what it is filtered to, how it is grouped, and
+     * which groups are open. Grouping is remembered - it is a way of reading,
+     * and whichever someone prefers they prefer every time. */
+    ctxFilter: 'all',
+    ctxGroup: store.get('gitx.contextGroup', 'discussion'),   // discussion | waiting
+    ctxOpen: null           // Set of open group keys; null until the first draw picks one
   };
+  /* "Thoughts stashed" became the context graph, which holds the stashes. */
+  if (view.mode === 'stashed') view.mode = 'context';
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s)
@@ -80,14 +88,17 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const payload = await res.json();
       if (view.fetchedFor !== key) return;          // a newer repo switch overtook this one
-      view.data = { ...payload, fallback: false };
+      /* A broker from before the context graph sends none - said in the view,
+       * rather than drawn as an empty graph that looks like nothing waits. */
+      view.data = { ...payload, fallback: false, context: payload.context || { thoughts: [], stashes: [], stats: { count: 0 }, missing: true } };
     } catch (err) {
       /* An older broker has no /api/thoughts. The commits still draw, from the
        * graph payload it already ships - one lane, no thoughts, and a note. */
       const pg = (st.projectGraph && st.projectGraph.commits) || [];
       view.data = {
         commits: pg.slice().reverse().map((c) => ({ h: c.h, p: [], d: c.date, s: c.subject, lane: 0 })),
-        thoughts: [], stashes: [], lanes: 1, total: pg.length, fallback: true, error: err.message, stats: { count: 0 }
+        thoughts: [], stashes: [], lanes: 1, total: pg.length, fallback: true, error: err.message, stats: { count: 0 },
+        context: { thoughts: [], stashes: [], stats: { count: 0 }, missing: true }
       };
     }
     buildIndex();
@@ -125,7 +136,12 @@
     const commitAt = new Map(d.commits.map((c, i) => [c.h, i]));
     const total = d.total || d.commits.length;
     const ordinal = new Map(d.commits.map((c, i) => [c.h, total - i]));
-    const thoughtById = new Map(d.thoughts.map((t) => [t.id, t]));
+    /* Context-graph thoughts can be looked up - a link, a stash or the details
+     * panel may name one - but are never filed under a commit below: they are
+     * waiting for one. */
+    const ctx = d.context || { thoughts: [], stashes: [] };
+    for (const t of ctx.thoughts) t.inContext = true;
+    const thoughtById = new Map([...d.thoughts, ...ctx.thoughts].map((t) => [t.id, t]));
 
     /* Pooled by anchor AND talk, exactly as the reader pools them - see
      * thought-query.js. A thought without a talk (the backfill) pools by its
@@ -186,16 +202,18 @@
     }
 
     const incoming = new Map();
-    for (const t of d.thoughts) {
+    for (const t of [...d.thoughts, ...ctx.thoughts]) {
       for (const l of t.links) push(incoming, l.to, { type: l.type, from: t.id });
       if (t.applied_to) push(incoming, t.applied_to, { type: 'applied-from', from: t.id });
     }
 
-    const stashes = d.stashes || [];
+    /* Stashes from both places: the context graph holds them now, and
+     * .gitx/stash/ until the migration moves what is still there. */
+    const stashes = [...(ctx.stashes || []), ...(d.stashes || [])];
     const stashOf = new Map();
     for (const s of stashes) for (const id of s.thoughts) stashOf.set(id, s);
 
-    view.idx = { commitAt, ordinal, thoughtById, groups, below, above, unplaced, incoming, stashes, stashOf };
+    view.idx = { commitAt, ordinal, thoughtById, groups, below, above, unplaced, incoming, stashes, stashOf, context: ctx.thoughts };
   }
 
   function push(map, k, v) {
@@ -397,7 +415,7 @@
    * on purpose, kept before applied - then stashed thoughts no stash holds,
    * which is how a backfill records one. A reference is shown as written: it
    * may name another repository, and nothing here follows or checks it. */
-  function stashView() {
+  function stashSection() {
     const d = view.data;
     const { stashes, stashOf, thoughtById } = view.idx;
     const q = view.query;
@@ -427,12 +445,11 @@
       </section>`;
     };
     const ordered = stashes.slice().sort((a, b) => (a.state === b.state ? 0 : a.state === 'kept' ? -1 : 1));
-    const loose = d.thoughts.filter((t) => t.outcome === 'stashed' && !stashOf.has(t.id) && (!q || matches(t, q)));
+    const loose = [...d.thoughts, ...view.idx.context].filter((t) => t.outcome === 'stashed' && !stashOf.has(t.id) && (!q || matches(t, q)));
     loose.sort((a, b) => (view.idx.commitAt.get(a.led_to || a.anchor) ?? 1e9) - (view.idx.commitAt.get(b.led_to || b.anchor) ?? 1e9));
 
     const parts = [];
     const cards = ordered.map(stashCard).filter(Boolean);
-    parts.push(`<div class="tg-stash-title"><b>Stashed for later</b><span class="tg-dim">${stashes.length} stash${stashes.length === 1 ? '' : 'es'} · ${loose.length} stashed thought${loose.length === 1 ? '' : 's'} outside a stash</span></div>`);
     if (cards.length) parts.push(cards.join(''));
     if (loose.length) {
       parts.push(`<div class="tg-sec tg-loose"><span class="tg-label">Stashed thoughts not in a stash</span>${loose.map((t) => {
@@ -446,14 +463,132 @@
     return parts.join('');
   }
 
+  /* ───────────────────────────────────────────── the context graph */
+
+  /* What a waiting thought is waiting FOR - the question the view is sorted by.
+   * A decided decision or cost has been settled in talk and waits for the
+   * commit that builds it; an open one waits for someone to decide it. */
+  const WAITING = [
+    ['open', 'Open', 'Still open'],
+    ['built', 'Decided, not built', 'Decided, not built'],
+    ['found', 'Findings', 'Found'],
+    ['turned', 'Turned down', 'Turned down'],
+    ['stashed', 'Stashed', 'Stashed']
+  ];
+  const waitingFor = (t) => t.outcome === 'open' ? 'open' : t.outcome === 'rejected' ? 'turned' : t.outcome === 'stashed' ? 'stashed'
+    : (t.kind === 'decision' || t.kind === 'cost') ? 'built' : 'found';
+  const inContextView = (t) => t.inContext || view.idx.stashOf.has(t.id);
+
+  /* The context graph: thinking no commit has settled yet, and the stashes.
+   * Read here and never drawn on the commit graph - the thought graph speaks
+   * for commits, and this is what is still waiting to become one. An interim
+   * view: the context graph gets its own design once its uses are worked out. */
+  function contextView() {
+    const d = view.data;
+    const all = view.idx.context;
+    const shownHere = (t) => shown(t) && (view.ctxFilter === 'all' || waitingFor(t) === view.ctxFilter);
+    const sinceHead = all.filter((t) => d.commits[0] && t.anchor === d.commits[0].h).length;
+    const stashCount = view.idx.stashes.length;
+    /* Stashed counts what the stashes section holds - a stash's own thoughts
+     * and stashed thoughts outside one, in either graph - so the chip and the
+     * section below it never disagree while older stashes wait to be moved. */
+    const stashedIds = new Set([
+      ...view.idx.stashes.flatMap((s) => s.thoughts),
+      ...[...d.thoughts, ...all].filter((t) => t.outcome === 'stashed').map((t) => t.id)
+    ]);
+    const count = (k) => k === 'stashed' ? stashedIds.size : all.filter((t) => waitingFor(t) === k).length;
+    const waitingN = all.filter((t) => t.outcome !== 'stashed').length;
+
+    const parts = [];
+    parts.push(`<div class="tg-stash-title"><b>Context graph</b><span class="tg-dim">${waitingN} thought${waitingN === 1 ? '' : 's'} waiting for a commit`
+      + (sinceHead ? ` · ${sinceHead} written since HEAD` : '') + (stashCount ? ` · ${stashCount} stash${stashCount === 1 ? '' : 'es'}` : '') + '</span>'
+      + (d.context && d.context.missing ? '' : `<span class="tg-grow"></span><span class="tg-ctx-by"><span class="tg-dim">Group by</span>${[['discussion', 'Discussion'], ['waiting', 'What it waits for']].map(([k, label]) =>
+        `<button type="button" class="tg-ctx-f${view.ctxGroup === k ? ' is-on' : ''}" data-ctx-group="${k}" aria-pressed="${view.ctxGroup === k}">${label}</button>`).join('')}</span>`)
+      + '</div>');
+    if (d.context && d.context.missing) {
+      parts.push('<div class="tg-empty">This broker was started before the context graph existed, so it sends none. Restart it to see what is waiting.</div>');
+      return parts.join('');
+    }
+    const filters = [['all', 'All', waitingN + stashedIds.size], ...WAITING.map(([k, label]) => [k, label, count(k)])];
+    parts.push(`<div class="tg-ctx-bar">${filters.map(([k, label, n]) =>
+      `<button type="button" class="tg-ctx-f${view.ctxFilter === k ? ' is-on' : ''}" data-ctx-filter="${k}" aria-pressed="${view.ctxFilter === k}">${esc(label)} <span class="tg-dim">${n}</span></button>`).join('')}
+    </div>`);
+
+    /* Groups: by the discussion a thought came out of - the commit it was
+     * written after, the nearest thing to a topic until sets are named - or by
+     * what it waits for. Stashed thoughts live in the stashes at the bottom. */
+    const groups = [];
+    const pool = all.filter((t) => t.outcome !== 'stashed');
+    if (view.ctxGroup === 'waiting') {
+      for (const [k, label] of WAITING) {
+        if (k === 'stashed') continue;
+        groups.push({ key: 'w:' + k, head: `<b>${esc(label)}</b>`, thoughts: pool.filter((t) => waitingFor(t) === k) });
+      }
+    } else {
+      const byAnchor = new Map();
+      for (const t of pool) push(byAnchor, t.anchor, t);
+      const at = (h) => view.idx.commitAt.has(h) ? view.idx.commitAt.get(h) : 1e9;
+      for (const [anchor, list] of [...byAnchor].sort((a, b) => at(a[0]) - at(b[0]))) {
+        const c = view.idx.commitAt.has(anchor) ? d.commits[view.idx.commitAt.get(anchor)] : null;
+        groups.push({
+          key: 'a:' + anchor,
+          head: `<span class="tg-dim">after</span><b>${esc(ord(anchor) || short(anchor))}</b><span class="tg-mono tg-dim">${esc(short(anchor))}</span>`
+            + `<span class="tg-ctx-subject">${c ? esc(c.s) : 'not in the history shown'}</span>`,
+          date: c ? day(c.d) : '',
+          thoughts: list
+        });
+      }
+    }
+    if (!view.ctxOpen) view.ctxOpen = new Set(groups.length ? [groups[0].key] : []);
+
+    const section = (label, list) => list.length ? `<div class="tg-sec"><span class="tg-label">${esc(label)}</span>${list.map((t) => card(t)).join('')}</div>` : '';
+    let drawn = 0;
+    for (const g of groups) {
+      const list = g.thoughts.filter(shownHere);
+      if (!list.length) continue;
+      drawn += list.length;
+      const open = view.query || view.ctxFilter !== 'all' || view.ctxOpen.has(g.key);
+      parts.push(`<section class="tg-ctx-group${open ? ' is-open' : ''}">
+        <button type="button" class="tg-ctx-head" data-ctx-toggle="${esc(g.key)}" aria-expanded="${open}">${open ? CHEVRON_DOWN : CHEVRON_RIGHT}${g.head}
+          <span class="tg-grow"></span><span class="tg-dim">${list.length}${g.date ? ' · ' + esc(g.date) : ''}</span></button>
+        ${open ? `<div class="tg-ctx-body">${view.ctxGroup === 'waiting'
+          ? list.map((t) => card(t)).join('')
+          : WAITING.filter(([k]) => k !== 'stashed').map(([k, , label]) => section(label, list.filter((t) => waitingFor(t) === k))).join('')}</div>` : ''}
+      </section>`);
+    }
+    if (view.ctxFilter === 'all' || view.ctxFilter === 'stashed') {
+      parts.push(`<div class="tg-stash-title tg-ctx-stashes"><b>Stashes</b><span class="tg-dim">set aside on purpose</span></div>`);
+      parts.push(stashSection());
+    } else if (!drawn) {
+      parts.push(`<div class="tg-empty">${view.query ? 'Nothing waiting matches this search.' : 'Nothing is waiting in this group.'}</div>`);
+    }
+    if (!all.length && !stashCount) {
+      parts.push('<div class="tg-empty">Nothing is waiting: every thought on record is in the thought graph, settled by a commit or tied to one.</div>');
+    }
+    return parts.join('');
+  }
+
+  /* In the graph modes, one line instead of drawing any of it. */
+  function contextPointer() {
+    const d = view.data;
+    const all = view.idx.context;
+    if (!all.length) return '';
+    const open = all.filter((t) => t.outcome === 'open').length;
+    const sinceHead = all.filter((t) => d.commits[0] && t.anchor === d.commits[0].h).length;
+    return `<button type="button" class="tg-ctx-pointer" data-ctx-open="1">
+      <span>${all.length} thought${all.length === 1 ? '' : 's'} waiting in the context graph</span>
+      <span class="tg-dim">${open ? `· ${open} open` : ''}${sinceHead ? ` · ${sinceHead} since HEAD` : ''}</span>
+      <span class="tg-grow"></span><span class="tg-ctx-go">Open context graph →</span></button>`;
+  }
+
   function renderList() {
     const list = $('tg-list');
     if (!list) return;
     const d = view.data;
     if (!d) { list.innerHTML = '<div class="tg-empty">Loading the graph…</div>'; return; }
-    if (view.mode === 'stashed') {
-      list.innerHTML = stashView();
-      list.dataset.mode = 'stashed';
+    if (view.mode === 'context') {
+      list.innerHTML = contextView();
+      list.dataset.mode = 'context';
       list.style.setProperty('--tg-gutter', '16px');
       return;
     }
@@ -462,6 +597,7 @@
     const { below, above, unplaced } = view.idx;
     const code = view.mode === 'code';
     const html = [];
+    if (!code) html.push(contextPointer());
     for (const c of d.commits) {
       if (!code) for (const g of above.get(c.h) || []) html.push(isOpen(g) ? box(g) : chipRow(g, true));
       const here = below.get(c.h) || [];
@@ -611,10 +747,28 @@
     const commitBtn = (h) => h === 'genesis' ? 'before the first commit'
       : view.idx.commitAt.has(h) ? `<button type="button" class="tg-inline" data-commit="${esc(h)}">${esc(short(h))}</button> · ${esc(ord(h))}` : esc(short(h));
 
+    /* What it waits for, and for a decision made but not built, the line that
+     * settles it: named in the commit that carries it out, it moves to the
+     * thought graph when that commit lands. */
+    const WAITING_WORDS = {
+      open: 'An open question: nobody has settled it. Decide it before building on it.',
+      built: 'Decided, not built: it waits for the commit that carries it out.',
+      found: 'A finding no commit rests on yet.',
+      turned: 'Turned down, and kept so it is not proposed again.',
+      stashed: 'Set aside on purpose, to pick up later.'
+    };
+    const waiting = !t.inContext ? '' : `<div class="tg-dsec tg-waiting"><span class="tg-label">Waiting in the context graph</span>
+      <span>${esc(WAITING_WORDS[waitingFor(t)])}</span>
+      <span class="tg-dim">Written after ${commitBtn(t.anchor)} · not drawn on the commit graph</span>
+      ${waitingFor(t) === 'built' ? `<span class="tg-dim">Settle it with the commit that builds it:</span>
+        <span class="tg-trailer"><code>GitX-Thoughts: ${esc(t.id)}</code><button type="button" class="tg-copy" data-copy="GitX-Thoughts: ${esc(t.id)}">Copy</button></span>` : ''}
+    </div>`;
+
     return `
       <span class="tg-mono tg-dim">${esc(t.id)}${t.provenance === 'inferred' ? ' · inferred later from a transcript' : ''}</span>
       <h2 class="tg-title">${esc(t.text)}</h2>
       <div class="tg-pills">${pills}</div>
+      ${waiting}
       ${forces('backward', 'Held back by')}
       ${forces('forward', 'Pushed forward by')}
       ${lostTo}
@@ -622,7 +776,7 @@
       ${incoming.length ? `<div class="tg-dsec"><span class="tg-label">Linked from</span>${incoming.join('')}</div>` : ''}
       ${view.idx.stashOf.has(t.id) ? (() => {
         const s = view.idx.stashOf.get(t.id);
-        return `<div class="tg-dsec"><span class="tg-label">In a stash</span><span><b>${esc(s.title)}</b> <span class="tg-dim">· ${s.state === 'applied' ? 'applied' : 'kept for later'} · ${esc(s.id)}</span></span>${s.note ? `<span class="tg-dim">${esc(s.note)}</span>` : ''}${(s.references || []).length ? `<span class="tg-dim">${s.references.length} reference${s.references.length === 1 ? '' : 's'} noted - open "Thoughts stashed" to read them.</span>` : ''}</div>`;
+        return `<div class="tg-dsec"><span class="tg-label">In a stash</span><span><b>${esc(s.title)}</b> <span class="tg-dim">· ${s.state === 'applied' ? 'applied' : 'kept for later'} · ${esc(s.id)}</span></span>${s.note ? `<span class="tg-dim">${esc(s.note)}</span>` : ''}${(s.references || []).length ? `<span class="tg-dim">${s.references.length} reference${s.references.length === 1 ? '' : 's'} noted - open the context graph to read them.</span>` : ''}</div>`;
       })() : ''}
       <div class="tg-dsec"><span class="tg-label">Where it sits</span>
         <div class="tg-kv">
@@ -780,13 +934,14 @@
     const s = $('tg-summary');
     if (s && view.data) {
       const d = view.data;
+      const waitingN = (view.idx && view.idx.context.length) || 0;
       s.textContent = d.fallback ? d.commits.length + ' commits' :
-        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (d.stats.inferred ? ` · ${d.stats.inferred} inferred` : '');
+        `${d.commits.length} commits · ${d.thoughts.length} thoughts` + (waitingN ? ` · ${waitingN} waiting` : '') + (d.stats.inferred ? ` · ${d.stats.inferred} inferred` : '');
     }
     const legend = $('tg-legend');
-    if (legend) legend.hidden = view.mode === 'code' || view.mode === 'stashed';
+    if (legend) legend.hidden = view.mode === 'code' || view.mode === 'context';
     const colhead = $('tg-colhead');
-    if (colhead) colhead.hidden = view.mode === 'stashed';
+    if (colhead) colhead.hidden = view.mode === 'context';
   }
 
   function render() {
@@ -799,17 +954,24 @@
 
   function select(sel, scroll) {
     view.sel = sel;
-    /* Going TO something the current view cannot show switches to the graph:
-     * a commit, or a thought that is not in the stash view, followed from the
-     * details panel while the stash is open. */
-    if (sel && sel.type === 'commit' && scroll && view.mode === 'stashed') toGraph();
+    /* Going TO something the current view cannot show switches to one that
+     * can: a commit is on the graph; a waiting thought is only in the context
+     * graph; a settled one is on the graph unless it sits in a stash, which
+     * the context view shows. */
+    if (sel && sel.type === 'commit' && scroll && view.mode === 'context') toGraph();
     if (sel && sel.type === 'thought') {
       const t = view.idx.thoughtById.get(sel.id);
-      const g = t && view.idx.groups.get(t.group);
-      const inStash = t && (t.outcome === 'stashed' || view.idx.stashOf.has(t.id));
-      if (view.mode === 'code' || (view.mode === 'stashed' && !inStash)) toGraph();
-      if (g && !isOpen(g)) {
-        if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
+      if (t && t.inContext) {
+        if (view.mode !== 'context') { view.mode = 'context'; store.set('gitx.thoughtMode', view.mode); }
+        if (view.ctxFilter !== 'all' && waitingFor(t) !== view.ctxFilter) view.ctxFilter = 'all';
+        const key = view.ctxGroup === 'waiting' ? 'w:' + waitingFor(t) : 'a:' + t.anchor;
+        if (view.ctxOpen) view.ctxOpen.add(key);
+      } else if (t) {
+        const g = view.idx.groups.get(t.group);
+        if (view.mode === 'code' || (view.mode === 'context' && !inContextView(t))) toGraph();
+        if (g && !isOpen(g)) {
+          if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
+        }
       }
       if (t && !view.outcomes.has(t.outcome)) view.outcomes.add(t.outcome);
     }
@@ -831,16 +993,37 @@
   }
 
   function onClick(e) {
-    const t = e.target.closest('[data-toggle],[data-thought],[data-commit],[data-back],[data-open-groups]');
+    const t = e.target.closest('[data-toggle],[data-thought],[data-commit],[data-back],[data-open-groups],[data-ctx-filter],[data-ctx-group],[data-ctx-toggle],[data-ctx-open],[data-copy]');
     if (!t) return;
     const inDetail = !!t.closest('#tg-detail');
+    if (t.dataset.ctxFilter) { view.ctxFilter = t.dataset.ctxFilter; renderList(); return; }
+    if (t.dataset.ctxGroup) {
+      view.ctxGroup = t.dataset.ctxGroup;
+      store.set('gitx.contextGroup', view.ctxGroup);
+      view.ctxOpen = null;                         // the new grouping opens its first group
+      renderList();
+      return;
+    }
+    if (t.dataset.ctxToggle) {
+      const k = t.dataset.ctxToggle;
+      if (view.ctxOpen.has(k)) view.ctxOpen.delete(k); else view.ctxOpen.add(k);
+      renderList();
+      return;
+    }
+    if (t.dataset.ctxOpen) { view.mode = 'context'; store.set('gitx.thoughtMode', view.mode); render(); return; }
+    if (t.dataset.copy) {
+      const text = t.dataset.copy;
+      const done = (ok) => { t.textContent = ok ? 'Copied' : 'Select and copy'; setTimeout(() => { t.textContent = 'Copy'; }, 1600); };
+      if (navigator.clipboard) navigator.clipboard.writeText(text).then(() => done(true), () => done(false)); else done(false);
+      return;
+    }
     if (t.dataset.toggle) toggle(t.dataset.toggle);
     else if (t.dataset.back) select(null);
     else if (t.dataset.openGroups) {
       for (const g of view.idx.below.get(t.dataset.openGroups) || []) {
         if (view.mode === 'expanded') view.closed.delete(g.key); else view.open.add(g.key);
       }
-      if (view.mode === 'code' || view.mode === 'stashed') toGraph();
+      if (view.mode === 'code' || view.mode === 'context') toGraph();
       select(view.sel, false);
       const el = document.querySelector(`#tg-list [data-row="${CSS.escape(t.dataset.openGroups)}"]`);
       if (el) el.scrollIntoView({ block: 'start', behavior: 'smooth' });

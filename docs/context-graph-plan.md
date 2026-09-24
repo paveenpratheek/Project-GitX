@@ -275,6 +275,27 @@ next one starts.
   graph, and nothing in the UI would show the context graph.
 - **This has to be done before the migration is applied.** Give the page the
   context graph's stashes, plus a view of what is waiting.
+- **Done. Designed as a mockup first, and the owner approved it.**
+  - "Context graph" takes the place of "Thoughts stashed" in the mode bar,
+    and the stashes become a section inside it.
+  - Filter chips sort thoughts by what they wait for: open, decided but not
+    built, finding, turned down, stashed.
+  - Two groupings, one click apart: by the discussion a thought came from
+    (the commit it was written after), or by what it waits for.
+  - The details panel shows what a thought waits for. For a decision made
+    but not built, it shows the `GitX-Thoughts` line with a copy button.
+  - The graph modes show one line pointing to the context graph, and never
+    draw the waiting thoughts themselves.
+  - `/api/thoughts` has a `context` section, and the refetch signature
+    covers both graphs.
+  - An older broker that sends no context graph is named as the cause
+    instead of being shown as an empty view.
+  - This view is interim. A proper context graph gets designed once its
+    use cases are worked out.
+- **Checked against a second broker on 7787, running on GitX's real data.**
+  Not verified: a real click copying to the clipboard (the handler and its
+  fallback were), and the light theme, which comes from ter-manager's
+  palette.
 
 ### 6. Remove the guess
 - With wanderers gone, every thought in the thought graph that has no

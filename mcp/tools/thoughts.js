@@ -271,6 +271,13 @@ export function thoughtsPayload(repoDir) {
     commits: commits.map((c) => ({ h: c.hash, p: c.parents, d: c.date, s: c.subject, lane: c.lane })),
     thoughts: thoughts.map(compact),
     stashes: loadStashes(repoDir),
-    stats
+    stats,
+    /* The context graph, for the page's own view of it: never drawn on the
+     * commit graph, and kept apart here so nothing that reads the thoughts
+     * above can mistake a waiting thought for a settled one. */
+    context: (() => {
+      const c = loadThoughts(repoDir, { store: 'context' });
+      return { thoughts: c.thoughts.map(compact), stashes: loadStashes(repoDir, { store: 'context' }), stats: c.stats };
+    })()
   };
 }

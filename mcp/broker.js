@@ -55,6 +55,15 @@ let state = {
   thoughtStats: null
 };
 
+/* The page refetches the thoughts when this signature moves, so it covers
+ * both graphs: a thought written to the context graph, or one promoted out of
+ * it, has to reach the page as surely as one in the thought graph. */
+function thoughtStatsOf(dir) {
+  const graph = loadThoughts(dir).stats;
+  const context = loadThoughts(dir, { store: 'context' }).stats;
+  return { ...graph, context: { count: context.count, skipped: context.skipped }, signature: graph.signature + '|' + context.signature };
+}
+
 function getBranch(dir) {
   try {
     return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
@@ -186,7 +195,7 @@ function refreshFromGit(targetDir = null) {
   }
 
   try {
-    state.thoughtStats = loadThoughts(dir).stats;
+    state.thoughtStats = thoughtStatsOf(dir);
     watcher.open(dir);
   } catch (err) {
     state.thoughtStats = { error: err.message };
@@ -202,7 +211,7 @@ function refreshFromGit(targetDir = null) {
   try {
     const promoted = promotePending(dir);
     for (const r of promoted) console.log('[GitX Broker] Promoted for ' + describePromotion(r));
-    if (promoted.some((r) => r.promoted.length || r.brought.length)) state.thoughtStats = loadThoughts(dir).stats;
+    if (promoted.some((r) => r.promoted.length || r.brought.length)) state.thoughtStats = thoughtStatsOf(dir);
   } catch (err) {
     console.warn('[GitX Broker] Promotion failed, nothing more was moved: ' + err.message);
   }
