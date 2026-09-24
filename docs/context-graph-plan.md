@@ -329,6 +329,30 @@ next one starts.
 - **Check first:** the placement probe shows the fallback places **zero**
   thoughts in both repos. Only then remove it, from
   `mcp/tools/thought-query.js` and `js/graph-view.js` together.
+- **Done, but not as planned: the check failed.** After the first migration
+  the vote still placed 46 thoughts. The commit-only pass removed the rules
+  and lessons among them, and 11 were left. Those 11 do support a commit,
+  but they sat beyond the reader's old follow, which only went two links
+  deep and stayed within one conversation. So deleting the vote alone would
+  have left them "not in a commit yet".
+- **What was built instead:** the reader and the page file thoughts with the
+  **same directional rule** that migration and promotion use. It starts
+  from every thought that has a commit, walks outward, and files each
+  thought reached under that commit, oldest commit first. No pools, no vote,
+  no `talk`. A thought the rule doesn't reach shows as "not in a commit
+  yet", and there are none today.
+  - Exactly 12 thoughts are now filed differently: the 11 the vote had
+    placed, each now under the commit its written link points to, and one
+    GitX finding that showed as not in a commit.
+  - All 879 others are filed where they were.
+  - The page's filing code, taken unchanged from `graph-view.js` and run
+    on the broker's payload, agrees with the reader on all 891 thoughts.
+- A question a committed decision *refines* now counts as answered in
+  catch-up, search and the page. ter-manager has no open questions left in
+  its thought graph.
+- The context view gains a **Rules** category, since the rules now live
+  there. `talk` is gone from the payload, and the writer no longer stamps
+  it. It stays in older files, where nothing reads it.
 
 ### 7. Write path
 - The writer (`project gitx_TM/thought-backfill/session.cjs` for now) writes to

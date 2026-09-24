@@ -28,6 +28,10 @@ const SEARCH_MAX = 50;
 const TEXT_CAP = 200;
 const RECENT_DEFAULT = 5;
 
+/* The directional rule's edges - the same as migrate-context.js and promote.js. */
+const WEIGHED_AGAINST_IT = ['lost-to', 'cost-of', 'supports'];     // links pointing AT a filed thought
+const ITS_OWN_HISTORY = ['supersedes', 'refines', 'derived-from'];  // links FROM a filed thought
+
 const cap = (s, n = TEXT_CAP) => (!s || s.length <= n ? s : s.slice(0, n).replace(/\s+\S*$/, '') + '…');
 const lowerFirst = (s) => s.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase());
 
@@ -46,51 +50,39 @@ function context(repoDir, { store = 'thought' } = {}) {
   const at = new Map(commits.map((c, i) => [c.hash, i]));
   const byId = new Map(thoughts.map((t) => [t.id, t]));
 
-  /* The page's grouping, so an agent and a person looking at the graph see the
-   * same thought under the same commit. A group is everything anchored at one
-   * commit; its led_to is the one its accepted thoughts share, so a rejected
-   * alternative sits with the choice that beat it. None at all means thinking
-   * that has not produced a commit yet. */
-  /* Pooled by anchor AND talk. The fallback below hands an untied thought to
-   * the commit the rest of its pool led to, which is right when a pool is one
-   * talk - a backfill window, where everything anchored at one commit came out
-   * of one conversation. A live session breaks that: three separate talks
-   * happened while HEAD sat on one commit, only one of them produced a commit,
-   * and the vote filed the other two under it. A thought records the talk it
-   * came from; one without a talk (the whole backfill) pools as it always did. */
-  const byAnchor = new Map();
-  for (const t of thoughts) push(byAnchor, (t.anchor && t.anchor.commit) + '|' + (t.talk || ''), t);
-  for (const list of byAnchor.values()) {
-    const votes = new Map();
-    for (const t of list) if (t.resulted_in) votes.set(t.resulted_in.commit, (votes.get(t.resulted_in.commit) || 0) + 1);
-    /* Ties go to the earliest commit, as on the page. */
-    const shared = [...votes.entries()].sort((a, b) => (b[1] - a[1]) || ((at.get(b[0]) ?? -1) - (at.get(a[0]) ?? -1)))[0];
-    /* Same rule as the page: a thought with no commit of its own follows the
-     * thought it is tied to within this talk - lost-to, cost-of, derived-from
-     * first, then the decision whose force cites it, then what it cites. */
-    const local = new Map(list.map((x) => [x.id, x]));
-    const citedBy = new Map();
-    for (const x of list) for (const f of x.forces || []) for (const c of f.cites || []) push(citedBy, c, x);
-    /* Decided but not committed stays pending, with everything tied to it. */
-    const PENDING = '-';
-    const follow = (x, depth) => {
-      if (x.resulted_in) return x.resulted_in.commit;
-      if (x.outcome === 'accepted' && (x.kind === 'decision' || x.kind === 'cost')) return PENDING;
-      if (depth > 2) return null;
-      const next = [
-        ...(x.links || []).filter((l) => l.type === 'lost-to' || l.type === 'cost-of' || l.type === 'derived-from').map((l) => local.get(l.to)),
-        ...(citedBy.get(x.id) || []),
-        ...(x.forces || []).flatMap((f) => (f.cites || []).map((c) => local.get(c)))
-      ];
-      for (const y of next) {
-        const r = y && y !== x && follow(y, depth + 1);
-        if (r) return r;
-      }
-      return null;
-    };
-    for (const t of list) {
-      const found = follow(t, 0);
-      t._behind = found === PENDING ? null : (found || (shared && shared[0]) || null);
+  /* Which commit each thought is filed under - the page files them the same
+   * way, so an agent and a person see the same thought under the same commit.
+   *
+   * By the directional rule, the one the migration and promotion use (see
+   * migrate-context.js), so what decides that a thought belongs in the thought
+   * graph and what decides where it is shown are one rule. From every thought
+   * with a commit of its own: the evidence it cites, what it supersedes,
+   * refines or derives from, and what was weighed against it - lost-to,
+   * cost-of, supports pointing at it - then the same from each of those, and
+   * each is filed under the commit it was reached from. Breadth-first from
+   * the oldest commit, so a thought two commits rest on sits under the first.
+   *
+   * No guess. There was one: a thought the old two-step follow could not place
+   * went to the commit most of its conversation led to - a vote, with a talk
+   * field to keep separate conversations apart. The thought graph now holds
+   * only what supports a commit, so nothing is left for a vote to decide; a
+   * thought the rule does not reach is shown as not in a commit yet. */
+  const linkedIn = new Map();
+  for (const t of thoughts) for (const l of t.links || []) push(linkedIn, l.to, { from: t.id, type: l.type });
+  const reach = (t) => [
+    ...(t.forces || []).flatMap((f) => f.cites || []),
+    ...(t.links || []).filter((l) => ITS_OWN_HISTORY.includes(l.type)).map((l) => l.to),
+    ...(linkedIn.get(t.id) || []).filter((l) => WEIGHED_AGAINST_IT.includes(l.type)).map((l) => l.from)
+  ];
+  const age = (h) => (at.has(h) ? at.get(h) : -1);
+  const queue = thoughts.filter((t) => t.resulted_in && t.resulted_in.commit).sort((a, b) => age(b.resulted_in.commit) - age(a.resulted_in.commit));
+  for (const t of thoughts) t._behind = null;
+  for (const t of queue) t._behind = t.resulted_in.commit;
+  while (queue.length) {
+    const t = queue.shift();
+    for (const id of reach(t)) {
+      const n = byId.get(id);
+      if (n && !n._behind) { n._behind = t._behind; queue.push(n); }
     }
   }
 
@@ -143,6 +135,19 @@ function supersededBy(ctx, t) {
   return by ? by.from : null;
 }
 
+/* An open question is also answered when a decision refines it and that
+ * decision is in a commit: the refinement is the answer, built. Refined by a
+ * decision still waiting, it is not answered yet. */
+function answeredBy(ctx, t) {
+  const s = supersededBy(ctx, t);
+  if (s) return s;
+  const by = (ctx.incoming.get(t.id) || []).find((l) => {
+    const from = l.type === 'refines' && ctx.lookup.get(l.from);
+    return from && from.resulted_in && from.resulted_in.commit;
+  });
+  return by ? by.from : null;
+}
+
 /* How much weight a thought can bear, in one phrase: was it said at the time
  * or pieced together later, and has its owner checked it. */
 const standing = (t) => (t.provenance === 'inferred' ? 'inferred later from a transcript - read it twice' : 'recorded at the time');
@@ -159,6 +164,7 @@ function brief(ctx, t) {
     kind: t.kind,
     outcome: t.outcome,
     status: supersededBy(ctx, t) ? 'superseded by ' + supersededBy(ctx, t)
+      : t.outcome === 'open' && answeredBy(ctx, t) ? 'answered - refined by ' + answeredBy(ctx, t) + ', which is in a commit'
       : reopenable(t) ? 'reopenable - held back only by something that can change' : undefined,
     text: t.text,
     decided_by: t.decided_by || undefined,
@@ -523,7 +529,7 @@ export function catchUp(repoDir, args = {}) {
   }
 
   const byRecency = (list) => list.slice().sort((a, b) => ctx.recency(a) - ctx.recency(b));
-  const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open' && !supersededBy(ctx, t)));
+  const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open' && !answeredBy(ctx, t)));
   const back = byRecency(ctx.thoughts.filter((t) => reopenable(t) && !supersededBy(ctx, t)));
   /* Stashes first, as the containers someone made on purpose; then stashed
    * thoughts no stash holds (a backfill records the outcome without one). */

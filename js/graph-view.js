@@ -143,55 +143,41 @@
     for (const t of ctx.thoughts) t.inContext = true;
     const thoughtById = new Map([...d.thoughts, ...ctx.thoughts].map((t) => [t.id, t]));
 
-    /* Pooled by anchor AND talk, exactly as the reader pools them - see
-     * thought-query.js. A thought without a talk (the backfill) pools by its
-     * anchor alone, as before. */
-    const byAnchor = new Map();
-    for (const t of d.thoughts) push(byAnchor, t.anchor + '|' + (t.talk || ''), t);
-    const groups = new Map();
-    for (const list of byAnchor.values()) {
-      const anchor = list[0].anchor;
-      const votes = new Map();
-      for (const t of list) if (t.led_to) votes.set(t.led_to, (votes.get(t.led_to) || 0) + 1);
-      /* A tie goes to the earliest commit (the first thing the talk produced),
-       * so the fallback cannot flip between runs. */
-      const shared = [...votes.entries()].sort((a, b) => (b[1] - a[1]) || ((commitAt.get(b[0]) ?? -1) - (commitAt.get(a[0]) ?? -1)))[0];
-      /* A thought with no commit of its own follows the one it is tied to -
-       * the choice a rejection lost to, the decision a cost belongs to, the
-       * rejection a rule was learned from - within the same talk, so it sits
-       * beside it even when that choice led to a later commit than the rest. */
-      /* Then by citation: a finding goes with the decision whose force cites
-       * it, and a thought with neither follows what its own forces cite. */
-      const local = new Map(list.map((x) => [x.id, x]));
-      const citedBy = new Map();
-      for (const x of list) for (const f of x.forces) for (const c of f.cites || []) push(citedBy, c, x);
-      /* An accepted decision or cost with no commit is decided but not yet
-       * committed - it, and whatever is tied to it, stays "not in a commit
-       * yet" rather than being filed under a commit that did not carry it. */
-      const PENDING = '-';
-      const follow = (x, depth) => {
-        if (x.led_to) return x.led_to;
-        if (x.outcome === 'accepted' && (x.kind === 'decision' || x.kind === 'cost')) return PENDING;
-        if (depth > 2) return null;
-        const next = [
-          ...x.links.filter((l) => l.type === 'lost-to' || l.type === 'cost-of' || l.type === 'derived-from').map((l) => local.get(l.to)),
-          ...(citedBy.get(x.id) || []),
-          ...x.forces.flatMap((f) => (f.cites || []).map((c) => local.get(c)))
-        ];
-        for (const y of next) {
-          const r = y && y !== x && follow(y, depth + 1);
-          if (r) return r;
-        }
-        return null;
-      };
-      for (const t of list) {
-        const found = follow(t, 0);
-        const ledTo = found === PENDING ? null : (found || (shared && shared[0]) || null);
-        const key = anchor + '>' + (ledTo || '-');
-        if (!groups.has(key)) groups.set(key, { key, anchor, ledTo, thoughts: [] });
-        groups.get(key).thoughts.push(t);
-        t.group = key;
+    /* Filed by the directional rule, exactly as the reader files them - see
+     * context() in thought-query.js: from every thought with a commit, what it
+     * cites, what it supersedes, refines or derives from, and what was weighed
+     * against it (lost-to, cost-of, supports pointing at it), each under the
+     * commit it was reached from, oldest commit first. No vote and no talk:
+     * the thought graph holds only what supports a commit, so nothing is left
+     * to guess, and a thought the rule does not reach is not in a commit yet. */
+    const WEIGHED_AGAINST_IT = ['lost-to', 'cost-of', 'supports'];
+    const ITS_OWN_HISTORY = ['supersedes', 'refines', 'derived-from'];
+    const linkedIn = new Map();
+    for (const t of d.thoughts) for (const l of t.links) push(linkedIn, l.to, { from: t.id, type: l.type });
+    const filedById = new Map(d.thoughts.map((t) => [t.id, t]));
+    const reach = (t) => [
+      ...t.forces.flatMap((f) => f.cites || []),
+      ...t.links.filter((l) => ITS_OWN_HISTORY.includes(l.type)).map((l) => l.to),
+      ...(linkedIn.get(t.id) || []).filter((l) => WEIGHED_AGAINST_IT.includes(l.type)).map((l) => l.from)
+    ];
+    const age = (h) => (commitAt.has(h) ? commitAt.get(h) : -1);
+    const filed = new Map();
+    const queue = d.thoughts.filter((t) => t.led_to).sort((a, b) => age(b.led_to) - age(a.led_to));
+    for (const t of queue) filed.set(t.id, t.led_to);
+    while (queue.length) {
+      const t = queue.shift();
+      for (const id of reach(t)) {
+        const n = filedById.get(id);
+        if (n && !filed.has(n.id)) { filed.set(n.id, filed.get(t.id)); queue.push(n); }
       }
+    }
+    const groups = new Map();
+    for (const t of d.thoughts) {
+      const ledTo = filed.get(t.id) || null;
+      const key = t.anchor + '>' + (ledTo || '-');
+      if (!groups.has(key)) groups.set(key, { key, anchor: t.anchor, ledTo, thoughts: [] });
+      groups.get(key).thoughts.push(t);
+      t.group = key;
     }
 
     const below = new Map(), above = new Map(), unplaced = [];
@@ -241,6 +227,15 @@
    * answered that way stops counting as open. */
   function superseded(t) {
     return (view.idx.incoming.get(t.id) || []).some((l) => l.type === 'supersedes');
+  }
+
+  /* As the reader's answeredBy: a question is also answered when a decision
+   * in a commit refines it - the refinement is the answer, built. */
+  function answered(t) {
+    return superseded(t) || (view.idx.incoming.get(t.id) || []).some((l) => {
+      const from = l.type === 'refines' && view.idx.thoughtById.get(l.from);
+      return from && from.led_to;
+    });
   }
 
   function matches(t, q) {
@@ -472,10 +467,13 @@
     ['open', 'Open', 'Still open'],
     ['built', 'Decided, not built', 'Decided, not built'],
     ['found', 'Findings', 'Found'],
+    ['rule', 'Rules', 'Rules learned'],
     ['turned', 'Turned down', 'Turned down'],
     ['stashed', 'Stashed', 'Stashed']
   ];
-  const waitingFor = (t) => t.outcome === 'open' ? 'open' : t.outcome === 'rejected' ? 'turned' : t.outcome === 'stashed' ? 'stashed'
+  /* A learned rule no commit rests on lives here since the commit-only rule;
+   * it is a standing instruction, not a finding, and is named as one. */
+  const waitingFor = (t) => t.kind === 'learned' ? 'rule' : t.outcome === 'open' ? 'open' : t.outcome === 'rejected' ? 'turned' : t.outcome === 'stashed' ? 'stashed'
     : (t.kind === 'decision' || t.kind === 'cost') ? 'built' : 'found';
   const inContextView = (t) => t.inContext || view.idx.stashOf.has(t.id);
 
@@ -754,6 +752,7 @@
       open: 'An open question: nobody has settled it. Decide it before building on it.',
       built: 'Decided, not built: it waits for the commit that carries it out.',
       found: 'A finding no commit rests on yet.',
+      rule: 'A rule learned from a correction: follow it. No commit rests on it, so it is kept here, and catch-up lists it.',
       turned: 'Turned down, and kept so it is not proposed again.',
       stashed: 'Set aside on purpose, to pick up later.'
     };
@@ -877,7 +876,7 @@
       const listOf = (title, items, note) => items.length
         ? `<div class="tg-dsec"><span class="tg-label">${title} · ${items.length}</span>${items.slice(0, 8).map((t) =>
           `<button type="button" class="tg-link" data-thought="${esc(t.id)}">${shape(t)}<span>${esc(t.text)}${note ? `<span class="tg-sub">${esc(note(t))}</span>` : ''}</span></button>`).join('')}${items.length > 8 ? `<span class="tg-dim">and ${items.length - 8} more</span>` : ''}</div>` : '';
-      parts.push(listOf('Still open', th.filter((t) => t.outcome === 'open' && !superseded(t))));
+      parts.push(listOf('Still open', th.filter((t) => t.outcome === 'open' && !answered(t))));
       parts.push(listOf('Can come back', th.filter((t) => reopenable(t) && !superseded(t)), (t) => 'if ' + t.forces.filter((f) => f.revisit_if).map((f) => f.revisit_if.replace(/\.$/, '').replace(/^./, (m) => m.toLowerCase())).join(' · ')));
       parts.push(listOf('Stashed', th.filter((t) => t.outcome === 'stashed'), (t) => t.applied_to ? 'applied' : 'not applied yet'));
     }
