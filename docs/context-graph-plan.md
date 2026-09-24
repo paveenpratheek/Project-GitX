@@ -220,9 +220,34 @@ next one starts.
   dry run, and every staying thought stayed filed where it was. The watcher
   logged one move per thought and no removals. Undo restored 1070 files
   byte for byte.
-- **Not yet applied.** It waits for the owner to approve the dry run, and
-  for the broker to run the watcher from step 2. A broker started before
-  that would log each move as a removal.
+- **Applied on 24 September with the directional rule, on the owner's word.**
+  - GitX: 59 thoughts and both stashes moved, 137 stay.
+  - ter-manager: 100 thoughts moved, 790 stay.
+  - All 927 staying thoughts are filed under the same commit as before. No
+    parent points outside its graph, and no id is in both graphs.
+  - The broker watching GitX logged the 59 moves live. ter-manager's moves
+    are recorded when a broker next opens that repo.
+  - `--undo` still reverses each repo from its
+    `.gitx/context/migration.json`.
+- **Found afterwards:** catch-up still lists a question as open when a
+  committed decision *refines* it. Only a question that is *superseded*
+  counts as answered. This is picked up in step 6.
+- **Second pass, same day: the owner's commit-only rule.** The thought graph
+  holds only thoughts that support a commit, and everything else is in the
+  context graph. That replaces decision 6 above: a learned rule that no
+  commit rests on now moves too, and so do the lessons behind it.
+  - `--rule=commit-only` moved 5 rules out of GitX and 37 thoughts out of
+    ter-manager: 16 rules, 12 rejected approaches and 9 incidents. That
+    leaves 132 and 753 in the thought graphs.
+  - All 885 thoughts that stayed are filed where they were.
+  - Catch-up now reads rules from both graphs, so every agent still sees
+    all 21.
+  - The first pass's record is kept as `migration-<time>.json`, and
+    `--undo` reverses the newest pass.
+- **Still open:** the vote decides where 11 ter-manager thoughts are shown.
+  All 11 support a commit, but they sit beyond the reader's two-step,
+  one-conversation follow. Filing them with the directional rule is step 6.
+  How the context graph itself is managed is decided later.
 
 ### 5. Promotion by trailer
 - **Promotion follows the same directional rule.** A thought that moves

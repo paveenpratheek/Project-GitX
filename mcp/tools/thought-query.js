@@ -537,7 +537,10 @@ export function catchUp(repoDir, args = {}) {
     })) : undefined,
     not_in_a_stash: loose.length ? loose.slice(0, 8).map((t) => ({ id: t.id, text: t.text })) : undefined
   }) : undefined;
-  const learned = byRecency(ctx.thoughts.filter((t) => t.kind === 'learned' && t.outcome === 'accepted'));
+  /* Rules from both graphs. The thought graph keeps only what supports a
+   * commit, so a rule no commit rests on lives in the context graph - and a
+   * rule is read every time, whichever graph holds it. */
+  const learned = byRecency([...ctx.lookup.values()].filter((t) => t.kind === 'learned' && t.outcome === 'accepted'));
 
   return prune({
     ...head,

@@ -46,7 +46,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadThoughts, thoughtDirs } from './tools/thoughts.js';
 
-export const RULES = ['directional', 'both-ways'];
+/* commit-only: the owner's rule of 24 September - the thought graph holds only
+ * what supports a commit. The directional walk from committed thoughts alone:
+ * a learned rule no commit rests on, and the lessons that hang only from it,
+ * go to the context graph like everything else not tied to a commit. */
+export const RULES = ['directional', 'both-ways', 'commit-only'];
 const WEIGHED_AGAINST_IT = ['lost-to', 'cost-of', 'supports'];     // links pointing AT a staying thought
 const ITS_OWN_HISTORY = ['supersedes', 'refines', 'derived-from'];  // links FROM a staying thought
 
@@ -68,7 +72,7 @@ export function classify(thoughts, rule) {
     const out = [];
     for (const f of t.forces || []) for (const c of f.cites || []) if (byId.has(c)) out.push([c, 'cited by ' + id]);
     for (const { from, type } of linkedIn.get(id) || []) if (WEIGHED_AGAINST_IT.includes(type)) out.push([from, type + ' ' + id]);
-    if (rule === 'directional') {
+    if (rule === 'directional' || rule === 'commit-only') {
       const said = { supersedes: 'superseded by ', refines: 'refined by ', 'derived-from': 'source of ' };
       for (const l of t.links || []) if (ITS_OWN_HISTORY.includes(l.type) && byId.has(l.to)) out.push([l.to, said[l.type] + id]);
     } else {
@@ -90,7 +94,7 @@ export function classify(thoughts, rule) {
     const id = queue.shift();
     for (const [n, how] of reach(id)) if (!stays.has(n)) { stays.set(n, how); queue.push(n); }
   }
-  for (const t of rules) if (!stays.has(t.id)) stays.set(t.id, 'a learned rule');
+  if (rule !== 'commit-only') for (const t of rules) if (!stays.has(t.id)) stays.set(t.id, 'a learned rule');
   return stays;
 }
 
@@ -137,7 +141,12 @@ const writeJson = (f, o) => fs.writeFileSync(f, JSON.stringify(o, null, 2) + '\n
 
 export function applyMigration(repoDir, rule) {
   const m = MANIFEST(repoDir);
-  if (fs.existsSync(m)) throw new Error('already migrated (' + readJson(m).at + ') - --undo first to run it again');
+  /* A second pass under a stricter rule is a new migration. The last one's
+   * record is kept beside it, renamed, and --undo reverses the newest pass. */
+  if (fs.existsSync(m)) {
+    const prev = readJson(m);
+    fs.renameSync(m, m.replace(/\.json$/, '-' + String(prev.at).replace(/[:.]/g, '-') + '.json'));
+  }
   const p = planMigration(repoDir, rule);
   if (p.conflicts.length) throw new Error('these ids are already in the context graph, nothing moved: ' + p.conflicts.join(', '));
   const dirs = thoughtDirs(repoDir);
