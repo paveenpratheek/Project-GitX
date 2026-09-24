@@ -10,6 +10,7 @@ import { formThreads } from './tools/threads.js';
 import { loadGraph, graphPayload } from './tools/project-graph.js';
 import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
 import { ThoughtWatcher, readLog } from './tools/thought-watch.js';
+import { promotePending, describe as describePromotion } from './tools/promote.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -135,6 +136,16 @@ function refreshFromGit(targetDir = null) {
   state.activeBranch = getBranch(dir);
   state.head = getHead(dir);
   watchHead(dir);
+
+  /* A commit that names thoughts in a GitX-Thoughts trailer settles them.
+   * Moved before anything below reads the thoughts, so the state sent next
+   * already shows them where they now are. Scans recent history, so a commit
+   * made while the broker was down is still settled. */
+  try {
+    for (const r of promotePending(dir)) console.log('[GitX Broker] Promoted for ' + describePromotion(r));
+  } catch (err) {
+    console.warn('[GitX Broker] Promotion failed, nothing more was moved: ' + err.message);
+  }
 
   console.log(`[GitX Broker] Scanning Git history for '${state.activeRepoName}' (${dir}) on branch [${state.activeBranch}]`);
   const gitCommits = scanGitHistory(dir, 100);

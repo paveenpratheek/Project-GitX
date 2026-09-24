@@ -111,6 +111,9 @@ export function tokenize(text) {
  *   trailers            explicit relations stated by whoever made the commit
  *   root                the name of a feature this commit declared it STARTS
  *                       (GitX-Root) - the bottom of a chain, said outright
+ *   thoughts            the thoughts this commit settles (GitX-Thoughts) - the
+ *                       broker moves them from the context graph into the
+ *                       thought graph when the commit lands (tools/promote.js)
  *
  * Retrieval only needs tokens, but the knowledge graph that will consume this
  * needs the real text and the real edges - so they are kept, not thrown away
@@ -118,7 +121,7 @@ export function tokenize(text) {
  * prose from tokens is impossible. */
 
 export function parseMessage(subject, rawBody) {
-  const out = { type: null, scope: null, body: '', trailers: [], root: null };
+  const out = { type: null, scope: null, body: '', trailers: [], root: null, thoughts: [] };
 
   const h = (subject || '').match(/^([a-z]+)(?:\(([^)]+)\))?!?:\s*(.+)$/i);
   if (h) { out.type = h[1].toLowerCase(); out.scope = h[2] ? h[2].toLowerCase() : null; }
@@ -152,6 +155,14 @@ export function parseMessage(subject, rawBody) {
      * both, which is worse than being ignored. */
     if (key === 'root') {
       if (!out.root) out.root = m[2].trim().toLowerCase();
+      continue;
+    }
+    /* Thought ids, not commit hashes - the hex filter below would turn
+     * "t-2be9f7be8d" into a fragment that looks like a hash. Registered here
+     * for the same reason as root: an unknown key is stripped and dropped, and
+     * a promotion that never runs says nothing. */
+    if (key === 'thoughts') {
+      for (const id of m[2].toLowerCase().match(/\bt-[0-9a-f]{10}\b/g) || []) if (!out.thoughts.includes(id)) out.thoughts.push(id);
       continue;
     }
     if (!RELATION_KEYS.has(key)) continue;

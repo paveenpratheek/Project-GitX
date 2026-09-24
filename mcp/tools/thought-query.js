@@ -21,7 +21,7 @@
 
 import { execFileSync } from 'node:child_process';
 import { loadThoughts, loadStashes, gitTopology, commitCount } from './thoughts.js';
-import { tokenize } from './git-extract.js';
+import { tokenize, parseMessage } from './git-extract.js';
 
 const SEARCH_LIMIT = 15;
 const SEARCH_MAX = 50;
@@ -435,6 +435,25 @@ function contextSummary(repoDir, headHash) {
   return n(thoughts.length, 'thought', 'thoughts') + ' waiting for a commit (' + parts.join(', ') + ') - read them with gitx_context';
 }
 
+/* A commit that names no thoughts moves none - promotion never guesses. But
+ * if thinking was written just before it, while its parent was HEAD, the
+ * commit may well have settled some of it without saying so. Said, with the
+ * way to settle them by hand; nothing is moved here. */
+function headUnsettled(repoDir, headHash) {
+  let body, parent;
+  try {
+    body = execFileSync('git', ['log', '-1', '--format=%B', headHash], { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    parent = execFileSync('git', ['rev-parse', headHash + '^'], { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch (_) { return undefined; }
+  if (parseMessage('', body).thoughts.length) return undefined;
+  const before = loadThoughts(repoDir, { store: 'context' }).thoughts.filter((t) => t.anchor && t.anchor.commit === parent);
+  const decided = before.filter((t) => t.outcome === 'accepted' && (t.kind === 'decision' || t.kind === 'cost'));
+  if (!decided.length) return undefined;
+  return 'HEAD names no thoughts in a GitX-Thoughts trailer, and ' + decided.length + ' decision(s) were waiting from just before it: '
+    + decided.slice(0, 5).map((t) => t.id).join(', ') + (decided.length > 5 ? ', ...' : '')
+    + '. If this commit carried any of them out, settle them: node mcp/tools/promote.js "' + repoDir + '" ' + headHash.slice(0, 7) + ' <t-id> ...';
+}
+
 export function catchUp(repoDir, args = {}) {
   const ctx = context(repoDir);
   if (!ctx.commits.length) return { error: 'This repository has no commits yet.' };
@@ -530,6 +549,7 @@ export function catchUp(repoDir, args = {}) {
       })
       : 'Nothing in progress: every recorded thought is in a commit.',
     context_graph: waiting,
+    not_named_by_head: headUnsettled(repoDir, headC.hash),
     recent_commits: recentOut,
     recent_without_reasoning: bare ? `${bare} of these ${recentOut.length} commits have no thinking on record; their messages are all there is.` : undefined,
     latest_with_reasoning: latest,

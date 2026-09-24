@@ -239,6 +239,42 @@ next one starts.
   Both routes share one code path.
 - **Check:** a throwaway repo, one context thought, a commit with the trailer
   made from the command line. The thought moves and `resulted_in` names the commit.
+- **As built — done:** `mcp/tools/promote.js` does the promoting, and the
+  broker and `gitx_commit_chronicle` both use it.
+  - **When it runs:** whenever the broker re-reads git (at start, on a repo
+    switch, and when HEAD moves). It scans the last 50 commits for the
+    trailer instead of reacting to one commit, so a commit made while the
+    broker was down still gets promoted, and a second run changes nothing.
+  - **What moves:** a named accepted decision or cost gets `resulted_in`.
+    What made it happen comes along by the directional rule: the evidence it
+    cites, what it supersedes, refines or derives from, and the alternatives
+    and costs weighed against it. A brought decision or cost gets the same
+    `resulted_in`.
+  - **What stays:** a later thought that only points back at a promoted one
+    stays in the context graph. A named finding that nothing promoted
+    reaches stays waiting and is reported. An id that isn't on record
+    anywhere is reported too.
+  - **Order of operations:** content is written first, then the file is
+    renamed. A crash between the two leaves a waiting thought that already
+    knows its commit, never a thought-graph thought with no commit.
+  - **The commit tool's side:** `gitx_commit_chronicle` refuses a `thoughts`
+    entry that isn't a waiting decision or cost. It writes the trailer,
+    checks the parser reads it back, and promotes as soon as the commit
+    exists, because the broker may not be running.
+  - **No trailer:** catch-up's `not_named_by_head` names the decisions that
+    were waiting just before the commit, and gives the command
+    `node mcp/tools/promote.js <repo> <commit> <t-id> ...`. It never moves
+    anything on a guess.
+- **Checked on a throwaway repo, 17 checks,** with a real broker on a spare
+  port watching a command-line commit, and the chronicle over MCP stdio.
+
+### 5b. The graph page reads the context graph (found after step 4)
+- The broker's `/api/thoughts` payload reads only the thought graph and
+  `.gitx/stash/`. After the migration, the page's "Thoughts stashed" view
+  would be empty, the thinking not yet in a commit would disappear from the
+  graph, and nothing in the UI would show the context graph.
+- **This has to be done before the migration is applied.** Give the page the
+  context graph's stashes, plus a view of what is waiting.
 
 ### 6. Remove the guess
 - With wanderers gone, every thought in the thought graph that has no

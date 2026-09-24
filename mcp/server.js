@@ -14,6 +14,8 @@ import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
 import { searchThoughts, catchUp, searchContext } from './tools/thought-query.js';
 import { readLog } from './tools/thought-watch.js';
+import { loadThoughts } from './tools/thoughts.js';
+import { promote, describe as describePromotion } from './tools/promote.js';
 /* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
  * its own folder; the only coupling is the two calls below. */
 import { TrailRecorder } from './tools/trail-recorder.js';
@@ -233,7 +235,8 @@ const TOOLS = [
         builds_on: { type: 'array', items: { type: 'string' }, description: 'Hash(es) of the earlier commit(s) this continues - pick from gitx_find_related results. Give this OR root.' },
         root: { type: 'string', description: 'Name of the NEW feature this commit starts, when no earlier commit is what it continues. Give this OR builds_on. Written as GitX-Root: <name>; later commits in the feature build on this one.' },
         root_confirmed: { type: 'boolean', description: 'Pass true only after a root attempt came back needs_confirmation and none of its candidates is what this continues.' },
-        relates_to: { type: 'array', items: { type: 'string' }, description: 'Optional: commits that are related but are not what this builds on - e.g. the feature a new feature sits inside. Written as GitX-Relates-To.' }
+        relates_to: { type: 'array', items: { type: 'string' }, description: 'Optional: commits that are related but are not what this builds on - e.g. the feature a new feature sits inside. Written as GitX-Relates-To.' },
+        thoughts: { type: 'array', items: { type: 'string' }, description: 'Optional: ids of the decisions and costs this commit carries out, waiting in the context graph (gitx_context lists them). Written as GitX-Thoughts; on commit they move to the thought graph with this commit as their result, and the evidence, alternatives and costs that made them happen come with them.' }
       },
       required: ['cwd', 'type', 'subject', 'why']
     }
@@ -643,6 +646,24 @@ async function handleToolCall(name, args) {
       const buildsOn = resolveRefs(buildsOnIn, 'builds_on', true);
       const relatesTo = resolveRefs(relatesIn, 'relates_to', false);
 
+      /* The thoughts this commit settles. Each must be waiting in the context
+       * graph as a decision or cost - that is what a commit carries out; the
+       * rest comes with it. One already in the thought graph was settled by an
+       * earlier commit, and one on record nowhere is a typo that would promote
+       * nothing without a word. */
+      const thoughtIds = [...new Set(list(args.thoughts))];
+      if (thoughtIds.length) {
+        const waiting = new Map(loadThoughts(dir, { store: 'context' }).thoughts.map((t) => [t.id, t]));
+        const settled = new Set(loadThoughts(dir).thoughts.map((t) => t.id));
+        for (const id of thoughtIds) {
+          const t = waiting.get(id);
+          if (!/^t-[0-9a-f]{10}$/.test(id)) problems.push('thoughts: "' + id + '" is not a thought id (t- and ten hex characters).');
+          else if (settled.has(id)) problems.push('thoughts: ' + id + ' is already in the thought graph - an earlier commit settled it.');
+          else if (!t) problems.push('thoughts: ' + id + ' is not in the context graph - gitx_context lists what is waiting.');
+          else if (!(t.outcome === 'accepted' && (t.kind === 'decision' || t.kind === 'cost'))) problems.push('thoughts: ' + id + ' is ' + t.outcome + ' ' + t.kind + ' - name the decisions and costs this commit carries out; the findings, alternatives and costs that made them happen come with them.');
+        }
+      }
+
       /* One name, one start. A second root under a name already in use makes
        * "where does this feature begin" ambiguous - the one question a root
        * exists to answer. Read from the index, which parses every commit's
@@ -712,7 +733,8 @@ async function handleToolCall(name, args) {
       const trailers = [
         ...buildsOn.map((h) => 'GitX-Builds-On: ' + h),
         ...(root ? ['GitX-Root: ' + root] : []),
-        ...relatesTo.map((h) => 'GitX-Relates-To: ' + h)
+        ...relatesTo.map((h) => 'GitX-Relates-To: ' + h),
+        ...(thoughtIds.length ? ['GitX-Thoughts: ' + thoughtIds.join(', ')] : [])
       ];
       const message = [header, why, ...(verification ? ['Verified: ' + verification] : []), trailers.join('\n')].join('\n\n') + '\n';
 
@@ -726,7 +748,7 @@ async function handleToolCall(name, args) {
         gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
           .split('\n').filter((l) => /^GitX-/i.test(l));
       } catch (_) {}
-      if (readBack.trailers.length !== buildsOn.length + relatesTo.length || (readBack.root || '') !== root || gitRead.length !== trailers.length) {
+      if (readBack.trailers.length !== buildsOn.length + relatesTo.length || (readBack.root || '') !== root || readBack.thoughts.length !== thoughtIds.length || gitRead.length !== trailers.length) {
         return reply({
           ok: false,
           committed: false,
@@ -746,6 +768,14 @@ async function handleToolCall(name, args) {
       const hash = git('rev-parse', 'HEAD').trim();
       const branch = git('rev-parse', '--abbrev-ref', 'HEAD').trim();
       const files = git('show', '--name-status', '--format=', 'HEAD').split('\n').map((l) => l.trim()).filter(Boolean);
+
+      /* Settled now, not left to the broker: it may not be running. It is the
+       * same code the broker runs when HEAD moves, and whichever gets there
+       * second finds nothing left to move. */
+      let promotion;
+      if (thoughtIds.length) {
+        try { promotion = describePromotion(promote(dir, hash, thoughtIds)); } catch (err) { promotion = 'not settled: ' + err.message + ' - the broker retries when it next reads git'; }
+      }
 
       /* Same message type the dashboard already listens for. The fields it
        * expects are filled from real data - the why, the links, the files git
@@ -771,6 +801,7 @@ async function handleToolCall(name, args) {
         repo: dir,
         message,
         links: { builds_on: buildsOn, relates_to: relatesTo, root: root || null },
+        thoughts: promotion,
         files,
         checks: [
           buildsOn.length
