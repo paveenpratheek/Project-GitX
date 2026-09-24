@@ -16,6 +16,7 @@ import { searchThoughts, catchUp, searchContext } from './tools/thought-query.js
 import { readLog } from './tools/thought-watch.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
+import { recordThoughts } from './tools/record.js';
 /* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
  * its own folder; the only coupling is the two calls below. */
 import { TrailRecorder } from './tools/trail-recorder.js';
@@ -388,6 +389,60 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
       required: []
+    }
+  },
+  /* The one tool that writes a thought. Everything it records waits in the
+   * context graph until a commit names it - see tools/record.js. */
+  {
+    name: 'gitx_thought_record',
+    description: 'Record thinking as it happens: a decision and the alternatives it beat, a cost accepted, a finding, an open question, a rule learned from a correction. It goes to the context graph and waits there; when the commit that carries a decision out names it (GitX-Thoughts in the message, or thoughts in gitx_commit_chronicle), it moves to the thought graph with what supports it. Give kind, text (one sentence that stands on its own), outcome, decided_by for a decision, the forces behind it, and links; GitX stamps the id, the commit it was thought at, who and when. Record several at once with keys, so a decision, what lost to it (lost-to) and its cost (cost-of) link in one call; a link may also name any thought on record by id. Nothing is written unless every thought passes - a lost-to must run from a rejection to an accepted thought, a cost-of from a cost to an accepted decision, a contingent force needs revisit_if, and an exact repeat of a thought on record is refused. The reply gives each id, the line that settles a decision, and thoughts on record that read alike - link to one if this continues, answers or contradicts it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cwd: { type: 'string', description: 'Absolute path of the repository the thinking is about. Required: a thought is not written to wherever this server happened to start.' },
+        thoughts: {
+          type: 'array',
+          description: 'One to 20 thoughts, recorded together or not at all.',
+          items: {
+            type: 'object',
+            properties: {
+              key: { type: 'string', description: 'A name for this thought within the call, so others in the same call can link to or cite it. Defaults to its position, 1, 2, 3...' },
+              kind: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] },
+              text: { type: 'string', description: 'One sentence that stands on its own: what was decided, found, accepted as a cost, or learned. The reasoning goes in forces.' },
+              outcome: { type: 'string', enum: ['accepted', 'rejected', 'open', 'stashed'], description: '"accepted" for a decision made (built or not), "rejected" for an alternative turned down, "open" for a question nobody has settled, "stashed" for an idea set aside on purpose.' },
+              decided_by: { type: 'string', enum: ['user', 'agent', 'agent-delegated'], description: 'For a decision: who made it. Defaults to agent.' },
+              forces: {
+                type: 'array',
+                description: 'What pushed it forward or held it back.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    direction: { type: 'string', enum: ['forward', 'backward'] },
+                    kind: { type: 'string', enum: ['contingent', 'structural'], description: 'For a backward force: contingent if it can change, structural if it cannot.' },
+                    text: { type: 'string' },
+                    revisit_if: { type: 'string', description: 'For a contingent force: what would have to change for this to come back.' },
+                    cites: { type: 'array', items: { type: 'string' }, description: 'Keys in this call or thought ids on record that this force rests on.' }
+                  },
+                  required: ['direction', 'text']
+                }
+              },
+              links: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    type: { type: 'string', enum: ['lost-to', 'cost-of', 'supports', 'refines', 'derived-from', 'supersedes', 'contradicts'] },
+                    to: { type: 'string', description: 'A key in this call, or a thought id on record in either graph.' }
+                  },
+                  required: ['type', 'to']
+                }
+              }
+            },
+            required: ['kind', 'text', 'outcome']
+          }
+        }
+      },
+      required: ['cwd', 'thoughts']
     }
   },
   {
@@ -1029,6 +1084,16 @@ async function handleToolCall(name, args) {
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
       return reply({ repo: target.dir, ...readLog(target.dir, { id: args.id, limit: args.limit, dataDir: process.env.GITX_DATA_DIR || null }) });
+    }
+
+    case 'gitx_thought_record': {
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!args.cwd) return reply({ ok: false, recorded: false, error: 'cwd is required: the absolute path of the repository the thinking is about. Nothing was recorded.' });
+      const target = resolveTargetRepo(args.cwd);
+      if (!target.ok) return reply({ ok: false, recorded: false, error: 'No such folder: ' + target.requested + ' - nothing was recorded.' });
+      /* Thoughts are private to whoever owns this clone. */
+      ensureGitignored(target.dir);
+      return reply({ repo: target.dir, ...recordThoughts(target.dir, args, { agent: AGENT_ID, name: AGENT_NAME, model: AGENT_MODEL, session: 'mcp-' + AGENT_ID }) });
     }
 
     case 'gitx_thought_search':

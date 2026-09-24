@@ -357,6 +357,43 @@ next one starts.
 ### 7. Write path
 - The writer (`project gitx_TM/thought-backfill/session.cjs` for now) writes to
   the context graph. A proper record tool comes later and is not part of this plan.
+- **Done, and it went further than planned: GitX now has the record tool.**
+  `gitx_thought_record` (in `mcp/tools/record.js`) is the first way to
+  write a thought from inside GitX.
+  - **Where it writes:** always to the context graph. A commit's
+    `GitX-Thoughts` trailer promotes a decision later, together with what
+    supports it.
+  - **What the agent supplies:** kind, text, outcome, who decided, forces
+    and links.
+  - **What the tool stamps:** the id, the anchor (HEAD, patch-id, branch),
+    who recorded it, when, and the parent.
+  - **Batches:** several thoughts can be recorded in one call, linking to
+    each other by key. A link or citation may also name any thought on
+    record, in either graph, by id.
+  - **All or nothing:** every rule is checked before anything is written,
+    using the writer's rules. An exact repeat of a thought on record is
+    refused, to keep the context graph clean. Files are written to a
+    temporary name and renamed into place, so the watcher never reads half
+    a thought.
+  - **The reply:** each id, the `GitX-Thoughts` line for a decision or
+    cost, and up to three thoughts on record that read alike, so linking
+    is cheap.
+  - **Other rules:** `cwd` is required, and the repo is made to ignore
+    `.gitx`. Catch-up's instructions now point agents to the tool.
+- **Checked over MCP stdio on a throwaway repository, 15 checks.** A batch
+  was recorded and stamped. Bad batches were refused all at once with
+  nothing written. A link by id worked, and related thoughts were offered.
+  A chronicle commit settled the decision together with its evidence,
+  rejected alternative and cost.
+- **Not yet:** `touches`, and editing or superseding a thought through the
+  tool. Agents' MCP servers pick the tool up when they restart.
+
+## Where this plan ends
+
+Steps 1-7 are done. What happens to the thoughts now waiting in the context
+graph, and how that graph is managed, gets decided separately, once its use
+cases are worked out. The owner's rule is to keep it clean and cheap in
+tokens, because it is what agents read first.
 
 ## Not in this plan
 

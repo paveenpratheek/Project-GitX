@@ -262,6 +262,29 @@ function score(qTokens, t) {
   return matched ? s * matched : 0;
 }
 
+/* Thoughts on record, in either graph, that read like the given text - for a
+ * thought being recorded, so linking it to one that exists is the cheap path.
+ * Word overlap only, so it offers, never decides: a match needs at least three
+ * of the text's words and a third of them, and at most `limit` come back. */
+export function similarThoughts(repoDir, text, { exclude = [], limit = 3 } = {}) {
+  const q = [...new Set(tokenize(text))];
+  if (q.length < 3) return [];
+  const skip = new Set(exclude);
+  const pool = [...loadThoughts(repoDir).thoughts.map((t) => [t, 'thought graph']), ...loadThoughts(repoDir, { store: 'context' }).thoughts.map((t) => [t, 'context graph'])];
+  const own = (t) => new Set(tokenize(t.text));
+  return pool
+    .filter(([t]) => !skip.has(t.id))
+    .map(([t, graph]) => {
+      const words = own(t);
+      const hits = q.filter((w) => [...words].some((x) => x === w || (Math.min(x.length, w.length) >= 4 && (x.startsWith(w) || w.startsWith(x))))).length;
+      return { t, graph, hits, s: score(q, t) };
+    })
+    .filter((r) => r.hits >= 3 && r.hits / q.length >= 1 / 3)
+    .sort((a, b) => b.s - a.s)
+    .slice(0, limit)
+    .map((r) => ({ id: r.t.id, in: r.graph, outcome: r.t.outcome, kind: r.t.kind, text: cap(r.t.text, 120) }));
+}
+
 export function searchThoughts(repoDir, args = {}) {
   const ctx = context(repoDir);
   const head = { thoughts_on_record: ctx.stats.count, of_them_inferred: ctx.stats.inferred };
@@ -566,6 +589,6 @@ export function catchUp(repoDir, args = {}) {
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
     stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, read it with gitx_context before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought_search says which.' : '')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, read it with gitx_context before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_thought_search it: it may already have been turned down, and why. Cite thought ids. Record new thinking with gitx_thought_record as it is decided - a decision with the alternatives it beat - and name it in the commit that carries it out.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought_search says which.' : '')
   });
 }
