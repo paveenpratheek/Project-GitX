@@ -141,23 +141,26 @@
       <div class="panel-body tg-detail" id="tg-detail"></div>
     </section>
 
+    <!-- Which outcomes to show, and search over commits and thoughts. Part of
+         the timeline, under its two columns only: across the whole page it
+         also ran under the sidebar, which grew and shrank as views that have
+         no search came and went. -->
+    <footer class="gitx-search-deck lg">
+      <div class="layer-toggle-group" role="group" aria-label="Show thoughts by outcome">
+        <button type="button" class="btn-layer-toggle active" data-outcome="accepted"><span class="tg-dot o-accepted"></span>Accepted</button>
+        <button type="button" class="btn-layer-toggle active" data-outcome="rejected"><span class="tg-dot o-rejected"></span>Rejected</button>
+        <button type="button" class="btn-layer-toggle active" data-outcome="stashed"><span class="tg-dot o-stashed"></span>Stashed</button>
+        <button type="button" class="btn-layer-toggle active" data-outcome="open"><span class="tg-dot o-open"></span>Open</button>
+      </div>
+      <div class="search-input-wrapper">
+        <label for="layer-search-input" class="tg-sr">Search commits and thoughts</label>
+        <input type="text" class="search-input" id="layer-search-input" placeholder="Search commits and thoughts..." autocomplete="off" spellcheck="false">
+      </div>
+    </footer>
+
     </div>
 
   </main>
-
-  <!-- Bottom deck: which outcomes to show, and search over commits and thoughts -->
-  <footer class="gitx-search-deck lg">
-    <div class="layer-toggle-group" role="group" aria-label="Show thoughts by outcome">
-      <button type="button" class="btn-layer-toggle active" data-outcome="accepted"><span class="tg-dot o-accepted"></span>Accepted</button>
-      <button type="button" class="btn-layer-toggle active" data-outcome="rejected"><span class="tg-dot o-rejected"></span>Rejected</button>
-      <button type="button" class="btn-layer-toggle active" data-outcome="stashed"><span class="tg-dot o-stashed"></span>Stashed</button>
-      <button type="button" class="btn-layer-toggle active" data-outcome="open"><span class="tg-dot o-open"></span>Open</button>
-    </div>
-    <div class="search-input-wrapper">
-      <label for="layer-search-input" class="tg-sr">Search commits and thoughts</label>
-      <input type="text" class="search-input" id="layer-search-input" placeholder="Search commits and thoughts..." autocomplete="off" spellcheck="false">
-    </div>
-  </footer>
 
   <!-- Modal for Creating New Task / Prompt Issue -->
   <div class="modal-backdrop" id="issue-modal" hidden>

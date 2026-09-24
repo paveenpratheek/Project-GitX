@@ -1478,7 +1478,12 @@ body { padding: 10px; gap: 10px; }
 /* One view at a time. [hidden] has to be restated: display: grid beats it. */
 .gitx-view { display: grid; gap: 10px; min-width: 0; min-height: 0; }
 .gitx-view[hidden] { display: none; }
-.gitx-view-timeline { grid-template-columns: minmax(0, 1fr) clamp(290px, 26vw, 380px); }
+.gitx-view-timeline {
+  grid-template-columns: minmax(0, 1fr) clamp(290px, 26vw, 380px);
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+/* The search deck is the timeline's own bottom row, across both columns. */
+.gitx-view-timeline > .gitx-search-deck { grid-column: 1 / -1; }
 .gitx-view-swarm,
 .gitx-view-visuals { grid-template-columns: minmax(0, 1fr); }
 
@@ -1502,9 +1507,6 @@ body { padding: 10px; gap: 10px; }
   border: 0;
   background: transparent;
 }
-
-/* The outcome chips and the search act on the timeline, and on nothing else. */
-:root:not([data-gitx-view="timeline"]) .gitx-search-deck { display: none; }
 
 /* Narrow: the sidebar keeps its icons and drops its labels. */
 @media (max-width: 900px) {
