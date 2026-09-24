@@ -105,10 +105,13 @@ export function promote(repoDir, commit, named) {
   const settled = (id) => inGraph.has(id) || moving.has(id);
   const waits = (id) => inCtx.has(id) && !moving.has(id);
   const any = (id) => inGraph.get(id) || inCtx.get(id);
+  /* Up the order thoughts were written in: was_parent where one was kept,
+   * since a re-pointed parent never leads back into the other graph. */
+  const before = (id) => { const t = any(id); return t.was_parent && any(t.was_parent) ? t.was_parent : t.parent || null; };
   const repoint = (t, sameGraph) => {
     let p = t.parent;
     const seen = new Set();
-    while (p && !sameGraph(p) && any(p) && !seen.has(p)) { seen.add(p); p = any(p).parent || null; }
+    while (p && !sameGraph(p) && any(p) && !seen.has(p)) { seen.add(p); p = before(p); }
     if (!t.was_parent) t.was_parent = t.parent;
     t.parent = p && sameGraph(p) ? p : null;
   };

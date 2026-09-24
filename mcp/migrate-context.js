@@ -31,8 +31,9 @@
  * open again. parent is never a tie - it is the order thoughts were written.
  *
  * HOW IT MOVES. By rename, never copy-and-delete: the watcher sees a rename
- * as one "moved" entry. A staying thought whose parent moves is re-pointed to
- * its nearest staying ancestor, keeping the old id in was_parent. The stash
+ * as one "moved" entry. A thought whose parent ends up in the other graph is
+ * re-pointed to its nearest ancestor in its own graph, keeping the old id in
+ * was_parent - staying thoughts and waiting ones alike. The stash
  * containers move to .gitx/context/stash/. Everything done is written to
  * .gitx/context/migration.json first-to-last, so --undo can reverse it
  * exactly; an error part-way reverses what was already done.
@@ -101,25 +102,49 @@ export function classify(thoughts, rule) {
 export function planMigration(repoDir, rule) {
   const dirs = thoughtDirs(repoDir);
   const { thoughts, fileOf, stats } = loadThoughts(repoDir);
-  const inContext = new Set(loadThoughts(repoDir, { store: 'context' }).thoughts.map((t) => t.id));
+  const ctx = loadThoughts(repoDir, { store: 'context' });
+  const inContext = new Set(ctx.thoughts.map((t) => t.id));
   const byId = new Map(thoughts.map((t) => [t.id, t]));
   const stays = classify(thoughts, rule);
   const moving = thoughts.filter((t) => !stays.has(t.id));
   const movingIds = new Set(moving.map((t) => t.id));
 
-  /* A staying thought keeps a parent in its own graph: the nearest ancestor
-   * that stays, or none. That covers a parent leaving now, and a parent that
+  /* Every thought keeps a parent in its own graph after the pass: the nearest
+   * ancestor in that graph, or none, walked through both graphs.
+   *
+   * The thought graph's side covers a parent leaving now, and a parent that
    * was already in the context graph - a writer that chained thoughts in the
-   * order written put some there. The chain is walked through both graphs. */
-  const inContextById = new Map(loadThoughts(repoDir, { store: 'context' }).thoughts.map((t) => [t.id, t]));
+   * order written put some there. The context graph's side covers a thought
+   * moving now and one already waiting, whose parent is in the thought graph.
+   * The first two passes did only the first side, and left 94 waiting
+   * thoughts across both repositories with a parent in the other graph;
+   * another pass repairs them. */
+  const inContextById = new Map(ctx.thoughts.map((t) => [t.id, t]));
   const anyGraph = (id) => byId.get(id) || inContextById.get(id);
+  const waits = (id) => movingIds.has(id) || inContextById.has(id);
+  /* Up the order thoughts were WRITTEN in: was_parent where a thought has one,
+   * since an earlier pass re-pointed its parent to stay in its own graph and
+   * the current parent would never lead back into the other one. */
+  const before = (id) => { const t = anyGraph(id); return t.was_parent && anyGraph(t.was_parent) ? t.was_parent : t.parent || null; };
+  const nearest = (from, sameGraph) => {
+    let p = from;
+    const seen = new Set();
+    while (p && !sameGraph(p) && anyGraph(p) && !seen.has(p)) { seen.add(p); p = before(p); }
+    return p && sameGraph(p) ? p : null;
+  };
+  const staying = (id) => stays.has(id);
   const reparent = [];
   for (const t of thoughts) {
     if (!stays.has(t.id) || !t.parent || stays.has(t.parent) || !anyGraph(t.parent)) continue;
-    let p = t.parent;
-    const seen = new Set();
-    while (p && !stays.has(p) && anyGraph(p) && !seen.has(p)) { seen.add(p); p = anyGraph(p).parent || null; }
-    reparent.push({ id: t.id, file: fileOf[t.id], from: t.parent, to: p && stays.has(p) ? p : null });
+    reparent.push({ id: t.id, file: fileOf[t.id], from: t.parent, to: nearest(t.parent, staying) });
+  }
+  /* A moving thought is re-pointed after its move, so its file is named where
+   * it will be by then. */
+  const rel = (f) => path.relative(repoDir, f).replace(/\\/g, '/');
+  for (const t of [...moving, ...ctx.thoughts]) {
+    if (!t.parent || waits(t.parent) || !anyGraph(t.parent)) continue;
+    const file = movingIds.has(t.id) ? rel(path.join(dirs.context, t.id + '.json')) : ctx.fileOf[t.id];
+    reparent.push({ id: t.id, file, from: t.parent, to: nearest(t.parent, waits) });
   }
 
   let stashFiles = [];
