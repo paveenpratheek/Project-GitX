@@ -137,16 +137,6 @@ function refreshFromGit(targetDir = null) {
   state.head = getHead(dir);
   watchHead(dir);
 
-  /* A commit that names thoughts in a GitX-Thoughts trailer settles them.
-   * Moved before anything below reads the thoughts, so the state sent next
-   * already shows them where they now are. Scans recent history, so a commit
-   * made while the broker was down is still settled. */
-  try {
-    for (const r of promotePending(dir)) console.log('[GitX Broker] Promoted for ' + describePromotion(r));
-  } catch (err) {
-    console.warn('[GitX Broker] Promotion failed, nothing more was moved: ' + err.message);
-  }
-
   console.log(`[GitX Broker] Scanning Git history for '${state.activeRepoName}' (${dir}) on branch [${state.activeBranch}]`);
   const gitCommits = scanGitHistory(dir, 100);
 
@@ -201,6 +191,20 @@ function refreshFromGit(targetDir = null) {
   } catch (err) {
     state.thoughtStats = { error: err.message };
     console.warn('[GitX Broker] Thought layer failed to load, continuing without it:', err.message);
+  }
+
+  /* A commit that names thoughts in a GitX-Thoughts trailer settles them.
+   * AFTER the watcher is open, so each move is recorded as it happens: run
+   * first, the watcher's reconcile at open found the moves and logged them as
+   * made while nothing watched, which was untrue - and it reopens on every
+   * refresh, so that was every promotion. Scans recent history, so a commit
+   * made while the broker was down is still settled. */
+  try {
+    const promoted = promotePending(dir);
+    for (const r of promoted) console.log('[GitX Broker] Promoted for ' + describePromotion(r));
+    if (promoted.some((r) => r.promoted.length || r.brought.length)) state.thoughtStats = loadThoughts(dir).stats;
+  } catch (err) {
+    console.warn('[GitX Broker] Promotion failed, nothing more was moved: ' + err.message);
   }
 
   saveState();
