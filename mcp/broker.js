@@ -383,7 +383,7 @@ const server = http.createServer((req, res) => {
     const q = new URL(req.url, 'http://127.0.0.1').searchParams;
     try {
       const body = JSON.stringify(readLog(state.activeRepo, {
-        id: q.get('id'), limit: Number(q.get('limit')) || 50, dataDir: process.env.GITX_DATA_DIR || null
+        id: q.get('id'), limit: Number(q.get('limit')) || 50, dataDir: watcher.dataDir || null
       }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(body);

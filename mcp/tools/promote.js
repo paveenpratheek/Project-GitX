@@ -67,7 +67,7 @@ export function promote(repoDir, commit, named) {
   const graph = loadThoughts(repoDir);
   const inCtx = new Map(ctx.thoughts.map((t) => [t.id, t]));
   const inGraph = new Map(graph.thoughts.map((t) => [t.id, t]));
-  const out = { commit: commit.slice(0, 7), promoted: [], brought: [], already: [], missing: [], not_settled: [] };
+  const out = { commit: commit.slice(0, 7), promoted: [], brought: [], already: [], missing: [], not_settled: [], repointed: [] };
 
   const moving = new Map();          // id -> why
   for (const id of named) {
@@ -98,21 +98,25 @@ export function promote(repoDir, commit, named) {
   let patchId = null;
   try { patchId = git(repoDir, ['patch-id', '--stable'], git(repoDir, ['show', '--format=', commit]) + '\n').split(' ')[0] || null; } catch (_) { /* a merge or an empty commit has none */ }
 
-  /* A thought's parent stays in its own graph: the nearest ancestor that is,
-   * or will be, in the thought graph - walked through both. */
-  const staysIn = (id) => inGraph.has(id) || moving.has(id);
+  /* A thought's parent stays in its own graph: the nearest ancestor in the
+   * graph the thought is in after the move - walked through both. Both sides
+   * of the move need it: a thought that goes across, and a thought left
+   * waiting whose parent just went. The old parent is kept as was_parent. */
+  const settled = (id) => inGraph.has(id) || moving.has(id);
+  const waits = (id) => inCtx.has(id) && !moving.has(id);
   const any = (id) => inGraph.get(id) || inCtx.get(id);
+  const repoint = (t, sameGraph) => {
+    let p = t.parent;
+    const seen = new Set();
+    while (p && !sameGraph(p) && any(p) && !seen.has(p)) { seen.add(p); p = any(p).parent || null; }
+    if (!t.was_parent) t.was_parent = t.parent;
+    t.parent = p && sameGraph(p) ? p : null;
+  };
   fs.mkdirSync(dirs.thoughts, { recursive: true });
   for (const [id, why] of moving) {
     const t = { ...inCtx.get(id) };
     if (leads(t)) t.resulted_in = { commit, patch_id: patchId };
-    if (t.parent && !staysIn(t.parent)) {
-      let p = t.parent;
-      const seen = new Set();
-      while (p && !staysIn(p) && any(p) && !seen.has(p)) { seen.add(p); p = any(p).parent || null; }
-      if (!t.was_parent) t.was_parent = t.parent;
-      t.parent = p && staysIn(p) ? p : null;
-    }
+    if (t.parent && !settled(t.parent)) repoint(t, settled);
     const from = path.join(repoDir, ctx.fileOf[id]);
     const to = path.join(dirs.thoughts, id + '.json');
     /* The broker and gitx_commit_chronicle both promote; whichever comes
@@ -121,6 +125,20 @@ export function promote(repoDir, commit, named) {
     fs.writeFileSync(from, JSON.stringify(t, null, 2) + '\n');
     fs.renameSync(from, to);
     (why === 'named' ? out.promoted : out.brought).push(id);
+  }
+  /* What stays behind. Only a parent now in the thought graph is re-pointed -
+   * a parent that is on record nowhere is not this move's to decide. Temp
+   * name, then rename, so the watcher never reads half a file. */
+  for (const w of ctx.thoughts) {
+    if (!waits(w.id) || !w.parent || !settled(w.parent)) continue;
+    const t = { ...w };
+    repoint(t, waits);
+    const file = path.join(repoDir, ctx.fileOf[w.id]);
+    if (!fs.existsSync(file)) continue;
+    const tmp = file + '.tmp-' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(t, null, 2) + '\n');
+    fs.renameSync(tmp, file);
+    out.repointed.push(w.id);
   }
   return out;
 }
@@ -149,6 +167,7 @@ export function describe(r) {
   const parts = [];
   if (r.promoted.length) parts.push('settled ' + r.promoted.join(', '));
   if (r.brought.length) parts.push('with ' + r.brought.length + ' that made it happen');
+  if (r.repointed.length) parts.push('re-pointed the parent of ' + r.repointed.length + ' left waiting');
   if (r.not_settled.length) parts.push('left waiting (not a decision nothing promoted reaches): ' + r.not_settled.join(', '));
   if (r.missing.length) parts.push('named but on record nowhere: ' + r.missing.join(', '));
   return r.commit + ' ' + (parts.join('; ') || 'nothing to do');

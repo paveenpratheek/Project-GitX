@@ -43,6 +43,21 @@ function getRepoRoot() {
 
 const ROOT_DIR = getRepoRoot();
 
+/* Where the broker's watcher writes its log. GITX_DATA_DIR wins, as it does
+ * in the broker; otherwise the folder ter-manager gave the broker, which it
+ * remembers in its local.json. Read on every call, because the broker may
+ * learn the folder after this server started - and without it the history
+ * tool read a log nobody writes to and answered "nothing recorded". */
+function logDataDir() {
+  if (process.env.GITX_DATA_DIR) return process.env.GITX_DATA_DIR;
+  try {
+    const file = process.env.GITX_LOCAL_FILE || path.join(path.dirname(__filename), '..', '.gitx', 'local.json');
+    return JSON.parse(fs.readFileSync(file, 'utf8')).dataDir || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 /* Every read tool used to be locked to ROOT_DIR - computed ONCE, from
  * wherever this process happened to be spawned, with no way to ask about a
  * different repository afterward. A session spawned from inside another
@@ -1083,7 +1098,7 @@ async function handleToolCall(name, args) {
       const target = resolveTargetRepo(args.cwd);
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
-      return reply({ repo: target.dir, ...readLog(target.dir, { id: args.id, limit: args.limit, dataDir: process.env.GITX_DATA_DIR || null }) });
+      return reply({ repo: target.dir, ...readLog(target.dir, { id: args.id, limit: args.limit, dataDir: logDataDir() }) });
     }
 
     case 'gitx_thought_record': {
