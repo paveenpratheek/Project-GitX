@@ -1090,5 +1090,8 @@
     } else if (!view.sel) renderDetail();
   }
 
-  window.GraphView = { init, onState };
+  /* refit: the timeline was hidden behind another view and has just come
+   * back. The list's ResizeObserver redraws the graph by itself; the mode
+   * switch's thumb measured zero while hidden and needs placing again. */
+  window.GraphView = { init, onState, refit: placeThumb };
 })();

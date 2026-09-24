@@ -1424,6 +1424,97 @@ body { padding: 10px; gap: 10px; }
 .tg-box { border-color: color-mix(in srgb, var(--thought) 22%, var(--lg-edge)); }
 .tg-chip { border-color: var(--lg-edge); border-radius: 999px; }
 
+/* ==========================================================================
+   GitX's own sidebar, the way Source Control has one: a list of views of
+   this repository, and beside it the view that is open. The sidebar is one
+   more floating column; each view lays out its own columns inside the rest.
+   ========================================================================== */
+
+.gitx-container { grid-template-columns: 184px minmax(0, 1fr); }
+
+.gitx-nav { padding: 8px; gap: 2px; }
+
+.gitx-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font: 500 12.5px/1 var(--font-sans);
+  color: var(--text-dim);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.gitx-nav-item svg { width: 15px; height: 15px; flex: none; stroke-width: 1.6; }
+.gitx-nav-item:hover { background: color-mix(in srgb, var(--text) 7%, transparent); color: var(--text); }
+.gitx-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.gitx-nav-item[aria-current="page"] {
+  background: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 4px 12px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.gitx-nav-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* How many agents are online, on the Agent Swarm row. */
+.gitx-nav-count {
+  min-width: 18px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 10.5px;
+  font-weight: 700;
+  text-align: center;
+}
+.gitx-nav-count[hidden] { display: none; }
+.gitx-nav-item[aria-current="page"] .gitx-nav-count { background: rgba(255, 255, 255, 0.24); color: #ffffff; }
+
+/* One view at a time. [hidden] has to be restated: display: grid beats it. */
+.gitx-view { display: grid; gap: 10px; min-width: 0; min-height: 0; }
+.gitx-view[hidden] { display: none; }
+.gitx-view-timeline { grid-template-columns: minmax(0, 1fr) clamp(290px, 26vw, 380px); }
+.gitx-view-swarm,
+.gitx-view-visuals { grid-template-columns: minmax(0, 1fr); }
+
+/* The swarm has the whole view now: cards side by side, not one long column. */
+#swarm-agents-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  align-content: start;
+}
+/* "No agents connected" is a line of text, not a card: it takes the row. */
+#swarm-agents-list > :not(.agent-card) { grid-column: 1 / -1; }
+
+/* Visuals: the commit graph page, filling its column. The column's own
+ * rounded corners and overflow clip it. */
+.gitx-visuals { position: relative; }
+.gitx-visuals iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+}
+
+/* The outcome chips and the search act on the timeline, and on nothing else. */
+:root:not([data-gitx-view="timeline"]) .gitx-search-deck { display: none; }
+
+/* Narrow: the sidebar keeps its icons and drops its labels. */
+@media (max-width: 900px) {
+  .gitx-container { grid-template-columns: 52px minmax(0, 1fr); }
+  .gitx-nav { padding: 8px 6px; }
+  .gitx-nav-item { justify-content: center; padding: 0; }
+  .gitx-nav-label,
+  .gitx-nav-count { display: none; }
+}
+
 /* Accessibility - glass gives way when the reader asks it to. */
 @media (prefers-reduced-transparency: reduce) {
   .lg, .panel, .panel.main-panel {

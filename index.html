@@ -47,22 +47,52 @@
     </div>
   </header>
 
-  <!-- 3-Column Main Grid -->
+  <!-- GitX's own sidebar, as Source Control has one: each row is a view of
+       this repository, and the view area beside it shows one at a time. -->
   <main class="gitx-container">
 
-    <!-- Column 1: Active Agent Swarm Deck -->
-    <section class="panel">
-      <div class="panel-head">
-        <span class="panel-title">
-          <span class="panel-icon">🤖</span> Agent Swarm Deck
-        </span>
-      </div>
-      <div class="panel-body" id="swarm-agents-list">
-        <!-- Populated dynamically by app.js -->
-      </div>
-    </section>
+    <nav class="panel gitx-nav" aria-label="GitX views">
+      <button type="button" class="gitx-nav-item" data-view="timeline">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="12" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v3M6 14v3"/><path d="M11 5h9M11 12h9M11 19h6"/></svg>
+        <span class="gitx-nav-label">Graph Timeline</span>
+      </button>
+      <button type="button" class="gitx-nav-item" data-view="swarm">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="16" height="12" rx="3"/><path d="M12 7V4"/><circle cx="12" cy="3.2" r="1"/><circle cx="9" cy="13" r="1.2"/><circle cx="15" cy="13" r="1.2"/><path d="M1.5 12v3M22.5 12v3"/></svg>
+        <span class="gitx-nav-label">Agent Swarm</span>
+        <span class="gitx-nav-count" id="nav-swarm-count" hidden></span>
+      </button>
+      <button type="button" class="gitx-nav-item" data-view="visuals">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="17" r="2"/><circle cx="12" cy="7" r="2"/><circle cx="19" cy="14" r="2"/><path d="M6.4 15.4 10.6 8.6M13.7 8.2l3.7 4.3"/><path d="M3 21h18"/></svg>
+        <span class="gitx-nav-label">Visuals</span>
+      </button>
+    </nav>
 
-    <!-- Column 2: the commit graph, with the thinking between commits -->
+    <!-- Agent Swarm: every agent the broker knows, and the branch each works on -->
+    <div class="gitx-view gitx-view-swarm" data-view="swarm" hidden>
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">
+            <span class="panel-icon">🤖</span> Agent Swarm
+          </span>
+        </div>
+        <div class="panel-body" id="swarm-agents-list">
+          <!-- Populated dynamically by app.js -->
+        </div>
+      </section>
+    </div>
+
+    <!-- Visuals: the commit graph that Ctrl+Alt+X opens over ter-manager,
+         the same page, loaded the first time this view is shown. -->
+    <div class="gitx-view gitx-view-visuals" data-view="visuals" hidden>
+      <section class="panel gitx-visuals">
+        <iframe id="gitx-visuals-frame" title="Commit graph" src="about:blank"></iframe>
+      </section>
+    </div>
+
+    <!-- Graph Timeline: the commit graph with the thinking between commits,
+         and whatever is selected in it -->
+    <div class="gitx-view gitx-view-timeline" data-view="timeline" hidden>
+
     <section class="panel main-panel">
       <div class="panel-head">
         <span class="panel-title">
@@ -110,6 +140,8 @@
       </div>
       <div class="panel-body tg-detail" id="tg-detail"></div>
     </section>
+
+    </div>
 
   </main>
 

@@ -16,7 +16,11 @@
   try { host = window.parent !== window && window.parent.document.documentElement.getAttribute('data-theme'); } catch (e) {}
   var eff = mode !== 'auto' ? mode : (host || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   document.documentElement.setAttribute('data-theme', eff);
-  if (window.parent !== window) document.documentElement.classList.add('hosted');
+  /* Two hosts: ter-manager's Ctrl+Alt+X overlay, whose close button sits over
+   * the bar's corner, and GitX's own Visuals view, which has none. */
+  var inGitx = false;
+  try { inGitx = window.parent !== window && typeof window.parent.gitxActiveRepo === 'function'; } catch (e) {}
+  if (window.parent !== window && !inGitx) document.documentElement.classList.add('hosted');
 })();
 </script>
 <style>
@@ -218,6 +222,9 @@ function normPath(p) { return p ? String(p).replace(/\\/g, '/').replace(/\/+$/, 
 function resolveActiveRepo() {
   if (window.parent && window.parent !== window) {
     try {
+      /* Inside GitX's Visuals view: the repository GitX is showing, so the
+       * graph and the page around it can never ask the broker for two. */
+      if (typeof window.parent.gitxActiveRepo === 'function') { const p = window.parent.gitxActiveRepo(); if (p) return p; }
       if (typeof window.parent.repoPath === 'function') { const p = window.parent.repoPath(); if (p) return p; }
       if (typeof window.parent.activeSessionPath === 'function') { const p = window.parent.activeSessionPath(); if (p) return p; }
     } catch (_) {}

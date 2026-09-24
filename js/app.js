@@ -1,4 +1,5 @@
-/* GitX — Frontend Application: header, agent swarm deck, and the broker link.
+/* GitX — Frontend Application: header, the sidebar's views, the agent swarm,
+ * and the broker link.
  * The graph and the details panel are js/graph-view.js. */
 
 /* ?broker=<port> points the page at a second broker - the way to try a broker
@@ -367,11 +368,21 @@ function renderHeaderBadge() {
 }
 
 function renderAgents() {
+  const agentsList = Object.values(state.agents);
+  /* How many are online, on the sidebar row, so the swarm can be read
+   * without opening it. */
+  const online = agentsList.filter(a => a.status === 'Online').length;
+  const count = document.getElementById('nav-swarm-count');
+  if (count) {
+    count.hidden = !online;
+    count.textContent = String(online);
+    count.title = online + ' online';
+  }
+
   const container = document.getElementById('swarm-agents-list');
   if (!container) return;
   container.innerHTML = '';
 
-  const agentsList = Object.values(state.agents);
   if (agentsList.length === 0) {
     container.innerHTML = '<div style="font-size:12px;color:var(--text-dim);padding:8px;">No agents connected. Open a terminal in Ter-Manager with agy/claude to connect.</div>';
     return;
@@ -447,6 +458,53 @@ function renderAgents() {
   });
 }
 
+// ---------------------------------------------------- GitX's own views
+/* One view at a time, picked in GitX's sidebar and remembered per viewer.
+ * Visuals is graph.html - the page Ctrl+Alt+X opens over ter-manager - in a
+ * frame: loaded the first time it is shown, and told to refresh each time
+ * after, the way ter-manager's overlay does it. */
+const VIEWS = ['timeline', 'swarm', 'visuals'];
+
+function showView(v) {
+  if (!VIEWS.includes(v)) v = 'timeline';
+  document.documentElement.setAttribute('data-gitx-view', v);
+  for (const el of document.querySelectorAll('.gitx-view')) el.hidden = el.dataset.view !== v;
+  for (const b of document.querySelectorAll('.gitx-nav-item')) {
+    if (b.dataset.view === v) b.setAttribute('aria-current', 'page');
+    else b.removeAttribute('aria-current');
+  }
+  try { localStorage.setItem('gitx.view', v); } catch (_) { /* remembered this time only */ }
+
+  if (v === 'visuals') {
+    const f = document.getElementById('gitx-visuals-frame');
+    if (f && f.getAttribute('src') === 'about:blank') {
+      /* graph.html takes a whole broker URL, not a port. */
+      f.setAttribute('src', 'graph.html' + (BROKER_PORT !== '7771' ? '?broker=' + encodeURIComponent(BROKER_URL) : ''));
+    } else if (f && f.contentWindow) {
+      try { f.contentWindow.postMessage({ type: 'GITX_REFRESH' }, location.origin); } catch (_) {}
+    }
+  }
+  /* Hidden, the mode switch measured nothing; place its thumb now. */
+  if (v === 'timeline' && window.GraphView && window.GraphView.refit) window.GraphView.refit();
+}
+
+function initViews() {
+  for (const b of document.querySelectorAll('.gitx-nav-item')) {
+    /* The name, for when a narrow window hides the labels. */
+    const label = b.querySelector('.gitx-nav-label');
+    if (label) b.title = label.textContent.trim();
+    b.addEventListener('click', () => showView(b.dataset.view));
+  }
+  let saved = null;
+  try { saved = localStorage.getItem('gitx.view'); } catch (_) { /* no storage: start on the timeline */ }
+  showView(saved || 'timeline');
+}
+
+/* The repository this page is showing, for the Visuals frame. Without it
+ * graph.html asks ter-manager, which can name a different folder - and its
+ * request would switch the broker, and this page with it, to that one. */
+window.gitxActiveRepo = () => state.activeRepo || lastKnownRepo;
+
 function initModal() {
   const modal = document.getElementById('issue-modal');
   const openBtn = document.getElementById('btn-new-issue');
@@ -515,6 +573,7 @@ function initLiquidLight() {
 
 window.addEventListener('DOMContentLoaded', () => {
   initThemeSync();
+  initViews();
   initSessionSync();
   connectBroker();
   initModal();
