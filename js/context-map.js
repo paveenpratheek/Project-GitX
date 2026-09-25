@@ -23,10 +23,9 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 
-  const COLOUR = {
-    goals: '#57c7e3', discussion: '#4c8eda', information: '#8dcc93', constraints: '#c9a37a',
-    criteria: '#8e7cc3', rules: '#d98cc4', questions: '#f79767', stashed: '#8a94a3'
-  };
+  /* Each domain's colour is a theme token (gitx.css): pastel on dark, vivid
+   * on light, where pastel washes out against a pale ground. */
+  const COLOUR = Object.fromEntries(['goals', 'discussion', 'information', 'constraints', 'criteria', 'rules', 'questions', 'stashed'].map((d) => [d, 'var(--cm-d-' + d + ')']));
   /* Where each domain settles; floating ones at the edges. World units. */
   const ANCHOR = {
     goals: [520, 240], discussion: [900, 700], information: [1560, 640], constraints: [1240, 1180],
@@ -207,7 +206,8 @@
 
     for (const d of S.domains) {
       const on = d.floating || !(S.goal && S.goal.domains_off.includes(d.id)), c = on ? d.colour : 'var(--cm-ink-3)';
-      const path = mk('path', { fill: c, 'fill-opacity': d.floating ? 0.05 : 0.07, stroke: c, 'stroke-opacity': 0.3, 'stroke-width': 1.2, 'stroke-dasharray': d.floating ? '6 6' : '' }, gA);
+      /* How strongly an area is tinted is the theme's to say (gitx.css). */
+      const path = mk('path', { fill: c, stroke: c, 'stroke-width': 1.4, 'stroke-dasharray': d.floating ? '6 6' : '', class: 'cm-area' + (d.floating ? ' cm-area-float' : '') }, gA);
       const label = mk('text', { 'text-anchor': 'middle', fill: c, 'font-size': 17, class: 'cm-area-label' }, gA);
       label.textContent = d.name + (d.floating ? ' · floating' : on ? '' : ' · off');
       sc.areas.push({ d, path, label });
@@ -234,7 +234,7 @@
       if (!shown(n)) continue;
       const g = mk('g', { class: 'cm-node', 'data-id': n.id }, gN);
       let fill, ring = null, ringW = 0, dash = '', ink = '#fff', lines, fs = 9.5, r = n.r;
-      if (n.type === 'goal') { fill = S.dom.goals.colour; ring = 'rgba(87,199,227,0.35)'; ringW = 7; lines = caption(n.label, 12); fs = 11; }
+      if (n.type === 'goal') { fill = S.dom.goals.colour; ring = 'color-mix(in srgb, var(--cm-d-goals) 35%, transparent)'; ringW = 7; lines = caption(n.label, 12); fs = 11; }
       else if (n.type === 'hub') {
         const st = hubState(n);
         fill = st === 'active' ? S.dom[n.domain].colour : 'var(--cm-ink-3)';
@@ -255,7 +255,8 @@
       mk('circle', { r: n.type === 'thought' && ring ? r - ringW / 2 : r, fill }, g);
       const sel = mk('circle', { r: r + 5, fill: 'none', stroke: 'var(--accent)', 'stroke-width': 2.5, opacity: 0 }, g);
       const lh = fs * 1.15;
-      lines.forEach((ln, i) => { const tx = mk('text', { y: (i - (lines.length - 1) / 2) * lh + fs * 0.35, 'text-anchor': 'middle', fill: ink, 'font-size': fs, class: 'cm-n-label' }, g); tx.textContent = ln; });
+      const onFill = ink === '#fff';            // white text on a filled circle takes a dark halo
+      lines.forEach((ln, i) => { const tx = mk('text', { y: (i - (lines.length - 1) / 2) * lh + fs * 0.35, 'text-anchor': 'middle', fill: ink, 'font-size': fs, class: 'cm-n-label' + (onFill ? ' cm-on-fill' : '') }, g); tx.textContent = ln; });
       sc.nodes.set(n.id, { n, g, sel });
     }
     S.scene = sc;

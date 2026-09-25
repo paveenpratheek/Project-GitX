@@ -1519,9 +1519,18 @@ body { padding: 10px; gap: 10px; }
 
 /* ==========================================================================
    Context Map (js/context-map.js). The map is the content and fills its
-   column; every control floats over it as glass, the iOS 26 way. The column
-   itself is a plain surface, not frosted - glass needs the map directly
-   behind it to be glass over something.
+   column; every control floats over it as glass, the iOS 26 way.
+
+   The column is FROSTED: it blurs the wallpaper behind it, so the map sits
+   on a calm ground. That does not stop the controls being glass over the
+   map - an element with a backdrop-filter is the backdrop for the ones
+   inside it, so they blur the map, not the wallpaper. (A first version left
+   the column unfrosted for that reason, and under a wallpaper GitX's panel
+   rule then thinned it until the picture showed through sharp.)
+
+   Two palettes: pastel domains on dark, where they glow; vivid ones on
+   light, where pastel washes out against a pale ground. Labels carry a halo
+   so they read over lines and colour alike.
    ========================================================================== */
 
 :root {
@@ -1541,10 +1550,56 @@ body { padding: 10px; gap: 10px; }
   --cm-fill: color-mix(in srgb, var(--text) 9%, transparent);
   --cm-sep: color-mix(in srgb, var(--text) 12%, transparent);
   --cm-on: var(--success);
+  --cm-halo: rgba(0, 0, 0, 0.35);
+  --cm-ground: color-mix(in srgb, var(--surface) 80%, transparent);
+  --cm-area-fill: 0.07;
+  --cm-area-stroke: 0.3;
+  /* Domains, dark: the Neo4j pastels. */
+  --cm-d-goals: #57c7e3;
+  --cm-d-discussion: #4c8eda;
+  --cm-d-information: #8dcc93;
+  --cm-d-constraints: #c9a37a;
+  --cm-d-criteria: #8e7cc3;
+  --cm-d-rules: #d98cc4;
+  --cm-d-questions: #f79767;
+  --cm-d-stashed: #8a94a3;
+}
+:root[data-theme="light"] {
+  --cm-ink-3: #9aa1ad;
+  --cm-edge: rgba(35, 45, 65, 0.42);
+  --cm-edge-label: rgba(35, 45, 65, 0.78);
+  --cm-link: #4058d8;
+  --cm-thought: #717a8a;
+  --cm-accepted: #e09c00;
+  --cm-rejected: #d92f3d;
+  --cm-rejected-fill: #eb6a74;
+  --cm-glass: color-mix(in srgb, #ffffff 70%, transparent);
+  --cm-glass-strong: color-mix(in srgb, #ffffff 76%, transparent);
+  --cm-halo: rgba(20, 25, 40, 0.45);
+  --cm-ground: color-mix(in srgb, #ffffff 74%, transparent);
+  --cm-area-fill: 0.13;
+  --cm-area-stroke: 0.55;
+  /* Domains, light: the same hues, saturated. */
+  --cm-d-goals: #0aa5cc;
+  --cm-d-discussion: #1f6fe0;
+  --cm-d-information: #2fa24a;
+  --cm-d-constraints: #c47a1f;
+  --cm-d-criteria: #7248d4;
+  --cm-d-rules: #d0439f;
+  --cm-d-questions: #ee6a1c;
+  --cm-d-stashed: #5f6b7d;
 }
 
 .gitx-view-map { grid-template-columns: minmax(0, 1fr); }
-.cm-panel { position: relative; background: color-mix(in srgb, var(--surface) 94%, transparent); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.cm-panel,
+:root[data-wallpaper] .cm-panel {
+  position: relative;
+  background: var(--cm-ground);
+  -webkit-backdrop-filter: blur(34px) saturate(170%);
+  backdrop-filter: blur(34px) saturate(170%);
+}
+.cm-area { fill-opacity: var(--cm-area-fill); stroke-opacity: var(--cm-area-stroke); }
+.cm-area.cm-area-float { fill-opacity: calc(var(--cm-area-fill) * 0.7); }
 .cm-stage { position: absolute; inset: 0; overflow: hidden; }
 #cm-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; user-select: none; touch-action: none; }
 #cm-svg.cm-panning { cursor: grabbing; }
@@ -1552,10 +1607,13 @@ body { padding: 10px; gap: 10px; }
 .cm-node { cursor: pointer; }
 .cm-dim { opacity: 0.14; }
 .cm-hidden { display: none; }
-.cm-e-label { font-size: 7.5px; fill: var(--cm-edge-label); letter-spacing: 0.04em; font-weight: 600; }
+/* Halos: an edge's name over its line, a node's caption over its fill, an
+ * area's title over the map - each drawn with a soft outline behind it. */
+.cm-e-label { font-size: 7.5px; fill: var(--cm-edge-label); letter-spacing: 0.04em; font-weight: 700; paint-order: stroke; stroke: var(--cm-bg); stroke-width: 2.6px; stroke-linejoin: round; }
 #cm-svg.cm-far .cm-e-label { display: none; }
-.cm-n-label { font-weight: 600; }
-.cm-area-label { font-weight: 700; letter-spacing: 0.02em; }
+.cm-n-label { font-weight: 650; }
+.cm-n-label.cm-on-fill { paint-order: stroke; stroke: var(--cm-halo); stroke-width: 1.6px; stroke-linejoin: round; }
+.cm-area-label { font-weight: 800; letter-spacing: 0.02em; paint-order: stroke; stroke: var(--cm-bg); stroke-width: 4px; stroke-linejoin: round; }
 .cm-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-dim); font-size: 13px; }
 .cm-empty[hidden] { display: none; }
 
