@@ -41,6 +41,9 @@ export const DOMAINS = [
   { id: 'information', name: 'Information' },
   { id: 'constraints', name: 'Constraints' },
   { id: 'criteria',    name: 'Criteria' },
+  /* What is to be built and in what order: decisions that make up the plan.
+   * Only by placement - no kind of thought lands here by itself. */
+  { id: 'planning',    name: 'Implementation & planning' },
   /* Floating: unconnected on the map until an agent uses a node in them. */
   { id: 'rules',       name: 'Rules', floating: true },
   { id: 'questions',   name: 'Bugs & open questions', floating: true },

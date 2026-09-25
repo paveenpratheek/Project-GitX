@@ -30,7 +30,8 @@
   /* Where each domain settles. World units; the floating ones at the edges. */
   const ANCHOR = {
     goals: [250, 270], stashed: [520, 170], information: [790, 340], discussion: [470, 500],
-    rules: [140, 540], criteria: [290, 740], constraints: [650, 730], questions: [920, 640]
+    rules: [140, 540], criteria: [290, 740], constraints: [650, 730], questions: [920, 640],
+    planning: [470, 930]
   };
   const UNSORTED = 'unsorted';
   const ringOf = (n) => 30 + Math.min(34, n * 3.2);        // how far a hub's thoughts sit from it
@@ -203,6 +204,9 @@
         else if (fl && t.outcome === 'open') mk('circle', { r: 3.6, class: 'cm-t-open' }, g);
         else if (fl && n.domain === 'stashed') mk('circle', { r: 3.6, class: 'cm-t-stashed' }, g);
         else if (fl) mk('circle', { r: 3, class: 'cm-t-bug' }, g);
+        /* An open question placed in a working domain (the plan's, say) is
+         * still a hollow ring: open, not accepted. */
+        else if (t.outcome === 'open') mk('circle', { r: 3.6, class: 'cm-t-open' }, g);
         else mk('circle', { r: 3.4, class: t.outcome === 'rejected' ? 'cm-t-rejected' : n.topic === UNSORTED ? 'cm-t-unsorted' : 'cm-t' }, g);
         mk('circle', { r: 9, class: 'cm-sel-ring cm-sel-small' }, g);
         mk('circle', { r: 8, class: 'cm-hit' }, g);         // a bigger target than the dot
@@ -331,7 +335,7 @@
     const list = thoughtsIn(topic), on = !!S.goal && S.goal.topics.includes(topic);
     const read = list.filter((t) => topicActive(topic, t.domain));
     const tp = S.topics[topic];
-    const order = ['discussion', 'information', 'goals', 'constraints', 'criteria', 'questions', 'rules', 'stashed'];
+    const order = ['planning', 'discussion', 'information', 'goals', 'constraints', 'criteria', 'questions', 'rules', 'stashed'];
     return '<button type="button" class="cm-back" data-back>' + backIcon + 'Overview</button>'
       + '<h2 class="cm-large">' + esc(title(topic)) + '</h2>'
       + (topic === UNSORTED ? '<div class="cm-foot">Thoughts with no topic. A topic is given when a grouping is applied, and - soon - when a thought is recorded.</div>'

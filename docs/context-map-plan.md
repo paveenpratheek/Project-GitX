@@ -55,7 +55,9 @@ Domain        a KIND of content - the same set in every repository
       └ Thought   what the context graph holds today
 
 Working domains:   Goals & requirements · Thoughts & discussion ·
-                   Information · Constraints · Criteria
+                   Information · Constraints · Criteria ·
+                   Implementation & planning (added 2026-09-25: what is
+                   to be built and in what order - by placement only)
 Floating domains:  Rules · Bugs & open questions · Stashed
                    (no links until used)
 ```
