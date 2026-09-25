@@ -9,7 +9,7 @@ import { loadOrBuildIndex } from './tools/commit-index.js';
 import { formThreads } from './tools/threads.js';
 import { loadGraph, graphPayload } from './tools/project-graph.js';
 import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
-import { loadTopics, loadGoal } from './tools/topics.js';
+import { loadTopics, loadGoal, writeGoal, suggestTopics } from './tools/topics.js';
 import { ThoughtWatcher, readLog } from './tools/thought-watch.js';
 import { promotePending, describe as describePromotion } from './tools/promote.js';
 
@@ -28,7 +28,13 @@ const PORT = Number(process.env.GITX_BROKER_PORT) || 7771;
  * the files it watches is edited by whatever edited them. */
 const watcher = new ThoughtWatcher({
   dataDir: process.env.GITX_DATA_DIR || null,
-  context: () => ({ agents: Object.values(state.agents).filter((a) => a.status === 'Online').map((a) => a.id) })
+  context: () => ({ agents: Object.values(state.agents).filter((a) => a.status === 'Online').map((a) => a.id) }),
+  /* A thought recorded, a topic or the goal changed: the page hears it now,
+   * not at the next commit. The new signature is what makes it refetch. */
+  onChange: () => {
+    try { state.thoughtStats = thoughtStatsOf(state.activeRepo); } catch (_) { return; }
+    broadcast({ type: 'SYNC_STATE', state });
+  }
 });
 
 let state = {
@@ -406,6 +412,49 @@ const server = http.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: err.message }));
     }
+    return;
+  }
+
+  /* The context map's controls. Local pages only, like every route here (the
+   * Origin check at the top). The goal decides what agents read, so a change
+   * is checked whole before it is written, and the watcher records it. */
+  if (req.url.split('?')[0] === '/api/context/suggest') {
+    const text = new URL(req.url, 'http://127.0.0.1').searchParams.get('text') || '';
+    try {
+      const thoughts = loadThoughts(state.activeRepo, { store: 'context' }).thoughts;
+      const body = JSON.stringify(suggestTopics(text, thoughts, loadTopics(state.activeRepo).topics));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  if (req.url === '/api/context/goal' && req.method === 'POST') {
+    let raw = '';
+    req.on('data', (c) => { raw += c; if (raw.length > 65536) req.destroy(); });
+    req.on('end', () => {
+      let patch;
+      try { patch = JSON.parse(raw || '{}'); } catch (_) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, problems: ['the body is not JSON'] }));
+        return;
+      }
+      try {
+        const r = writeGoal(state.activeRepo, { text: patch.text, topics: patch.topics, domains_off: patch.domains_off }, { by: 'user' });
+        res.writeHead(r.ok ? 200 : 400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r));
+        if (r.ok) {
+          state.thoughtStats = thoughtStatsOf(state.activeRepo);
+          broadcast({ type: 'SYNC_STATE', state });
+        }
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, problems: [err.message] }));
+      }
+    });
     return;
   }
 

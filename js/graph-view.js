@@ -104,6 +104,9 @@
     buildIndex();
     render();
     checkLog();
+    /* The Context Map draws the same payload's context graph; one fetch
+     * serves both views. */
+    if (window.ContextMap) window.ContextMap.onData(view.data);
   }
 
   /* One read on load: how much has been recorded, and whether the chain holds.

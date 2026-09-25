@@ -48,6 +48,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
+import { loadTopics, loadGoal, mapPaths } from './topics.js';
 
 const DEBOUNCE_MS = 400;
 const MAX_READ = 5000;          // entries a reader may ask for at once
@@ -99,7 +100,42 @@ function snapshot(repoDir) {
     out.thoughts[t.id] = t;
     out.where[t.id] = 'context';
   }
+  /* The context map's topics and goal: not thoughts, but what they decide -
+   * which part agents read - is worth a record of its own. */
+  out.map = { topics: Object.fromEntries(loadTopics(repoDir).topics.map((t) => [t.id, t])), goal: loadGoal(repoDir).goal };
   return out;
+}
+
+/* Topic files and the goal: added, changed with what they used to say, and
+ * removed with a full copy, as thoughts are. An index from before the map
+ * existed has none, so a first look reports what is there as added. */
+const TOPIC_FIELDS = ['title', 'status', 'waiting_for', 'revisit_if', 'digest', 'owner'];
+const GOAL_FIELDS = ['text', 'topics', 'domains_off'];
+function diffMap(before, after) {
+  const events = [];
+  const b = (before && before.topics) || {}, a = after.topics;
+  const fieldsOf = (x, y, names) => {
+    const f = {};
+    for (const n of names) {
+      const p = JSON.stringify(x[n] === undefined ? null : x[n]), q = JSON.stringify(y[n] === undefined ? null : y[n]);
+      if (p !== q) f[n] = { was: JSON.parse(p), now: JSON.parse(q) };
+    }
+    return f;
+  };
+  for (const id of Object.keys(a)) {
+    if (!b[id]) { events.push({ event: 'topic-added', id, text: a[id].title }); continue; }
+    const f = fieldsOf(b[id], a[id], TOPIC_FIELDS);
+    if (Object.keys(f).length) events.push({ event: 'topic-changed', id, text: a[id].title, fields: f });
+  }
+  for (const id of Object.keys(b)) if (!a[id]) events.push({ event: 'topic-removed', id, text: b[id].title, topic: b[id] });
+  const g0 = (before && before.goal) || null, g1 = after.goal;
+  if (g1 && !g0) events.push({ event: 'goal-set', id: 'goal', text: g1.text, goal: g1 });
+  else if (!g1 && g0) events.push({ event: 'goal-removed', id: 'goal', text: g0.text, goal: g0 });
+  else if (g1 && g0) {
+    const f = fieldsOf(g0, g1, GOAL_FIELDS);
+    if (Object.keys(f).length) events.push({ event: 'goal-changed', id: 'goal', text: g1.text, set_by: g1.set_by, fields: f });
+  }
+  return events;
 }
 
 /* Which fields differ, with what they used to say. Whole thoughts are kept for
@@ -156,9 +192,10 @@ function diffFiles(repoDir, before, after) {
 }
 
 export class ThoughtWatcher {
-  constructor({ dataDir = null, context = () => ({}) } = {}) {
+  constructor({ dataDir = null, context = () => ({}), onChange = null } = {}) {
     this.dataDir = dataDir;
     this.context = context;              // what the broker knows: agents online, etc.
+    this.onChange = onChange;            // told after a sweep that found anything
     this.repoDir = null;
     this.home = null;
     this.before = { thoughts: {}, where: {}, files: {} };
@@ -181,7 +218,7 @@ export class ThoughtWatcher {
     /* Anything that moved while nothing was watching is still recorded, marked
      * as such: the time is when it was NOTICED, not when it happened. */
     if (saved && saved.thoughts) {
-      const missed = [...diff(saved.thoughts, now.thoughts, saved.where, now.where), ...diffFiles(repoDir, saved.files || {}, now.files)];
+      const missed = [...diff(saved.thoughts, now.thoughts, saved.where, now.where), ...diffFiles(repoDir, saved.files || {}, now.files), ...diffMap(saved.map, now.map)];
       if (missed.length) {
         this.append(missed.map((e) => ({ ...e, seen: 'while-unwatched' })));
         this.stats.unwatched += missed.length;
@@ -205,7 +242,7 @@ export class ThoughtWatcher {
     /* A rename between the two graphs fires in two folders at once; the
      * debounce lets both land before one sweep reads them, which is what makes
      * a move one entry rather than a removal and an addition. */
-    for (const dir of [dirs.thoughts, dirs.drafts, dirs.stash, dirs.context, dirs.contextStash]) {
+    for (const dir of [dirs.thoughts, dirs.drafts, dirs.stash, dirs.context, dirs.contextStash, mapPaths(this.repoDir).topics]) {
       try {
         fs.mkdirSync(dir, { recursive: true });
         const w = fs.watch(dir, { recursive: true }, () => this.bump());
@@ -213,6 +250,14 @@ export class ThoughtWatcher {
         this.watchers.push(w);
       } catch (_) { /* unwatchable folder - the startup reconcile still covers it */ }
     }
+    /* goal.json sits in .gitx/context/ itself, beside the folders above:
+     * watched there, not recursively, for that one name. */
+    try {
+      const goal = mapPaths(this.repoDir).goal;
+      const w = fs.watch(path.dirname(goal), { recursive: false }, (ev, name) => { if (String(name || '') === path.basename(goal)) this.bump(); });
+      w.on('error', () => {});
+      this.watchers.push(w);
+    } catch (_) { /* the reconcile still covers it */ }
   }
 
   bump() {
@@ -224,7 +269,7 @@ export class ThoughtWatcher {
     if (!this.repoDir) return;
     let now;
     try { now = snapshot(this.repoDir); } catch (_) { return; }
-    const events = [...diff(this.before.thoughts, now.thoughts, this.before.where, now.where), ...diffFiles(this.repoDir, this.before.files, now.files)];
+    const events = [...diff(this.before.thoughts, now.thoughts, this.before.where, now.where), ...diffFiles(this.repoDir, this.before.files, now.files), ...diffMap(this.before.map, now.map)];
     if (events.length) this.append(events);
     /* An edit that breaks a thought reads as a removal AND an unreadable file;
      * both are recorded, and the second is the one that says why. */
@@ -232,6 +277,10 @@ export class ThoughtWatcher {
     this.before = now;
     this.stats.unreadable = Object.keys(now.files).length;
     this.save();
+    /* So what is on screen follows: a thought an agent records, or a goal
+     * changed in another window, reaches the page without waiting for a
+     * commit. */
+    if (events.length && this.onChange) { try { this.onChange(events); } catch (_) { /* the record is kept either way */ } }
   }
 
   append(events) {
@@ -254,7 +303,7 @@ export class ThoughtWatcher {
   save() {
     try {
       fs.writeFileSync(path.join(this.home, 'index.json'),
-        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before.thoughts, where: this.before.where, files: this.before.files }, null, 1));
+        JSON.stringify({ repo: this.repoDir, at: new Date().toISOString(), lastHash: this.lastHash, thoughts: this.before.thoughts, where: this.before.where, files: this.before.files, map: this.before.map }, null, 1));
     } catch (_) { /* the log is what matters; the index rebuilds itself */ }
   }
 

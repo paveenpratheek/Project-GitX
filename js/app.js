@@ -463,7 +463,7 @@ function renderAgents() {
  * Visuals is graph.html - the page Ctrl+Alt+X opens over ter-manager - in a
  * frame: loaded the first time it is shown, and told to refresh each time
  * after, the way ter-manager's overlay does it. */
-const VIEWS = ['timeline', 'swarm', 'visuals'];
+const VIEWS = ['timeline', 'map', 'swarm', 'visuals'];
 
 function showView(v) {
   if (!VIEWS.includes(v)) v = 'timeline';
@@ -486,6 +486,8 @@ function showView(v) {
   }
   /* Hidden, the mode switch measured nothing; place its thumb now. */
   if (v === 'timeline' && window.GraphView && window.GraphView.refit) window.GraphView.refit();
+  /* The map measures itself only while shown. */
+  if (window.ContextMap) { if (v === 'map') window.ContextMap.show(); else window.ContextMap.hide(); }
 }
 
 function initViews() {
@@ -578,5 +580,6 @@ window.addEventListener('DOMContentLoaded', () => {
   connectBroker();
   initModal();
   initLiquidLight();
+  if (window.ContextMap) window.ContextMap.init({ httpBase: BROKER_HTTP });
   if (window.GraphView) window.GraphView.init({ httpBase: BROKER_HTTP });
 });

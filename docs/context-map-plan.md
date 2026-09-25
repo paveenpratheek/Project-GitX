@@ -212,6 +212,25 @@ agents use it, and let that shape the tools.
 3. **The Context Map view,** as the mockup was agreed, reading the files.
    Switching a domain or thread on and off, and setting the goal, from the
    map. *Check:* against a second broker on real data.
+   - *Done 2026-09-25.* "Context Map" in GitX's sidebar (`js/context-map.js`),
+     drawn from the same `/api/thoughts` payload the timeline fetches.
+     Switches and the goal editor save through `POST /api/context/goal`,
+     which checks a change whole and writes `goal.json` (`writeGoal` in
+     `mcp/tools/topics.js`); `GET /api/context/suggest` is "GitX suggests" -
+     topics ranked by the goal's words in their titles and thoughts, and by
+     recent work - and the user confirms. The watcher now records topic and
+     goal changes with their old values (`goal-changed`, `topic-changed` ...)
+     and tells the broker after every sweep, so a recorded thought or a
+     changed goal reaches the page without waiting for a commit. A
+     repository with no grouping shows "Unsorted" hubs, and agents read none
+     of it. Checked on a throwaway clone of GitX behind a second broker:
+     switching a topic and a domain moved what agents read (39 → 40 → 32
+     thoughts), the goal editor suggested Branches & anchors for "Fix branch
+     anchors after a rebase" and saved it, both goal changes were logged
+     live, bad changes were refused with each problem named, the timeline
+     still worked beside it, and the real goal was untouched. The earlier
+     watcher, promotion and broker checks still pass. The mockup in
+     `project gitx_TM` is superseded.
 4. **Agents read the active part.** `gitx_context` returns active digests by
    default, catch-up shows the goal and the active domains, and
    `gitx_thought_record` requires a thread and suggests one. *Check:* over
