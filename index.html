@@ -72,27 +72,33 @@
     </nav>
 
     <!-- Context Map: the context graph as a network, and the goal that decides
-         which part of it agents read. js/context-map.js; the controls float
-         over the map as glass. -->
+         which part of it agents read. js/context-map.js. Minimal, iOS 26: the
+         map runs edge to edge and every control floats over it as glass. -->
     <div class="gitx-view gitx-view-map" data-view="map" hidden>
       <section class="panel cm-panel">
         <div class="cm-stage" id="cm-stage">
           <svg id="cm-svg" aria-label="Context map"></svg>
           <div class="cm-empty" id="cm-empty">Reading the context graph…</div>
-          <div class="cm-glass cm-goalcap" id="cm-goal"></div>
-          <div class="cm-glass cm-keys">
-            <span><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="var(--cm-thought)" stroke="var(--cm-accepted)" stroke-width="2"/></svg>accepted</span>
-            <span><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="var(--cm-rejected-fill)" stroke="var(--cm-rejected)" stroke-width="2"/></svg>rejected</span>
-            <span><svg width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--cm-d-questions)" stroke-width="2"/></svg>open</span>
-            <span><svg width="22" height="8" aria-hidden="true"><path d="M1 4H21" stroke="var(--cm-link)" stroke-width="1.6"/></svg>linked</span>
+          <div class="cm-title">
+            <h2>Context Map</h2>
+            <div id="cm-sub"></div>
+          </div>
+          <button type="button" class="cm-glass cm-goalcap" id="cm-goal" aria-label="Change the goal"></button>
+          <div class="cm-glass cm-legend" aria-label="Key">
+            <span><i class="cm-k-acc"></i>Accepted</span>
+            <span><i class="cm-k-rej"></i>Rejected</span>
+            <span><i class="cm-k-open"></i>Open</span>
+            <span><i class="cm-k-act"></i>Active</span>
           </div>
           <div class="cm-glass cm-monitor" id="cm-monitor"></div>
           <div class="cm-glass cm-zoom">
             <button type="button" id="cm-zin" aria-label="Zoom in">+</button>
             <button type="button" id="cm-zout" aria-label="Zoom out">−</button>
-            <button type="button" id="cm-zfit" aria-label="Fit the map">⤢</button>
+            <button type="button" id="cm-zfit" aria-label="Fit the map">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M1 5V1h4M13 5V1H9M1 9v4h4M13 9v4H9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
           </div>
-          <aside class="cm-glass cm-inspector"><div class="cm-scroll" id="cm-panel"></div></aside>
+          <aside class="cm-glass cm-sheet"><div class="cm-scroll" id="cm-panel"></div></aside>
           <div class="cm-glass cm-tip" id="cm-tip" hidden></div>
         </div>
       </section>
