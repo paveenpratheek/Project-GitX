@@ -9,6 +9,7 @@ import { loadOrBuildIndex } from './tools/commit-index.js';
 import { formThreads } from './tools/threads.js';
 import { loadGraph, graphPayload } from './tools/project-graph.js';
 import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
+import { loadTopics, loadGoal } from './tools/topics.js';
 import { ThoughtWatcher, readLog } from './tools/thought-watch.js';
 import { promotePending, describe as describePromotion } from './tools/promote.js';
 
@@ -57,11 +58,13 @@ let state = {
 
 /* The page refetches the thoughts when this signature moves, so it covers
  * both graphs: a thought written to the context graph, or one promoted out of
- * it, has to reach the page as surely as one in the thought graph. */
+ * it, has to reach the page as surely as one in the thought graph. The
+ * context map's topics and goal are in it too. */
 function thoughtStatsOf(dir) {
   const graph = loadThoughts(dir).stats;
   const context = loadThoughts(dir, { store: 'context' }).stats;
-  return { ...graph, context: { count: context.count, skipped: context.skipped }, signature: graph.signature + '|' + context.signature };
+  const map = Math.round(Math.max(loadTopics(dir).newest, loadGoal(dir).newest));
+  return { ...graph, context: { count: context.count, skipped: context.skipped }, signature: graph.signature + '|' + context.signature + '|' + map };
 }
 
 function getBranch(dir) {

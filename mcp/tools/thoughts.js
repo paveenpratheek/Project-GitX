@@ -36,6 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { contextMap } from './topics.js';
 
 const SCHEMA = 'gitx.thought/0';
 const STASH_SCHEMA = 'gitx.stash/0';
@@ -275,7 +276,17 @@ export function thoughtsPayload(repoDir) {
      * above can mistake a waiting thought for a settled one. */
     context: (() => {
       const c = loadThoughts(repoDir, { store: 'context' });
-      return { thoughts: c.thoughts.map(compact), stashes: loadStashes(repoDir, { store: 'context' }), stats: c.stats };
+      /* Each waiting thought carries its topic and domain, and the map
+       * carries the topics and the goal (tools/topics.js). */
+      const map = contextMap(repoDir, c.thoughts);
+      const where = new Map(map.placed.map((p) => [p.id, p]));
+      const { placed, newest, ...rest } = map;
+      return {
+        thoughts: c.thoughts.map((t) => ({ ...compact(t), topic: where.get(t.id).topic, domain: where.get(t.id).domain })),
+        stashes: loadStashes(repoDir, { store: 'context' }),
+        stats: c.stats,
+        map: rest
+      };
     })()
   };
 }

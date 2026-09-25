@@ -17,12 +17,11 @@ lets the user see it, and lets the user decide which part of it agents read.
 - **See it.** A map of the context graph in GitX's sidebar, drawn as a
   network, where each domain is its own cluster.
 - **Steer it.** The user sets a goal. The part of the map that serves it is
-  active, and **the active part is what agents read** *(assumed)*. The rest
-  is kept but not handed to agents.
-  - *This reverses a rule set on 2026-09-23*: agents read the context graph
-    only when they ask for it, never by default (t-e7567325ec). It needs the
-    user's word before it is built. The alternative keeps that rule: the goal
-    only lights the map and orders what `gitx_context` returns when asked.
+  active, and **the active part is what agents read**. The rest is kept but
+  not handed to agents. The goal is how new information reaches agents.
+  - *Decided 2026-09-25, and it replaces a rule of 2026-09-23* that agents
+    read the context graph only when they ask for it (t-e7567325ec). A
+    context graph read only on request never reaches the agent that needs it.
 
 The two graphs stay distinct:
 
@@ -51,21 +50,32 @@ why the page's "group by discussion" reads as random.
 ## Model
 
 ```
-Domain        a lasting area of the project, a topic the user names
-  └ Thread    one piece of ongoing work in it; opens and closes
+Domain        a KIND of content - the same set in every repository
+  └ Topic     one subject of ongoing work, as a hub node in that domain
       └ Thought   what the context graph holds today
 
-Floating domains, one each, with no links until used:
-  Open questions · Stashed · Rules
+Working domains:   Goals & requirements · Thoughts & discussion ·
+                   Information · Constraints · Criteria
+Floating domains:  Rules · Bugs & open questions · Stashed
+                   (no links until used)
 ```
 
-- **Domain.** Few and long-lived, about 5–9 per repository, named by the
-  user. A topic, not a code folder, because some of the most important
-  discussions, such as the 5th dimension, live in no folder *(assumed)*.
-- **Thread.** Title, status, what it waits for, a short digest, and the agent
-  working on it. Every waiting thought belongs to exactly one thread
-  *(assumed)*. When a thread gets long, its digest is rewritten, and agents
-  read the digest first *(assumed)*.
+- **Domain.** A kind of content, as the owner decided on 2026-09-23
+  (t-6b0a5fa325) and confirmed on 2026-09-25. A thought's domain follows
+  from its kind and outcome - a decision is discussion, a finding is
+  information, a cost is a constraint, a learned rule is a rule, an open
+  question is a question, a stashed idea is stashed - except where a thought
+  is plainly something else: a requirement the user set is a goal, a finding
+  that is a defect is a bug, a finding that limits what can be done is a
+  constraint.
+- **Topic.** One subject of work, named, e.g. "Context graph & map". It is
+  the thread of the earlier proposal: title, status, what it waits for, a
+  short digest, and the agent working on it. A topic appears as a hub in
+  every domain that holds its thoughts, and **the same topic's hubs in two
+  domains are joined** - that is the line between clusters in the owner's
+  sketch. Every waiting thought belongs to exactly one topic *(assumed)*.
+  When a topic gets long, its digest is rewritten, and agents read the
+  digest first *(assumed)*.
 - **Floating domains.** Open questions, stashed ideas and learned rules are
   each a domain of their own. They sit on the map unconnected while unused.
   **When an agent uses one, it connects to the thread using it.** See
@@ -79,8 +89,8 @@ recently they were worked on, and the user confirms *(assumed)*.
 
 | State | On the map | What agents get |
 |---|---|---|
-| Active | full colour, thoughts spread out | read by default: `gitx_context`, catch-up *(assumed, see Goal)* |
-| Dormant | grey, thoughts folded into the thread | nothing unless asked *(assumed)* |
+| Active | full colour, thoughts spread out | read by default: `gitx_context`, catch-up |
+| Dormant | grey, thoughts folded into the thread | nothing unless asked |
 | Parked | grey, with its wake-up condition | returns when a new goal matches its `revisit_if` |
 | Closed | not drawn; archived | nothing |
 
@@ -94,15 +104,16 @@ nodes is small for this.
 
 | Element | Drawn as |
 |---|---|
-| Thread | a large node, sized by how many thoughts it holds |
-| Domain | the colour of its threads; one colour per domain |
-| Thread to thread, same domain | thick line in the domain's colour |
-| Thread to thread, across domains | thick line, where two domains touch |
+| Topic hub | a large node in its domain, sized by how many thoughts it holds there |
+| Domain | the colour of its hubs, and a soft area around them; one colour per domain |
+| Two topics in one domain whose thoughts link | thick line in the domain's colour |
+| The same topic in two domains | thick line between the clusters |
+| The goal | a node in Goals & requirements, holding that domain's hubs |
 | Accepted thought | small yellow dot, linked to its thread |
 | Link between thoughts (cites, refines, cost-of ...) | thin blue line |
 | Rejected thought | small red dot near its thread, **no line**; its `lost-to` line shows on hover or select |
 | Open question, stashed idea, rule | a node in its floating domain; unconnected until used |
-| Inactive domain | grey, collapsed to its thread nodes |
+| Dormant topic or domain | grey and smaller, its thoughts folded, no lines |
 
 **Only the context graph is drawn.** Settled thoughts already have Graph
 Timeline and Visuals, and mixing them in would bring back the clutter the
@@ -130,39 +141,84 @@ yet. That was already an open item.
 
 ## Storage
 
+*As built in step 2* (`mcp/tools/topics.js`):
+
 ```
 .gitx/context/
-  domains.json          [{ id, name, colour, status, note }]
-  goal.json             { text, set_by, at, active: [domain and thread ids] }
-  threads/th-<id>.json  { title, domain, status, waiting_for, revisit_if,
-                          digest, owner, opened, updated }
-  thoughts/t-<id>.json  as today, plus  "thread": "th-<id>"
-  archive/              closed threads and their leftover thoughts
+  goal.json               gitx.goal/0  { text, set_by, at,
+                                         topics: [active topic ids],
+                                         domains_off: [domain ids] }
+  topics/tp-<key>.json    gitx.topic/0 { id, title, status, waiting_for,
+                                         revisit_if, digest, owner,
+                                         created, updated }
+  thoughts/t-<id>.json    as before, plus "topic": "tp-<key>", and
+                          "domain" only where placed by hand
+  topics-manifest.json    the last assignment, for --undo
+  archive/                (later) closed topics and their leftover thoughts
 ```
 
-A thought names its thread, and a thread names its domain: each link stays on
-the side that makes it, as links do now. The reverse directions are built
-when read. Everything here stays gitignored.
+- **Domains are fixed in code,** not on disk: they are the same kinds of
+  content in every repository. A thought's domain follows from its kind and
+  outcome, so an open question that gets answered leaves the questions
+  domain by itself. A `domain` field on the thought overrides that, only for
+  what is plainly something else.
+- **Domains are stored when switched off,** so one added later starts on.
+- **A thought names its topic;** the topic does not list its thoughts. Each
+  link stays on the side that makes it, as links do now, and the reverse is
+  built when read. Everything here stays gitignored.
 
 ## Build order
 
-Each step ends with a check, as in the context-graph plan.
+Each step ends with a check, as in the context-graph plan. **The visual comes
+first** (the owner, 2026-09-25): see the context graph as a map, then see how
+agents use it, and let that shape the tools.
 
-1. **Threads and domains on disk.** The files above, the reader loading them,
-   the watcher covering them. *Check:* the reader and page still place every
-   thought exactly as before.
-2. **Move the existing thoughts in.** GitX proposes threads and domains from
-   links and word similarity; an agent names them; the user confirms. Dry run
-   first, a manifest, and `--undo`, like the migration. *Check:* every
-   waiting thought has one thread; nothing moved between graphs.
-3. **Tools.** `gitx_thought_record` requires a thread and suggests one.
-   `gitx_context` returns active digests by default. Catch-up shows the goal
-   and the active domains. A way to set the goal and switch states. *Check:*
-   over MCP stdio on a throwaway repository.
-4. **Use connects.** Trails record `gitx_context` visits; linking and reading
-   create edges. *Check:* a floating open question connects when answered.
-5. **The Context Map view.** Designed first as a mockup from real data and
-   agreed before it is built. *Check:* against a second broker on real data.
+1. **The map, as a mockup from real data.** GitX's waiting thoughts grouped
+   into proposed topics and domains, and drawn. It is the first look at the
+   visual and the first proposal of the grouping, judged together. Nothing
+   on disk changes.
+   - *Built 2026-09-25, awaiting the owner's verdict:*
+     `project gitx_TM/context-map-mockup/` - `build.cjs` groups the 100
+     waiting thoughts into 11 topics across the 8 domains and writes
+     `data.js`; `index.html` draws it with a force layout written for it;
+     `serve.cjs` serves it. The goal "Build the context map" makes two topics
+     active: agents would read 33 thoughts, about 1.7k tokens.
+   - *Second version, the same day, from the owner's reference:* drawn like
+     the Neo4j browser - labelled circles, edges with arrows and relationship
+     names, draggable nodes that stay put - under iOS 26 Liquid Glass
+     controls floating over the map, light and dark. A thought is grey and
+     its outcome is its ring (yellow accepted, red rejected, hollow orange
+     open), so the map stays mostly grey as in the reference.
+2. **Topics, domains and the goal on disk.** The files above, the reader
+   loading them, and the agreed grouping moved in: dry run first, a
+   manifest, and `--undo`, like the migration. *Check:* every waiting thought
+   has one topic; the reader and page still place every thought as before;
+   nothing moved between graphs.
+   - *Done 2026-09-25, GitX only.* `mcp/tools/topics.js` holds the domains
+     and reads topics and the goal; the page's payload carries each waiting
+     thought's topic and domain and the map; the broker's refetch signature
+     covers topics and the goal. `mcp/assign-topics.js` writes a grouping
+     spec - the same `grouping-gitx.json` the mockup is drawn from, so the
+     two cannot drift. Applied to GitX: 11 topics, the goal, 106 thoughts
+     (13 placed by hand), none left out. On a copy first: 13 checks, undo
+     byte for byte. On the real repository the page and reader still file
+     all 924 thoughts alike and no thought changed graphs.
+   - *Not yet:* ter-manager's 138 waiting thoughts need a grouping of their
+     own, proposed and agreed the same way. The watcher logs a thought
+     gaining its topic, since that is a thought edit; the topic and goal
+     files themselves get history in step 3, when the view starts writing
+     them. A newly recorded thought has no topic until step 4 makes the
+     record tool ask for one; the map shows it as unsorted.
+3. **The Context Map view,** as the mockup was agreed, reading the files.
+   Switching a domain or thread on and off, and setting the goal, from the
+   map. *Check:* against a second broker on real data.
+4. **Agents read the active part.** `gitx_context` returns active digests by
+   default, catch-up shows the goal and the active domains, and
+   `gitx_thought_record` requires a thread and suggests one. *Check:* over
+   MCP stdio on a throwaway repository.
+5. **Use connects.** Trails record `gitx_context` visits; linking and reading
+   create edges, and the map shows them. *Check:* a floating open question
+   connects when answered.
 6. **Monitoring.** Token cost of the active part, growth, staleness.
 
 ## Not in this plan
