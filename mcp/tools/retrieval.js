@@ -103,7 +103,7 @@ export function regionsFromPaths(index, paths) {
  *
  * So the question asked here is asymmetric and is the one actually being asked:
  * what share of THIS COMMIT's weighted work happened inside the area I named? */
-function coverageScore(wantedRegions, c, idf) {
+export function coverageScore(wantedRegions, c, idf) {
   let inside = 0, total = 0;
   for (const [r, share] of Object.entries(c.regions || {})) {
     const w = (idf[r] || 0) * share;
@@ -116,7 +116,7 @@ function coverageScore(wantedRegions, c, idf) {
 /* Weighted Jaccard, min/max form. min asks "how much do BOTH live here",
  * max asks "how much does EITHER". A commit that merely brushed a region
  * another one lives in scores low, which a plain set overlap cannot express. */
-function regionScore(q, c, idf) {
+export function regionScore(q, c, idf) {
   let shared = 0, union = 0;
   const keys = new Set([...Object.keys(q), ...Object.keys(c)]);
   for (const r of keys) {
