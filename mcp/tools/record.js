@@ -39,6 +39,7 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
 import { similarThoughts } from './thought-query.js';
+import { buildRankIndex, relatedToDraft } from './rank.js';
 
 const SCHEMA = 'gitx.thought/0';
 const KINDS = ['decision', 'finding', 'cost', 'learned'];
@@ -140,6 +141,7 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
   const now = new Date().toISOString();
   let parent = lastRecorded.get(repoDir) || null;
   const results = [];
+  const batchIds = built.map((x) => x.id);
   for (const b of built) {
     const json = {
       schema: SCHEMA, id: b.id, kind: b.t.kind, text: b.text, outcome: b.t.outcome,
@@ -158,15 +160,40 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
     fs.writeFileSync(tmp, JSON.stringify(json, null, 2) + '\n');
     fs.renameSync(tmp, file);
     parent = b.id;
+  }
+  lastRecorded.set(repoDir, parent);
+
+  /* What each new thought may continue, repeat, answer or contradict, from the
+   * ranking engine (t-d69e5f5910) - its sentence, its reasons and what it links
+   * to, so a thought said in other words than one on record can still be
+   * found. Offered, never enforced: a score does not get to refuse a thought.
+   * Asked after the write, so it can never stop one; if the engine cannot run
+   * here, the word-overlap check it replaced answers instead. */
+  let related;
+  try {
+    const ix = buildRankIndex(repoDir);
+    related = (b) => relatedToDraft(ix, {
+      text: b.text,
+      also: b.forces.map((f) => f.text + ' ' + (f.revisit_if || '')).join(' '),
+      ids: [...b.links.map((l) => l.to), ...b.forces.flatMap((f) => f.cites)].filter((id) => !batchIds.includes(id)),
+      exclude: batchIds
+    }).map((r) => ({
+      id: r.id, in: r.layer === 'thought' ? 'thought graph' : 'context graph',
+      outcome: r.outcome, kind: r.kind, topic: r.topic, text: r.text, why: r.why.join(' · ')
+    }));
+  } catch (_) {
+    related = (b) => similarThoughts(repoDir, b.text, { exclude: batchIds });
+  }
+
+  for (const b of built) {
     const settles = b.t.outcome === 'accepted' && (b.t.kind === 'decision' || b.t.kind === 'cost');
-    const related = similarThoughts(repoDir, b.text, { exclude: built.map((x) => x.id) });
+    const near = related(b);
     results.push({
       key: b.key, id: b.id, kind: b.t.kind, outcome: b.t.outcome,
       settle_with: settles ? 'GitX-Thoughts: ' + b.id : undefined,
-      maybe_related: related.length ? related : undefined
+      maybe_related: near.length ? near : undefined
     });
   }
-  lastRecorded.set(repoDir, parent);
 
   const settle = results.filter((r) => r.settle_with).map((r) => r.id);
   return {
@@ -178,6 +205,6 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
     next: settle.length
       ? 'When the commit that carries these out is made, name them in its message - GitX-Thoughts: ' + settle.join(', ') + ' - or pass them as thoughts to gitx_commit_chronicle. They then move to the thought graph with what supports them.'
       : 'Nothing here settles a commit on its own: findings, rejections and open questions move with the decision that rests on them.',
-    how_to_use: 'maybe_related lists thoughts on record that read alike. If one is what this continues, answers or contradicts, record a link to it (refines, supersedes, supports, contradicts, derived-from) rather than leaving the two unconnected.'
+    how_to_use: 'maybe_related lists the thoughts on record this most likely continues, repeats, answers or contradicts, each with why it came up - shared words, the same topic, a link to what you linked. If one is what this continues, answers or contradicts, record a link to it (refines, supersedes, supports, contradicts, derived-from) rather than leaving the two unconnected; if it says the same thing, this is a repeat.'
   };
 }

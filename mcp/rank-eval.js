@@ -28,7 +28,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildRankIndex, rank } from './tools/rank.js';
+import { buildRankIndex, rank, relatedToDraft } from './tools/rank.js';
 import { searchContext, searchThoughts, similarThoughts } from './tools/thought-query.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
@@ -117,10 +117,13 @@ function engine(c) {
   if (c.mode === 'record') {
     const draft = byId.get(c.as).t;
     const reasons = (draft.forces || []).map((f) => f.text).join(' ');
-    return rank(ix, {
+    /* The record tool's own call, with no floor, so the rank is where the
+     * answer sat even when the tool would not have offered it. */
+    const results = relatedToDraft(ix, {
       text: draft.text, also: reasons, ids: c.ids || [], topic: c.topic || null,
-      before: draft.created, exclude: [c.as], limit: DEPTH
+      before: draft.created, exclude: [c.as], limit: DEPTH, floor: 0
     });
+    return { words: [], unmatched: [], results };
   }
   return rank(ix, { text: c.q, layers: c.layers || null, limit: DEPTH });
 }

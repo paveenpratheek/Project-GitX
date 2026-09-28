@@ -283,6 +283,20 @@ export function rank(ix, query = {}) {
   };
 }
 
+/* ─────────────────────────────────────────────── callers */
+
+/* For a thought being recorded: what on record it most likely continues,
+ * repeats, answers or contradicts. Thoughts only - a link can name nothing
+ * else - and never the thoughts it already links to, which the caller passes
+ * as ids so their neighbours rank higher. The floor keeps a weak word match
+ * from being offered as a relation; mcp/rank-eval.js replays real records
+ * through this same function with no floor, to see where the answer sat. */
+export const RELATED_FLOOR = 0.35;
+export function relatedToDraft(ix, { text, also = '', ids = [], exclude = [], topic = null, before = null, limit = 4, floor = RELATED_FLOOR } = {}) {
+  const out = rank(ix, { text, also, ids, exclude, topic, before, layers: ['thought', 'context'], limit });
+  return out.results.filter((r) => r.score >= floor);
+}
+
 /* ─────────────────────────────────────────────── shape */
 
 function shape(ix, { n, sig, via, w, score }) {
