@@ -102,6 +102,8 @@ export function buildRankIndex(repoDir, { commitIndex } = {}) {
       nodes.set(t.id, {
         id: t.id, layer, kind: t.kind, outcome: t.outcome, decided_by: t.decided_by || null,
         text: t.text, created: t.created || null,
+        /* What held a rejected idea back, so it is not proposed again unanswered. */
+        held: (t.forces || []).filter((f) => f.direction === 'backward').map((f) => f.text),
         own, rest: new Set(stems(forces).filter((w) => !own.has(w))),
         /* A settled thought borrows the code its commit touched (t-dca06fa7aa);
          * a waiting one has none yet. */
@@ -297,6 +299,92 @@ export function relatedToDraft(ix, { text, also = '', ids = [], exclude = [], to
   return out.results.filter((r) => r.score >= floor);
 }
 
+/* gitx_related: the engine as an agent asks it. One list over commits, the
+ * thought graph and the context graph, each result with its status first,
+ * its whole sentence - never cut, since a fragment reads as a finished
+ * statement (t-ee4606572d) - why it ranked, and the call that reads it in
+ * full. An empty answer says which kind of empty it is, as GitX's other
+ * readers do. */
+const RELATED_DEFAULT = 8;
+const RELATED_MAX = 25;
+const LAYER_NAME = { commit: 'commit', thought: 'thought graph', context: 'context graph' };
+
+export function related(repoDir, args = {}) {
+  const query = String(args.query || '').trim();
+  const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
+  const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
+  if (!query && !ids.length && !paths.length) {
+    return { error: 'Give a query (your words), ids you are on, or paths you work in - there is nothing to relate to.' };
+  }
+  const layers = Array.isArray(args.layers) && args.layers.length
+    ? args.layers.map((l) => ({ 'thought graph': 'thought', 'context graph': 'context', commits: 'commit' }[l] || l))
+    : null;
+  const limit = Math.max(1, Math.min(RELATED_MAX, Number(args.limit) || RELATED_DEFAULT));
+
+  const ix = buildRankIndex(repoDir);
+  const count = { commits: 0, settled: 0, waiting: 0 };
+  for (const n of ix.nodes.values()) count[{ commit: 'commits', thought: 'settled', context: 'waiting' }[n.layer]]++;
+  const unknown = ids.filter((id) => !ix.nodes.has(id) && ![...ix.nodes.values()].some((n) => n.short && id.length >= 7 && n.id.startsWith(id)));
+  const named = ids.map((id) => ix.nodes.has(id) ? id : ([...ix.nodes.values()].find((n) => n.short && id.length >= 7 && n.id.startsWith(id)) || {}).id).filter(Boolean);
+
+  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, layers, limit });
+  const head = {
+    searched: count,
+    asked: out.words.length ? out.words.join(' ') : undefined,
+    not_in_the_graph: out.unmatched.length ? out.unmatched : undefined,
+    unknown_ids: unknown.length ? unknown : undefined
+  };
+  if (!out.results.length) {
+    return prune({
+      ...head, results: [],
+      nothing_on_record: 'Nothing in the commits, the settled thoughts or the waiting ones relates to this. That is not evidence it was never considered - only that nothing recorded says so in these words. Try other words, or name a file with paths.'
+    });
+  }
+  return prune({
+    ...head,
+    matched: out.matched,
+    returned: out.results.length,
+    results: out.results.map((r) => {
+      const n = ix.nodes.get(r.ref);
+      return prune({
+        id: r.id,
+        hash: n.layer === 'commit' ? n.short : undefined,
+        status: statusOf(ix, n),
+        text: n.text,
+        held_back_by: n.outcome === 'rejected' && n.held.length ? n.held : undefined,
+        topic: r.topic,
+        in: LAYER_NAME[n.layer],
+        why: r.why.join(' · '),
+        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short
+          : n.layer === 'thought' ? 'gitx_thought_search id ' + n.id : 'gitx_context id ' + n.id
+      });
+    }),
+    how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, ACCEPTED - NOT BUILT is decided but not in the code, and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'
+  });
+}
+
+function prune(o) {
+  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
+  return o;
+}
+
+/* What a node is, in capitals, first - the detail a hasty reader gets wrong
+ * most is taking an open question for a decision or a rejected idea for the
+ * plan (t-ee4606572d). A thought another supersedes says so before anything. */
+export function statusOf(ix, n) {
+  if (n.layer === 'commit') return 'COMMIT ' + n.created;
+  const by = (ix.adj.get(n.id) || []).find((e) => e.type === 'by:supersedes');
+  if (by) return 'SUPERSEDED by ' + by.to;
+  const built = n.commit ? ' in ' + n.commit.slice(0, 7) : '';
+  if (n.outcome === 'open') return 'OPEN QUESTION';
+  if (n.outcome === 'rejected') return 'REJECTED';
+  if (n.outcome === 'stashed') return 'STASHED';
+  if (n.kind === 'learned') return 'RULE';
+  if (n.kind === 'finding') return n.layer === 'thought' ? 'FINDING, SETTLED' : 'FINDING';
+  if (n.layer === 'thought') return 'SETTLED' + built;
+  return n.kind === 'cost' ? 'COST ACCEPTED - NOT BUILT' : 'ACCEPTED - NOT BUILT';
+}
+
 /* ─────────────────────────────────────────────── shape */
 
 function shape(ix, { n, sig, via, w, score }) {
@@ -316,6 +404,7 @@ function shape(ix, { n, sig, via, w, score }) {
   if (sig.active) why.push('active in the goal');
   const out = {
     id: n.layer === 'commit' ? n.short : n.id,
+    ref: n.id,
     layer: n.layer, kind: n.kind,
     outcome: n.outcome || undefined,
     /* A thought and the commit it settled are one route: said, so a caller

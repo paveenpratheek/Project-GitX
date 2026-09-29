@@ -63,6 +63,9 @@ function nodeOf(tool, a = {}) {
     case 'gitx_commit_chronicle': return { kind: 'commit-written' };
     case 'gitx_thought_catch_up': return { kind: 'overview', id: a.since || null };
     case 'gitx_thought_history': return { kind: 'thought-history', id: a.id || null };
+    /* Across all three layers at once, so it has no layer of its own; what it
+     * offered and what the agent opened next is what route learning needs. */
+    case 'gitx_related': return a.ids && a.ids.length ? { kind: 'related-to', id: a.ids[0] } : { kind: 'search' };
     case 'gitx_thought_search':
       if (a.id) return { kind: 'thought', id: a.id };
       /* Asking for the thinking behind a commit is the step UP from L2. */

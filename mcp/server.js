@@ -17,6 +17,7 @@ import { readLog } from './tools/thought-watch.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
+import { related } from './tools/rank.js';
 /* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
  * its own folder; the only coupling is the two calls below. */
 import { TrailRecorder } from './tools/trail-recorder.js';
@@ -401,6 +402,25 @@ const TOOLS = [
         id: { type: 'string', description: 'One thought id (t-...) to read in full, with every link both ways - including links into the thought graph.' },
         stashes: { type: 'boolean', description: 'List the stashes in the context graph: ideas set aside on purpose, each with its thoughts and references.' },
         limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
+      },
+      required: []
+    }
+  },
+  /* The ranking engine (tools/rank.js) as an agent asks it: one list over
+   * everything GitX holds, where the tools above each search one part. */
+  {
+    name: 'gitx_related',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting, ranked together - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. Each result gives its status first (OPEN QUESTION, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its full text, why it ranked, and the call that reads it in full. Results are pointers: read one before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Your words: a question, what you are about to do, or a draft thought. Matched by meaning-bearing words across every commit and thought.' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Thought ids (t-...) or commit hashes you are on or about to link to - what is linked to them ranks higher.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
+        topic: { type: 'string', description: 'A topic id (tp-...) the work belongs to.' },
+        layers: { type: 'array', items: { type: 'string', enum: ['commit', 'thought', 'context'] }, description: 'Only these: commit, thought (settled), context (waiting). Default all three.' },
+        limit: { type: 'number', description: 'Maximum results. Defaults to 8, at most 25.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
       required: []
@@ -1109,6 +1129,14 @@ async function handleToolCall(name, args) {
       /* Thoughts are private to whoever owns this clone. */
       ensureGitignored(target.dir);
       return reply({ repo: target.dir, ...recordThoughts(target.dir, args, { agent: AGENT_ID, name: AGENT_NAME, model: AGENT_MODEL, session: 'mcp-' + AGENT_ID }) });
+    }
+
+    case 'gitx_related': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+      /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
+      return reply({ repo: target.dir, ...related(target.dir, args) });
     }
 
     case 'gitx_thought_search':
