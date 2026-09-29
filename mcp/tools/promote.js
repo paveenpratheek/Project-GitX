@@ -18,9 +18,10 @@
  * A named accepted decision or cost gets resulted_in set to the commit. From
  * it, the thoughts that made it happen come along: the evidence it cites, what
  * it supersedes, refines or derives from, and what was weighed against it
- * (lost-to, cost-of, supports pointing at it). A brought decision or cost was
- * carried out by the same commit, so it gets the same resulted_in. A later
- * thought that only points back stays waiting - it is not settled.
+ * (lost-to, cost-of, supports pointing at it). The one exception is another
+ * decision or cost still waiting: the commit did not carry that out, so the
+ * move stops there (see the closure below). A later thought that only points
+ * back stays waiting - it is not settled.
  *
  * A named thought that is not a decision or cost - a finding, a rejection, an
  * open question - moves only if a promoted decision reaches it; otherwise it
@@ -76,22 +77,42 @@ export function promote(repoDir, commit, named) {
     else if (leads(inCtx.get(id))) moving.set(id, 'named');
   }
 
-  /* Directional closure, inside the context graph only. */
+  /* Directional closure, inside the context graph only - and it stops at a
+   * decision or cost still waiting (t-eebdd85713). Upward, along what a thought
+   * cites, refines, supersedes or derives from, only a finding or an open
+   * question it answers comes along; another accepted decision is part of
+   * something larger that this commit did not finish, and following it marked
+   * a whole plan as carried out by the commit that built one step of it
+   * (t-1b8cd36656). Inward, what was weighed against it still comes - its
+   * rejected alternatives, supporting findings, and a cost only when it is
+   * this decision's own (cost-of) - but not another decision that happens to
+   * support it. What stops is reported, so the line is visible. */
   const linkedIn = new Map();
   for (const t of ctx.thoughts) for (const l of t.links || []) {
     if (!linkedIn.has(l.to)) linkedIn.set(l.to, []);
     linkedIn.get(l.to).push({ from: t.id, type: l.type });
   }
+  const upward = (n) => n.kind === 'finding' || n.outcome === 'open';
+  const inward = (n, type) => type === 'cost-of' || !leads(n);
+  const stopped = new Set();
   const queue = [...moving.keys()];
   while (queue.length) {
     const t = inCtx.get(queue.shift());
     const next = [
-      ...(t.forces || []).flatMap((f) => f.cites || []),
-      ...(t.links || []).filter((l) => ITS_OWN_HISTORY.includes(l.type)).map((l) => l.to),
-      ...(linkedIn.get(t.id) || []).filter((l) => WEIGHED_AGAINST_IT.includes(l.type)).map((l) => l.from)
+      ...(t.forces || []).flatMap((f) => f.cites || []).map((id) => ({ id, up: true })),
+      ...(t.links || []).filter((l) => ITS_OWN_HISTORY.includes(l.type)).map((l) => ({ id: l.to, up: true })),
+      ...(linkedIn.get(t.id) || []).filter((l) => WEIGHED_AGAINST_IT.includes(l.type)).map((l) => ({ id: l.from, up: false, type: l.type }))
     ];
-    for (const id of next) if (inCtx.has(id) && !moving.has(id)) { moving.set(id, 'brought'); queue.push(id); }
+    for (const { id, up, type } of next) {
+      if (!inCtx.has(id) || moving.has(id)) continue;
+      const n = inCtx.get(id);
+      if (up ? !upward(n) : !inward(n, type)) { if (leads(n)) stopped.add(id); continue; }
+      moving.set(id, 'brought');
+      queue.push(id);
+    }
   }
+  for (const id of moving.keys()) stopped.delete(id);
+  out.stopped_at = [...stopped];
   for (const id of named) if (inCtx.has(id) && !moving.has(id)) out.not_settled.push(id);
   if (!moving.size) return out;
 
@@ -171,6 +192,7 @@ export function describe(r) {
   if (r.promoted.length) parts.push('settled ' + r.promoted.join(', '));
   if (r.brought.length) parts.push('with ' + r.brought.length + ' that made it happen');
   if (r.repointed.length) parts.push('re-pointed the parent of ' + r.repointed.length + ' left waiting');
+  if (r.stopped_at && r.stopped_at.length) parts.push('stopped at ' + r.stopped_at.length + ' decision(s) still waiting: ' + r.stopped_at.join(', '));
   if (r.not_settled.length) parts.push('left waiting (not a decision nothing promoted reaches): ' + r.not_settled.join(', '));
   if (r.missing.length) parts.push('named but on record nowhere: ' + r.missing.join(', '));
   return r.commit + ' ' + (parts.join('; ') || 'nothing to do');
