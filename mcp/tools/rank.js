@@ -166,8 +166,11 @@ export function rank(ix, query = {}) {
   const skip = new Set(query.exclude || []);
   const before = query.before || null;
   const layers = query.layers || null;
+  const outcomes = query.outcome && query.outcome.length ? query.outcome : null;
+  const kinds = query.kind && query.kind.length ? query.kind : null;
   const limit = Math.max(1, Math.min(100, Number(query.limit) || 10));
   const alive = (n) => n && !skip.has(n.id) && (!layers || layers.includes(n.layer)) &&
+    (!outcomes || outcomes.includes(n.outcome)) && (!kinds || kinds.includes(n.kind)) &&
     (!before || !n.created || n.created < before);
   const N = [...ix.nodes.values()].filter(alive).length || 1;
 
@@ -327,7 +330,8 @@ export function related(repoDir, args = {}) {
   const unknown = ids.filter((id) => !ix.nodes.has(id) && ![...ix.nodes.values()].some((n) => n.short && id.length >= 7 && n.id.startsWith(id)));
   const named = ids.map((id) => ix.nodes.has(id) ? id : ([...ix.nodes.values()].find((n) => n.short && id.length >= 7 && n.id.startsWith(id)) || {}).id).filter(Boolean);
 
-  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, layers, limit });
+  const list = (v) => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : null);
+  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, layers, outcome: list(args.outcome), kind: list(args.kind), limit });
   const head = {
     searched: count,
     asked: out.words.length ? out.words.join(' ') : undefined,
@@ -355,8 +359,7 @@ export function related(repoDir, args = {}) {
         topic: r.topic,
         in: LAYER_NAME[n.layer],
         why: r.why.join(' · '),
-        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short
-          : n.layer === 'thought' ? 'gitx_thought_search id ' + n.id : 'gitx_context id ' + n.id
+        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short : 'gitx_thought id ' + n.id
       });
     }),
     how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, ACCEPTED - NOT BUILT is decided but not in the code, and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'

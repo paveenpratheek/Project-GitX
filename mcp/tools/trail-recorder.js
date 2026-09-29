@@ -46,9 +46,12 @@ const OFFER_CAP = 25;
  * log is complete; acceptance ignores them. */
 const LAYER = {
   gitx_graph_map: 'L2', gitx_graph_area: 'L2', gitx_graph_chain: 'L2', gitx_graph_commit: 'L2',
-  gitx_find_related: 'L2', gitx_search_chronicle: 'L2', gitx_commit_chronicle: 'L2',
-  gitx_thought_catch_up: 'L3', gitx_thought_search: 'L3', gitx_thought_history: 'L3'
+  gitx_find_related: 'L2', gitx_commit_chronicle: 'L2',
+  gitx_thought_catch_up: 'L3', gitx_thought: 'L3', gitx_thought_history: 'L3'
 };
+/* Recordings made before 29 September name gitx_search_chronicle (L2) and
+ * gitx_thought_search (L3), retired for gitx_related; each event carries its
+ * layer, so those files still read without the names being listed here. */
 const LEVEL = { L1: 1, L2: 2, L3: 3 };
 
 /* The node a call landed on, from its arguments. */
@@ -58,19 +61,18 @@ function nodeOf(tool, a = {}) {
     case 'gitx_graph_area': return { kind: 'area', id: a.name || null };
     case 'gitx_graph_chain':
     case 'gitx_graph_commit': return { kind: 'commit', id: a.hash || null };
-    case 'gitx_find_related':
-    case 'gitx_search_chronicle': return { kind: 'search' };
+    case 'gitx_find_related': return { kind: 'search' };
     case 'gitx_commit_chronicle': return { kind: 'commit-written' };
     case 'gitx_thought_catch_up': return { kind: 'overview', id: a.since || null };
     case 'gitx_thought_history': return { kind: 'thought-history', id: a.id || null };
     /* Across all three layers at once, so it has no layer of its own; what it
      * offered and what the agent opened next is what route learning needs. */
     case 'gitx_related': return a.ids && a.ids.length ? { kind: 'related-to', id: a.ids[0] } : { kind: 'search' };
-    case 'gitx_thought_search':
+    case 'gitx_thought':
       if (a.id) return { kind: 'thought', id: a.id };
       /* Asking for the thinking behind a commit is the step UP from L2. */
       if (a.commit) return { kind: 'thoughts-of-commit', id: a.commit };
-      return { kind: 'search' };
+      return { kind: a.stashes ? 'stashes' : 'list' };
     default: return null;
   }
 }

@@ -7,12 +7,11 @@ import { WebSocket } from 'ws';
 
 import { scanStaged } from './tools/guardrails.js';
 import { ensureWorktree, listWorktrees } from './tools/worktree-manager.js';
-import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
 import { stagedRegions, findRelated } from './tools/retrieval.js';
 import { parseMessage, tokenize } from './tools/git-extract.js';
 import { loadGraph, graphMap, graphArea, graphChain, graphCommit } from './tools/project-graph.js';
-import { searchThoughts, catchUp, searchContext } from './tools/thought-query.js';
+import { catchUp, readThought } from './tools/thought-query.js';
 import { readLog } from './tools/thought-watch.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
@@ -253,22 +252,9 @@ const TOOLS = [
         root: { type: 'string', description: 'Name of the NEW feature this commit starts, when no earlier commit is what it continues. Give this OR builds_on. Written as GitX-Root: <name>; later commits in the feature build on this one.' },
         root_confirmed: { type: 'boolean', description: 'Pass true only after a root attempt came back needs_confirmation and none of its candidates is what this continues.' },
         relates_to: { type: 'array', items: { type: 'string' }, description: 'Optional: commits that are related but are not what this builds on - e.g. the feature a new feature sits inside. Written as GitX-Relates-To.' },
-        thoughts: { type: 'array', items: { type: 'string' }, description: 'Optional: ids of the decisions and costs this commit carries out, waiting in the context graph (gitx_context lists them). Written as GitX-Thoughts; on commit they move to the thought graph with this commit as their result, and the evidence, alternatives and costs that made them happen come with them.' }
+        thoughts: { type: 'array', items: { type: 'string' }, description: 'Optional: ids of the decisions and costs this commit carries out, waiting in the context graph (gitx_thought with outcome accepted lists them). Written as GitX-Thoughts; on commit they move to the thought graph with this commit as their result, and the evidence, alternatives and costs that made them happen come with them.' }
       },
       required: ['cwd', 'type', 'subject', 'why']
-    }
-  },
-  {
-    name: 'gitx_search_chronicle',
-    description: 'Hierarchical token-efficient search across GitX commit history. Searches Layer 1 (Motive), Layer 2 (Architecture), Layer 3 (Files), or Layer 4 (Lines/Proof).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Search term or keyword (e.g. paint canvas, refresh token)' },
-        layer: { type: 'number', description: 'Layer to search: 1 (Motive), 2 (Architecture), 3 (Files), or 4 (Lines/Proof). Defaults to 1.' },
-        cwd: { type: 'string', description: 'Absolute path of the repository to search. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project, or the result silently answers about the wrong one.' }
-      },
-      required: ['query']
     }
   },
   {
@@ -284,7 +270,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_find_related',
-    description: 'Finds earlier commits related to what you are working on, so you can read the reasoning behind them instead of guessing. Two uses: AFTER staging and before writing a commit message, or when ORIENTING in an unfamiliar area before changing anything. Ranks on which code regions are involved AND how you describe the work - the two reach different things, so supply both. Reads the staged diff itself; do not paste it in. Unlike gitx_search_chronicle, which searches by keyword, this searches by example.',
+    description: 'Finds earlier commits related to what you are working on, so you can read the reasoning behind them instead of guessing. Two uses: AFTER staging and before writing a commit message, or when ORIENTING in an unfamiliar area before changing anything. Ranks on which code regions are involved AND how you describe the work - the two reach different things, so supply both. Reads the staged diff itself; do not paste it in. gitx_related searches commits and thoughts by words; this searches by example, from staged work.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -357,7 +343,7 @@ const TOOLS = [
    * their clone. Writing them is a later, separate set of tools. */
   {
     name: 'gitx_thought_catch_up',
-    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, a one-line count of the thinking waiting in the context graph (read that with gitx_context), questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
+    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, a one-line count of the thinking waiting in the context graph (search it with gitx_related), questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -368,40 +354,22 @@ const TOOLS = [
       required: []
     }
   },
+  /* Reading a thought, not searching for one: by id from either graph, the
+   * thinking behind a commit, lists by outcome or kind, and the stashes.
+   * Searching by words is gitx_related's - see tools/thought-query.js. */
   {
-    name: 'gitx_thought_search',
-    description: 'Search the reasoning recorded BESIDE the commits: decisions, findings, costs kept, rules learned - including alternatives that were considered and TURNED DOWN, with what held them back. Use it before proposing an approach (it may already have been rejected, and why), when asked why something is the way it is, or to see what was weighed behind one commit. Filter by any mix of: query (your words), commit (the thinking behind one commit), paths (thinking behind commits that touched these files - per commit, not per line, so a thought may be about another part of that commit), outcome, kind, reopenable. Pass id for one thought in full with every link both ways. Each result carries its standing: a thought marked "inferred later" was reconstructed from a transcript rather than stated outright. An empty result says which kind of empty it is: no thoughts in this repo, none for that commit, or none matching your words - never read it as "nothing was considered".',
+    name: 'gitx_thought',
+    description: 'Read reasoning GitX holds, by address rather than by words: one thought by id in full - every force, every link both ways, where it sits, whether a commit settled it - from the thought graph (settled) or the context graph (waiting); the thinking behind one commit; every thought of an outcome or kind, or rejected ideas that can come back (reopenable), from both graphs; or the stashes. To find thinking by words, use gitx_related. An empty answer says which kind of empty it is.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Words describing what you are looking for, e.g. "publish over a tunnel". Matched against each thought and the forces behind it.' },
+        id: { type: 'string', description: 'One thought id (t-...) to read in full, whichever graph holds it.' },
         commit: { type: 'string', description: 'Commit hash or prefix (4+ characters): the thinking that led to this commit.' },
-        paths: { type: 'array', items: { type: 'string' }, description: 'Files or directories (a trailing / for a directory). "file::function" narrows to the file.' },
-        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only these outcomes. "rejected" lists what was turned down.' },
-        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
-        reopenable: { type: 'boolean', description: 'Only rejected thoughts held back by something that can change - each comes with its revisit_if condition.' },
-        id: { type: 'string', description: 'One thought id (t-...) to read in full: every force, every link both ways, where it sits, and its source.' },
-        limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
-        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
-      },
-      required: []
-    }
-  },
-  /* The context graph: thinking no commit has settled yet. Kept out of the
-   * two tools above on purpose - catch-up only counts it - so an agent reads it
-   * when its task calls for it rather than on every start. */
-  {
-    name: 'gitx_context',
-    description: 'The context graph: thinking that no commit has settled yet - discussion still going, ideas, decisions made but not built, open questions, findings, and stashes. gitx_thought_search and gitx_thought_catch_up do NOT read it (catch-up only counts it), so ask here when your task touches something that may already have been discussed, BEFORE working it out again. Ask by query (your words), outcome or kind, or pass id for one thought in full; stashes: true lists the stashes. Each result says which commit the discussion came after ("since"). A thought leaves the context graph for the thought graph when a commit settles it. An empty answer says which kind of empty it is.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        query: { type: 'string', description: 'Words describing what you are looking for. Matched against each thought and the forces behind it.' },
-        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only these outcomes. "open" lists questions nobody has settled; "accepted" here means decided but not yet built.' },
-        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only these kinds.' },
-        id: { type: 'string', description: 'One thought id (t-...) to read in full, with every link both ways - including links into the thought graph.' },
-        stashes: { type: 'boolean', description: 'List the stashes in the context graph: ideas set aside on purpose, each with its thoughts and references.' },
-        limit: { type: 'number', description: 'Maximum results. Defaults to 15, at most 50.' },
+        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'List thoughts with these outcomes, settled and waiting. "open" lists questions nobody has settled; an accepted one that is waiting is decided but not built.' },
+        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'List thoughts of these kinds, settled and waiting.' },
+        reopenable: { type: 'boolean', description: 'List rejected ideas held back only by something that can change, each with its revisit_if.' },
+        stashes: { type: 'boolean', description: 'List the stashes: ideas set aside on purpose, each with its thoughts and references.' },
+        limit: { type: 'number', description: 'Maximum results per list. Defaults to 15, at most 50.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
       required: []
@@ -420,6 +388,8 @@ const TOOLS = [
         paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
         topic: { type: 'string', description: 'A topic id (tp-...) the work belongs to.' },
         layers: { type: 'array', items: { type: 'string', enum: ['commit', 'thought', 'context'] }, description: 'Only these: commit, thought (settled), context (waiting). Default all three.' },
+        outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only thoughts with these outcomes - "rejected" for ideas turned down, "open" for questions nobody has settled.' },
+        kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only thoughts of these kinds.' },
         limit: { type: 'number', description: 'Maximum results. Defaults to 8, at most 25.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
@@ -749,7 +719,7 @@ async function handleToolCall(name, args) {
           const t = waiting.get(id);
           if (!/^t-[0-9a-f]{10}$/.test(id)) problems.push('thoughts: "' + id + '" is not a thought id (t- and ten hex characters).');
           else if (settled.has(id)) problems.push('thoughts: ' + id + ' is already in the thought graph - an earlier commit settled it.');
-          else if (!t) problems.push('thoughts: ' + id + ' is not in the context graph - gitx_context lists what is waiting.');
+          else if (!t) problems.push('thoughts: ' + id + ' is not in the context graph - gitx_thought with outcome accepted lists what is waiting.');
           else if (!(t.outcome === 'accepted' && (t.kind === 'decision' || t.kind === 'cost'))) problems.push('thoughts: ' + id + ' is ' + t.outcome + ' ' + t.kind + ' - name the decisions and costs this commit carries out; the findings, alternatives and costs that made them happen come with them.');
         }
       }
@@ -904,69 +874,6 @@ async function handleToolCall(name, args) {
         next: root ? 'Later commits in this feature should use builds_on: ["' + hash.slice(0, 12) + '"].' : undefined,
         note: 'Committed locally only - nothing was pushed.'
       });
-    }
-
-    case 'gitx_search_chronicle': {
-      const { query, layer, cwd } = args;
-      const q = (query || '').toLowerCase();
-      const l = layer || 1;
-      const target = resolveTargetRepo(cwd);
-      let matches = [];
-
-      if (!target.ok) {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              error: 'No such folder: ' + target.requested + ' - nothing was searched.',
-              searched_repo: null
-            }, null, 2)
-          }]
-        };
-      }
-
-      try {
-        const chronicles = scanGitHistory(target.dir);
-        const seen = new Set(chronicles.map(c => c.commitHash));
-
-        /* GitX's own cache, unaffected by cwd - see the note on
-         * resolveTargetRepo. A repo being searched that is not the one
-         * GitX is installed in will just skip this merge, which only ever
-         * adds chronicles this same process itself recorded. */
-        const stateFile = target.dir === ROOT_DIR ? path.join(ROOT_DIR, '.gitx', 'state.json') : null;
-        if (stateFile && fs.existsSync(stateFile)) {
-          const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-          for (const c of state.chronicles || []) {
-            if (!seen.has(c.commitHash)) chronicles.push(c);
-          }
-        }
-
-        {
-          matches = chronicles.filter(c => {
-            if (l === 1) return (c.motive || '').toLowerCase().includes(q) || (c.stream || '').toLowerCase().includes(q);
-            if (l === 2) return (c.architecture || '').toLowerCase().includes(q);
-            if (l === 3) return (c.filesManifest || []).some(f => f.toLowerCase().includes(q));
-            return (c.verification || '').toLowerCase().includes(q);
-          }).map(c => ({
-            commitHash: c.commitHash,
-            stream: c.stream,
-            summary: c.summary,
-            layer_content: l === 1 ? c.motive : (l === 2 ? c.architecture : (l === 3 ? c.filesManifest : c.verification))
-          }));
-        }
-      } catch (_) {}
-
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify({
-            searched_repo: target.dir,
-            searched_layer: l,
-            matches_count: matches.length,
-            results: matches
-          }, null, 2)
-        }]
-      };
     }
 
     case 'gitx_get_swarm_status': {
@@ -1139,16 +1046,14 @@ async function handleToolCall(name, args) {
       return reply({ repo: target.dir, ...related(target.dir, args) });
     }
 
-    case 'gitx_thought_search':
-    case 'gitx_thought_catch_up':
-    case 'gitx_context': {
+    case 'gitx_thought':
+    case 'gitx_thought_catch_up': {
       const target = resolveTargetRepo(args.cwd);
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: thoughts, drafts and git are only read, nothing is written. */
       const head = { repo: target.dir };
-      if (name === 'gitx_thought_search') return reply({ ...head, ...searchThoughts(target.dir, args) });
-      if (name === 'gitx_context') return reply({ ...head, ...searchContext(target.dir, args) });
+      if (name === 'gitx_thought') return reply({ ...head, ...readThought(target.dir, args) });
       return reply({ ...head, ...catchUp(target.dir, args) });
     }
 

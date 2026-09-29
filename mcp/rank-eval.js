@@ -17,11 +17,12 @@
  *           filed under then and the ids it linked to then - so a link added
  *           afterwards cannot leak the answer
  *
- * A case passes at rank k when any expected node is among the first k. Today's
- * baseline is the tool an agent would have had to pick: gitx_context or
- * gitx_thought_search for a thought (whichever graph it is in - the generous
- * reading, since an agent can pick the wrong one), findRelated for a commit,
- * and the record tool's similar-thoughts check for a draft.
+ * A case passes at rank k when any expected node is among the first k. The
+ * baseline is what an agent had before the engine: the word searches of the
+ * context graph and the thought graph (retired as tools on 29 September, kept
+ * as functions for this) - whichever graph the answer is in, the generous
+ * reading, since an agent could pick the wrong one - findRelated for a commit,
+ * and the record tool's old similar-thoughts check for a draft.
  *
  * Read-only: it builds indexes and runs queries, and writes nothing.
  */
