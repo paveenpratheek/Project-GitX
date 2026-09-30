@@ -1,6 +1,9 @@
 /*
  * Trail recorder: which nodes an agent visited on its way through GitX, kept
- * for the 5th Dimension (graph caching) to learn from later.
+ * for path knowledge to learn from later - where questions like one another
+ * ended and the path they took, part of the 4th Dimension (t-1afbf7e474).
+ * Until 30 September this said "graph caching", which is the context graph
+ * agents keep around the user's goals, the 5th (t-029ebe4df0).
  *
  * Self-contained on purpose. It writes only into its own folder, reads none of
  * the other stores, and server.js calls it in two places. Removing it is
