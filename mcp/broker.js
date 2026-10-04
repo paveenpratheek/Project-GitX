@@ -12,6 +12,7 @@ import { loadThoughts, thoughtsPayload } from './tools/thoughts.js';
 import { loadTopics, loadGoal, writeGoal, suggestTopics } from './tools/topics.js';
 import { ThoughtWatcher, readLog } from './tools/thought-watch.js';
 import { promotePending, describe as describePromotion } from './tools/promote.js';
+import { readPaths, markLeft } from './tools/path-recorder.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -458,6 +459,21 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  /* GitX Monitor's history: the path taken for each prompt asked of the
+   * active repository, newest first (t-50e40ce534). */
+  if (req.url.split('?')[0] === '/api/monitor/paths') {
+    const q = new URL(req.url, 'http://127.0.0.1').searchParams;
+    try {
+      const body = JSON.stringify({ repo: state.activeRepo, paths: readPaths(state.activeRepo, watcher.dataDir || null, Math.min(200, Number(q.get('limit')) || 50)) });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(body);
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   if (req.url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(state));
@@ -475,6 +491,9 @@ const wss = new WebSocketServer({
   server,
   verifyClient: ({ origin }) => originAllowed(origin)
 });
+
+/* GitX Monitor: agentId -> the prompt that agent is walking. */
+const walking = new Map();
 
 function broadcast(msg, senderWs = null) {
   const payload = JSON.stringify(msg);
@@ -502,6 +521,15 @@ wss.on('connection', (ws) => {
       state.agents[ws.agentId].status = 'Offline';
       state.agents[ws.agentId].lastSeen = new Date().toISOString();
       broadcast({ type: 'AGENT_OFFLINE', agentId: ws.agentId });
+    }
+    /* An agent's process is usually ended rather than asked to exit, so its
+     * path recorder never says it left; the closed connection does. */
+    const w = ws.agentId && walking.get(ws.agentId);
+    if (w) {
+      walking.delete(ws.agentId);
+      try {
+        if (markLeft(w.repo, watcher.dataDir || null, w.id)) broadcast({ type: 'GITX_MONITOR', event: 'status', repo: w.repo, prompt: w.id, status: 'left' });
+      } catch (err) { console.warn('[GitX Broker] Could not close out a left prompt: ' + err.message); }
     }
   });
 });
@@ -605,6 +633,23 @@ function handleMessage(msg, ws) {
 
       broadcast({ type: 'CHRONICLE_COMMITTED', chronicle, state });
       ws.send(JSON.stringify({ type: 'CHRONICLE_OK', chronicle }));
+      break;
+    }
+
+    /* GitX Monitor (t-0156b1d6c5): an MCP server reports a prompt, a step on
+     * its path, or how it ended. Relayed to the pages as it comes; the path
+     * recorder has already written it to the data folder. */
+    case 'GITX_MONITOR': {
+      /* Which prompt each agent is walking, so a connection that closes
+       * mid-walk can be closed out as "left" below. */
+      if (ws.agentId) {
+        if (msg.event === 'ask' && msg.record) walking.set(ws.agentId, { repo: msg.repo, id: msg.record.id });
+        else if (msg.event === 'status' && msg.status !== 'walking') {
+          const w = walking.get(ws.agentId);
+          if (w && w.id === msg.prompt) walking.delete(ws.agentId);
+        }
+      }
+      broadcast(msg, ws);
       break;
     }
 

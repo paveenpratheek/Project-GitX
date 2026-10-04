@@ -65,6 +65,11 @@
         <span class="gitx-nav-label">Agent Swarm</span>
         <span class="gitx-nav-count" id="nav-swarm-count" hidden></span>
       </button>
+      <button type="button" class="gitx-nav-item" data-view="monitor">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2.5-6 4 12 3-9 2 3H22"/></svg>
+        <span class="gitx-nav-label">GitX Monitor</span>
+        <span class="gitx-nav-live" id="nav-monitor-live" hidden></span>
+      </button>
       <button type="button" class="gitx-nav-item" data-view="visuals">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="5" cy="17" r="2"/><circle cx="12" cy="7" r="2"/><circle cx="19" cy="14" r="2"/><path d="M6.4 15.4 10.6 8.6M13.7 8.2l3.7 4.3"/><path d="M3 21h18"/></svg>
         <span class="gitx-nav-label">Visuals</span>
@@ -114,6 +119,43 @@
         </div>
         <div class="panel-body" id="swarm-agents-list">
           <!-- Populated dynamically by app.js -->
+        </div>
+      </section>
+    </div>
+
+    <!-- GitX Monitor: what agents ask GitX, what GitX does with each question,
+         the layers it arranges the answer in, and the agent's path through
+         them - live, and a history of paths against prompts. js/monitor.js. -->
+    <div class="gitx-view gitx-view-monitor" data-view="monitor" hidden>
+      <section class="panel mon-panel">
+        <div class="mon-stage">
+          <aside class="mon-logs" aria-label="GitX Logs">
+            <header class="mon-head">
+              <div>
+                <h2>GitX Logs</h2>
+                <div class="mon-sub" id="mon-sub"></div>
+              </div>
+              <button type="button" class="mon-follow" id="mon-follow" aria-pressed="true">Following live</button>
+            </header>
+            <div class="mon-feed" id="mon-feed"></div>
+          </aside>
+          <div class="mon-canvas" id="mon-canvas">
+            <svg id="mon-svg" aria-label="The stack for the selected prompt"></svg>
+            <div class="mon-title" id="mon-title"></div>
+            <div class="cm-glass mon-controls">
+              <span id="mon-stepline"></span>
+              <button type="button" id="mon-replay">Replay path</button>
+            </div>
+            <div class="cm-glass mon-legend" aria-label="Key">
+              <span><i class="mon-k-done"></i>Settled</span>
+              <span><i class="mon-k-wait"></i>Not built</span>
+              <span><i class="mon-k-open"></i>Open</span>
+              <span><i class="mon-k-rej"></i>Rejected</span>
+              <span><i class="mon-k-commit"></i>Commit</span>
+            </div>
+            <div class="mon-empty" id="mon-empty" hidden>Waiting for an agent to ask GitX something…</div>
+            <div class="cm-glass mon-tip" id="mon-tip" hidden></div>
+          </div>
         </div>
       </section>
     </div>
@@ -223,6 +265,7 @@
   </div>
 
   <script src="js/context-map.js"></script>
+  <script src="js/monitor.js"></script>
   <script src="js/graph-view.js"></script>
   <script src="js/app.js"></script>
 </body>

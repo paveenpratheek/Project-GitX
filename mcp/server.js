@@ -17,11 +17,15 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related } from './tools/rank.js';
-/* Trails for the 5th Dimension: which nodes an agent visits. Its own module and
- * its own folder; the only coupling is the two calls below. */
-import { TrailRecorder } from './tools/trail-recorder.js';
-const trails = new TrailRecorder();
-process.on('exit', () => trails.end());
+/* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
+ * question and where the agent went next, kept per prompt and streamed to the
+ * broker for GitX Monitor. Its own module and folder; the only coupling is the
+ * calls below. It replaced the trail recorder, which kept every call. */
+import { PathRecorder } from './tools/path-recorder.js';
+const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
+process.on('exit', () => paths.end());
+/* What gitx_related did, for the path recorder; never part of the agent's answer. */
+let lastMonitor = null;
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
  * the way parseMessage already reads one. */
@@ -1043,7 +1047,10 @@ async function handleToolCall(name, args) {
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
-      return reply({ repo: target.dir, ...related(target.dir, args) });
+      const out = related(target.dir, args);
+      lastMonitor = out._monitor || null;
+      delete out._monitor;
+      return reply({ repo: target.dir, ...out });
     }
 
     case 'gitx_thought':
@@ -1067,6 +1074,9 @@ const rl = readline.createInterface({
   output: process.stdout,
   terminal: false
 });
+/* The agent closed the session: the prompt it was walking, it left. The
+ * broker covers a process ended without warning, when this never runs. */
+rl.on('close', () => paths.end());
 
 function sendResponse(response) {
   process.stdout.write(JSON.stringify(response) + '\n');
@@ -1081,7 +1091,7 @@ rl.on('line', async (line) => {
     const { id, method, params } = request;
 
     if (method === 'initialize') {
-      trails.start(params && params.clientInfo);
+      paths.start(params && params.clientInfo, { id: AGENT_ID, name: AGENT_NAME, model: AGENT_MODEL });
       sendResponse({
         jsonrpc: '2.0',
         id,
@@ -1108,7 +1118,6 @@ rl.on('line', async (line) => {
     if (method === 'tools/call') {
       const toolName = params?.name;
       const toolArgs = params?.arguments || {};
-      const t0 = Date.now();
       let result = null, failure = null;
       try {
         result = await handleToolCall(toolName, toolArgs);
@@ -1122,7 +1131,8 @@ rl.on('line', async (line) => {
         });
       }
       /* After the answer has gone, so recording never delays or fails a call. */
-      trails.record(toolName, toolArgs, resolveTargetRepo(toolArgs.cwd).dir, result, failure, Date.now() - t0);
+      paths.onCall(toolName, toolArgs, resolveTargetRepo(toolArgs.cwd).dir, result, failure, lastMonitor);
+      lastMonitor = null;
       return;
     }
 

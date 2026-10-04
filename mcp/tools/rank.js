@@ -324,14 +324,30 @@ export function related(repoDir, args = {}) {
     : null;
   const limit = Math.max(1, Math.min(RELATED_MAX, Number(args.limit) || RELATED_DEFAULT));
 
+  const t0 = Date.now();
   const ix = buildRankIndex(repoDir);
+  const indexMs = Date.now() - t0;
   const count = { commits: 0, settled: 0, waiting: 0 };
   for (const n of ix.nodes.values()) count[{ commit: 'commits', thought: 'settled', context: 'waiting' }[n.layer]]++;
   const unknown = ids.filter((id) => !ix.nodes.has(id) && ![...ix.nodes.values()].some((n) => n.short && id.length >= 7 && n.id.startsWith(id)));
   const named = ids.map((id) => ix.nodes.has(id) ? id : ([...ix.nodes.values()].find((n) => n.short && id.length >= 7 && n.id.startsWith(id)) || {}).id).filter(Boolean);
 
   const list = (v) => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : null);
-  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, layers, outcome: list(args.outcome), kind: list(args.kind), limit });
+  const filters = { layers, outcome: list(args.outcome), kind: list(args.kind), limit };
+  const t1 = Date.now();
+  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, ...filters });
+  /* For GitX Monitor only (t-0156b1d6c5): what GitX did with the question and
+   * the layers it arranged the answer in. server.js takes this off before the
+   * answer reaches the agent, so it costs the agent nothing. */
+  const _monitor = {
+    phases: {
+      processing: { nodes: ix.nodes.size, ...count, ms: indexMs },
+      search: { words: out.words, unmatched: out.unmatched, ids: named, paths, topic: args.topic || null },
+      results: { candidates: out.candidates, matched: out.matched, signals: out.signals, ms: Date.now() - t1 },
+      filtering: { layers: layers || 'all', outcome: filters.outcome, kind: filters.kind, limit, returned: out.results.length }
+    },
+    stack: stackOf(ix, out.results)
+  };
   const head = {
     searched: count,
     asked: out.words.length ? out.words.join(' ') : undefined,
@@ -341,10 +357,12 @@ export function related(repoDir, args = {}) {
   if (!out.results.length) {
     return prune({
       ...head, results: [],
-      nothing_on_record: 'Nothing in the commits, the settled thoughts or the waiting ones relates to this. That is not evidence it was never considered - only that nothing recorded says so in these words. Try other words, or name a file with paths.'
+      nothing_on_record: 'Nothing in the commits, the settled thoughts or the waiting ones relates to this. That is not evidence it was never considered - only that nothing recorded says so in these words. Try other words, or name a file with paths.',
+      _monitor
     });
   }
   return prune({
+    _monitor,
     ...head,
     matched: out.matched,
     returned: out.results.length,
@@ -369,6 +387,40 @@ export function related(repoDir, args = {}) {
 function prune(o) {
   for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k];
   return o;
+}
+
+/* The answer arranged in the layers, for GitX Monitor: every result in its
+ * layer, the commit each settled result was carried out in (shown as reached
+ * through it, since the result names it), and the links between all of them.
+ * L1 stays empty until the hook event log can see the agent read code. */
+function stackOf(ix, results) {
+  const nodes = [];
+  const byRef = new Map();
+  const place = (n, role, extra = {}) => {
+    if (byRef.has(n.id)) return;
+    const node = {
+      id: n.layer === 'commit' ? n.short : n.id, layer: n.layer, role,
+      kind: n.kind, status: statusOf(ix, n), text: cap(n.text, 160),
+      topic: n.topic ? topicName(ix, n.topic) : undefined,
+      commit: n.commit ? n.commit.slice(0, 8) : undefined, ...extra
+    };
+    byRef.set(n.id, node);
+    nodes.push(node);
+  };
+  results.forEach((r, i) => place(ix.nodes.get(r.ref), 'result', { rank: i + 1, score: r.score, why: r.why.join(' · ') }));
+  for (const r of results) {
+    const n = ix.nodes.get(r.ref);
+    if (n.layer !== 'commit' && n.commit && ix.nodes.has(n.commit)) place(ix.nodes.get(n.commit), 'via');
+  }
+  const links = [];
+  for (const [ref, node] of byRef) {
+    for (const e of ix.adj.get(ref) || []) {
+      if (e.type.startsWith('by:') || !byRef.has(e.to)) continue;
+      links.push([node.id, e.type, byRef.get(e.to).id]);
+    }
+  }
+  for (const node of nodes) for (const k of Object.keys(node)) if (node[k] === undefined) delete node[k];
+  return { nodes, links };
 }
 
 /* What a node is, in capitals, first - the detail a hasty reader gets wrong

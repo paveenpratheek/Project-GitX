@@ -349,13 +349,30 @@ function handleBrokerMessage(msg) {
       if (!state.streams[msg.chronicle.stream]) state.streams[msg.chronicle.stream] = [];
       state.streams[msg.chronicle.stream].push(msg.chronicle.commitHash);
       break;
+    /* An agent asked GitX something, moved on its path, or finished. */
+    case 'GITX_MONITOR':
+      if (window.GitxMonitor) window.GitxMonitor.onEvent(msg);
+      pulseMonitorNav(msg);
+      break;
   }
+}
+
+/* A small live dot on the sidebar row while an agent is walking a path, so
+ * the monitor is noticed from any other view. */
+let monitorPulse = null;
+function pulseMonitorNav(msg) {
+  const dot = document.getElementById('nav-monitor-live');
+  if (!dot) return;
+  dot.hidden = false;
+  clearTimeout(monitorPulse);
+  monitorPulse = setTimeout(() => { dot.hidden = true; }, msg.event === 'status' ? 4000 : 20000);
 }
 
 function renderAll() {
   renderHeaderBadge();
   renderAgents();
   if (window.GraphView) window.GraphView.onState(state);
+  if (window.GitxMonitor) window.GitxMonitor.onState(state);
 }
 
 function renderHeaderBadge() {
@@ -463,7 +480,7 @@ function renderAgents() {
  * Visuals is graph.html - the page Ctrl+Alt+X opens over ter-manager - in a
  * frame: loaded the first time it is shown, and told to refresh each time
  * after, the way ter-manager's overlay does it. */
-const VIEWS = ['timeline', 'map', 'swarm', 'visuals'];
+const VIEWS = ['timeline', 'map', 'swarm', 'monitor', 'visuals'];
 
 function showView(v) {
   if (!VIEWS.includes(v)) v = 'timeline';
@@ -488,6 +505,7 @@ function showView(v) {
   if (v === 'timeline' && window.GraphView && window.GraphView.refit) window.GraphView.refit();
   /* The map measures itself only while shown. */
   if (window.ContextMap) { if (v === 'map') window.ContextMap.show(); else window.ContextMap.hide(); }
+  if (window.GitxMonitor) { if (v === 'monitor') window.GitxMonitor.show(); else window.GitxMonitor.hide(); }
 }
 
 function initViews() {
@@ -582,4 +600,5 @@ window.addEventListener('DOMContentLoaded', () => {
   initLiquidLight();
   if (window.ContextMap) window.ContextMap.init({ httpBase: BROKER_HTTP });
   if (window.GraphView) window.GraphView.init({ httpBase: BROKER_HTTP });
+  if (window.GitxMonitor) window.GitxMonitor.init({ httpBase: BROKER_HTTP, repo: () => state.activeRepo || lastKnownRepo });
 });
