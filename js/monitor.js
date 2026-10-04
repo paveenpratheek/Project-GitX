@@ -344,7 +344,7 @@
 
   function statusClass(n) {
     const s = String(n.status || '');
-    if (/^OPEN/.test(s)) return 'mon-s-open';
+    if (/^OPEN|^PROPOSED - NOT/.test(s)) return 'mon-s-open';
     if (/^REJECTED/.test(s)) return 'mon-s-rej';
     if (/^SUPERSEDED/.test(s)) return 'mon-s-sup';
     if (/^STASHED/.test(s)) return 'mon-s-stash';

@@ -383,7 +383,7 @@ const TOOLS = [
    * everything GitX holds, where the tools above each search one part. */
   {
     name: 'gitx_related',
-    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting, ranked together - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. Each result gives its status first (OPEN QUESTION, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its full text, why it ranked, and the call that reads it in full. Results are pointers: read one before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting, ranked together - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. Each result gives its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its full text, why it ranked, and the call that reads it in full. Results are pointers: read one before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
     inputSchema: {
       type: 'object',
       properties: {

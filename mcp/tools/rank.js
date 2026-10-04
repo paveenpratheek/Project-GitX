@@ -29,7 +29,7 @@
  */
 
 import { loadOrBuildIndex } from './commit-index.js';
-import { loadThoughts } from './thoughts.js';
+import { loadThoughts, laterOf, asksQuestion } from './thoughts.js';
 import { loadTopics, loadGoal, domainOf } from './topics.js';
 import { tokenize } from './git-extract.js';
 import { regionsFromPaths, coverageScore, regionScore } from './retrieval.js';
@@ -380,7 +380,7 @@ export function related(repoDir, args = {}) {
         read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short : 'gitx_thought id ' + n.id
       });
     }),
-    how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, ACCEPTED - NOT BUILT is decided but not in the code, and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'
+    how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'
   });
 }
 
@@ -425,19 +425,31 @@ function stackOf(ix, results) {
 
 /* What a node is, in capitals, first - the detail a hasty reader gets wrong
  * most is taking an open question for a decision or a rejected idea for the
- * plan (t-ee4606572d). A thought another supersedes says so before anything. */
+ * plan (t-ee4606572d). What became of it later comes from the rule every
+ * reader shares (laterOf in thoughts.js): a thought another supersedes says so
+ * before anything, an open question a settled thought refines is ANSWERED,
+ * and a decision still waiting names the settled work that carried it on -
+ * without which an agent reports as unbuilt what shipped. An open thought that
+ * asks nothing is a proposal, not a question. */
 export function statusOf(ix, n) {
   if (n.layer === 'commit') return 'COMMIT ' + n.created;
-  const by = (ix.adj.get(n.id) || []).find((e) => e.type === 'by:supersedes');
-  if (by) return 'SUPERSEDED by ' + by.to;
+  const incoming = (ix.adj.get(n.id) || []).filter((e) => e.type.startsWith('by:')).map((e) => ({ type: e.type.slice(3), from: e.to }));
+  const later = laterOf(incoming, (id) => (ix.nodes.get(id) || {}).commit || null);
+  const settled = (l) => (l.commit ? ', SETTLED in ' + l.commit.slice(0, 7) : '');
+  if (later && later.how === 'superseded') return 'SUPERSEDED by ' + later.by + settled(later);
   const built = n.commit ? ' in ' + n.commit.slice(0, 7) : '';
-  if (n.outcome === 'open') return 'OPEN QUESTION';
+  if (n.outcome === 'open') {
+    const question = asksQuestion(n);
+    if (later) return (question ? 'ANSWERED by ' : 'PROPOSED - TAKEN UP by ') + later.by + settled(later);
+    return question ? 'OPEN QUESTION' : 'PROPOSED - NOT CONFIRMED';
+  }
   if (n.outcome === 'rejected') return 'REJECTED';
   if (n.outcome === 'stashed') return 'STASHED';
   if (n.kind === 'learned') return 'RULE';
   if (n.kind === 'finding') return n.layer === 'thought' ? 'FINDING, SETTLED' : 'FINDING';
   if (n.layer === 'thought') return 'SETTLED' + built;
-  return n.kind === 'cost' ? 'COST ACCEPTED - NOT BUILT' : 'ACCEPTED - NOT BUILT';
+  const waiting = n.kind === 'cost' ? 'COST ACCEPTED - NOT BUILT' : 'ACCEPTED - NOT BUILT';
+  return later ? waiting + ' itself - refined by ' + later.by + settled(later) : waiting;
 }
 
 /* ─────────────────────────────────────────────── shape */

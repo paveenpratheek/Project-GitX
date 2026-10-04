@@ -23,7 +23,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { loadThoughts, loadStashes, gitTopology, commitCount } from './thoughts.js';
+import { loadThoughts, loadStashes, gitTopology, commitCount, laterOf, asksQuestion } from './thoughts.js';
 import { tokenize, parseMessage } from './git-extract.js';
 
 const SEARCH_LIMIT = 15;
@@ -130,25 +130,41 @@ function reopenable(t) {
     f.direction === 'backward' && f.kind === 'contingent' && f.revisit_if && !f.superseded_by);
 }
 
-/* A thought is never rewritten - a later one supersedes it - so a question
- * that has been answered that way must stop counting as open, or the open
- * list fills with decisions that were settled long ago. */
-function supersededBy(ctx, t) {
-  const by = (ctx.incoming.get(t.id) || []).find((l) => l.type === 'supersedes');
-  return by ? by.from : null;
-}
-
-/* An open question is also answered when a decision refines it and that
- * decision is in a commit: the refinement is the answer, built. Refined by a
- * decision still waiting, it is not answered yet. */
-function answeredBy(ctx, t) {
-  const s = supersededBy(ctx, t);
-  if (s) return s;
-  const by = (ctx.incoming.get(t.id) || []).find((l) => {
-    const from = l.type === 'refines' && ctx.lookup.get(l.from);
-    return from && from.resulted_in && from.resulted_in.commit;
+/* What became of a thought later, by the rule every reader shares (laterOf in
+ * thoughts.js) over links from both graphs - gitx_related says the same of it.
+ * A thought is never rewritten - a later one supersedes it, or one refining it
+ * is built - so a question answered either way must stop counting as open, or
+ * the open list fills with decisions that were settled long ago. */
+function laterFor(ctx, t) {
+  return laterOf(ctx.incoming.get(t.id) || [], (id) => {
+    const o = ctx.lookup.get(id);
+    return (o && o.resulted_in && o.resulted_in.commit) || null;
   });
-  return by ? by.from : null;
+}
+function supersededBy(ctx, t) {
+  const l = laterFor(ctx, t);
+  return l && l.how === 'superseded' ? l.by : null;
+}
+function answeredBy(ctx, t) {
+  const l = laterFor(ctx, t);
+  return l ? l.by : null;
+}
+/* Open and still unanswered, as a question or as a proposal - counted apart,
+ * because one waits for an answer and the other for a yes. */
+const stillOpen = (ctx, t) => t.outcome === 'open' && !answeredBy(ctx, t);
+
+function statusLine(ctx, t) {
+  const l = laterFor(ctx, t);
+  const where = l && l.commit ? ', settled in ' + l.commit.slice(0, 7) : '';
+  if (l && l.how === 'superseded') return 'superseded by ' + l.by + where;
+  if (t.outcome === 'open') {
+    if (l) return (asksQuestion(t) ? 'answered by ' : 'proposal taken up by ') + l.by + where;
+    return asksQuestion(t) ? undefined : 'proposed, not confirmed - it states something rather than asking, and nobody has said yes to it';
+  }
+  /* A decision still waiting whose work went on in a commit: not built as
+   * itself, but the agent must not report the work as unbuilt. */
+  if (l && t.outcome === 'accepted' && !(t.resulted_in && t.resulted_in.commit)) return 'not built itself - refined by ' + l.by + where;
+  return reopenable(t) ? 'reopenable - held back only by something that can change' : undefined;
 }
 
 /* How much weight a thought can bear, in one phrase: was it said at the time
@@ -166,9 +182,7 @@ function brief(ctx, t) {
     id: t.id,
     kind: t.kind,
     outcome: t.outcome,
-    status: supersededBy(ctx, t) ? 'superseded by ' + supersededBy(ctx, t)
-      : t.outcome === 'open' && answeredBy(ctx, t) ? 'answered - refined by ' + answeredBy(ctx, t) + ', which is in a commit'
-      : reopenable(t) ? 'reopenable - held back only by something that can change' : undefined,
+    status: statusLine(ctx, t),
     text: t.text,
     decided_by: t.decided_by || undefined,
     behind: t._behind ? ctx.ref(t._behind) : undefined,
@@ -488,17 +502,21 @@ export function readThought(repoDir, args = {}) {
  * never shown, because that graph is read only when an agent asks for it.
  * "Written since HEAD" is the in-progress signal - new thinking lands in the
  * context graph first, so this is where the last session's unfinished work is. */
-function contextSummary(repoDir, headHash) {
+function contextSummary(repoDir, headHash, ctx) {
   const { thoughts, stats } = loadThoughts(repoDir, { store: 'context' });
   const stashes = loadStashes(repoDir, { store: 'context' });
   if (!thoughts.length && !stashes.length && !stats.skipped) return 'empty - no thought is waiting for a commit';
   const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+  const open = thoughts.filter((t) => stillOpen(ctx, t));
+  const answered = thoughts.filter((t) => t.outcome === 'open').length - open.length;
   const parts = [
-    n(thoughts.filter((t) => t.outcome === 'open').length, 'open question', 'open questions'),
+    n(open.filter(asksQuestion).length, 'open question', 'open questions'),
+    n(open.filter((t) => !asksQuestion(t)).length, 'proposal not confirmed', 'proposals not confirmed'),
     n(thoughts.filter((t) => t.outcome === 'stashed').length, 'stashed', 'stashed'),
     n(thoughts.filter((t) => t.anchor && t.anchor.commit === headHash).length, 'written since HEAD', 'written since HEAD')
   ];
   if (stashes.length) parts.push(n(stashes.length, 'stash', 'stashes'));
+  if (answered) parts.push(answered + ' marked open but answered by a settled thought');
   if (stats.skipped) parts.push(n(stats.skipped, 'file not readable', 'files not readable'));
   return n(thoughts.length, 'thought', 'thoughts') + ' waiting for a commit (' + parts.join(', ') + ') - search them with gitx_related';
 }
@@ -528,7 +546,7 @@ export function catchUp(repoDir, args = {}) {
   const headC = ctx.commits[0];
   const head = { head: ctx.ref(headC.hash), thoughts_on_record: ctx.stats.count, of_them_inferred: ctx.stats.inferred };
   if (ctx.stats.skipped) head.not_readable = ctx.stats.skipped + ' file(s) under .gitx are not readable as thoughts, so anything they say is NOT in these results - gitx_thought_history names them and why.';
-  const waiting = contextSummary(repoDir, headC.hash);
+  const waiting = contextSummary(repoDir, headC.hash, ctx);
 
   let recent = ctx.commits.slice(0, RECENT_DEFAULT);
   if (args.since) {
@@ -562,7 +580,7 @@ export function catchUp(repoDir, args = {}) {
         can_come_back_if: reopenable(t) ? t.forces.filter((f) => f.revisit_if).map((f) => lowerFirst(f.revisit_if)).join(' · ') : undefined
       })) : undefined,
       found: list.some((t) => t.kind === 'finding') ? texts(list.filter((t) => t.kind === 'finding'), 3) : undefined,
-      still_open: list.some((t) => t.outcome === 'open') ? texts(list.filter((t) => t.outcome === 'open')) : undefined
+      still_open: list.some((t) => stillOpen(ctx, t)) ? texts(list.filter((t) => stillOpen(ctx, t))) : undefined
     });
   };
 
@@ -591,7 +609,7 @@ export function catchUp(repoDir, args = {}) {
   }
 
   const byRecency = (list) => list.slice().sort((a, b) => ctx.recency(a) - ctx.recency(b));
-  const open = byRecency(ctx.thoughts.filter((t) => t.outcome === 'open' && !answeredBy(ctx, t)));
+  const open = byRecency(ctx.thoughts.filter((t) => stillOpen(ctx, t)));
   const back = byRecency(ctx.thoughts.filter((t) => reopenable(t) && !supersededBy(ctx, t)));
   /* Stashes first, as the containers someone made on purpose; then stashed
    * thoughts no stash holds (a backfill records the outcome without one). */
@@ -628,6 +646,6 @@ export function catchUp(repoDir, args = {}) {
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
     stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, find it with gitx_related before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_related it: it may already have been turned down, and why. Cite thought ids. Record new thinking with gitx_thought_record as it is decided - a decision with the alternatives it beat - and name it in the commit that carries it out.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought with id says which.' : '')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, find it with gitx_related before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled, and proposals nobody has said yes to; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_related it: it may already have been turned down, and why. Cite thought ids. Record new thinking with gitx_thought_record as it is decided - a decision with the alternatives it beat - and name it in the commit that carries it out.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought with id says which.' : '')
   });
 }

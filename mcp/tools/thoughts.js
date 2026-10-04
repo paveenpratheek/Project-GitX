@@ -290,3 +290,39 @@ export function thoughtsPayload(repoDir) {
     })()
   };
 }
+
+/* ─────────────────────────────────────────────── what became of a thought */
+
+/* One rule for every reader - gitx_related, gitx_thought and catch-up - so two
+ * tools never tell an agent different things about the same thought. They did:
+ * gitx_thought called t-99e44e7b95 answered while gitx_related, the tool agents
+ * are sent to first, still said OPEN QUESTION.
+ *
+ * A thought is never rewritten; what comes after it says what became of it.
+ * `incoming` is every link pointing AT the thought, as { type, from };
+ * `settledIn(id)` is the commit a thought was carried out in, or null.
+ *
+ *   superseded  a later thought supersedes it
+ *   refined     a thought refining it is in a commit - for an open question
+ *               that is the answer, built; for a decision still waiting it is
+ *               the work carried on in a commit, though not this thought itself
+ *
+ * Refined only by thinking that is still waiting is no answer yet. */
+export function laterOf(incoming, settledIn) {
+  const sup = incoming.find((l) => l.type === 'supersedes');
+  if (sup) return { how: 'superseded', by: sup.from, commit: settledIn(sup.from) || null };
+  for (const l of incoming) {
+    if (l.type !== 'refines') continue;
+    const commit = settledIn(l.from);
+    if (commit) return { how: 'refined', by: l.from, commit };
+  }
+  return null;
+}
+
+/* An open thought is a question only when it asks one. One that states
+ * something - "Activation belongs to an agent and a task" - is a proposal
+ * nobody confirmed, and calling it a question sends an agent to ask the owner
+ * something that was never asked. */
+export function asksQuestion(t) {
+  return /\?\s*$/.test(String((t && t.text) || '').trim());
+}
