@@ -1860,6 +1860,9 @@ body { padding: 10px; gap: 10px; }
 .mon-n-code .mon-n-body { fill: rgb(var(--mon-l1)); stroke-width: 1.5; }
 .mon-n-code.mon-n-minor .mon-n-body { fill-opacity: 0.55; stroke-width: 1; }
 .mon-link-changed { stroke: rgb(var(--mon-l1)); stroke-opacity: 0.22; stroke-width: 1; }
+/* The edge of the pull: on the stack, faint, along each band's floor */
+.mon-n-edge .mon-n-body { fill: var(--cm-ink-3); fill-opacity: 0.45; stroke: none; }
+.mon-n-edge.mon-visited .mon-n-body { fill: var(--cm-accent); fill-opacity: 1; }
 
 .mon-trail-seg { fill: none; stroke: var(--cm-accent); stroke-width: 2; stroke-linecap: round; }
 .mon-trail-off { stroke: var(--cm-red); stroke-dasharray: 5 4; }

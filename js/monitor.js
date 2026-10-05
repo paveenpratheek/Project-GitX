@@ -22,7 +22,8 @@
     { layer: 'commit', name: 'L2 · Commits', sub: 'what changed', cls: 'l2' },
     { layer: 'code', name: 'L1 · Code', sub: 'what each commit changed', cls: 'l1' }
   ];
-  const MOVE_WORD = { enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to' };
+  const LABELS_PER_BAND = 8;
+  const MOVE_WORD ={ enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to' };
   const STEP_MS = 900;
   const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -36,6 +37,7 @@
   let pointerAt = null;
   let replayTimer = null;
   let shown = false;
+  let resizeLater = false;
 
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -84,7 +86,14 @@
       follow = false; paintFollow();
       select(rec, true);
     });
-    if (window.ResizeObserver) new ResizeObserver(() => { if (shown && selected && !replayTimer) paint(selected, false); }).observe(els.canvas);
+    /* A resize while the build or the replay is playing is kept for its end:
+     * a stack laid out as the view opened measures the canvas before it has
+     * its size, and repainting mid-animation would cut the animation off. */
+    if (window.ResizeObserver) new ResizeObserver(() => {
+      if (!shown || !selected) return;
+      if (replayTimer) resizeLater = true;
+      else paint(selected, false);
+    }).observe(els.canvas);
     paintFollow();
     repo = opts.repo ? opts.repo() : null;
     load();
@@ -185,15 +194,26 @@
     const g = rec.gitx || {};
     const p = g.processing || {}, s = g.search || {}, r = g.results || {}, f = g.filtering || {};
     const by = { context: 0, thought: 0, commit: 0, code: 0 };
-    for (const n of (rec.stack && rec.stack.nodes) || []) by[n.layer] = (by[n.layer] || 0) + 1;
+    let edgeN = 0;
+    for (const n of (rec.stack && rec.stack.nodes) || []) { if (n.role === 'edge') edgeN++; else by[n.layer] = (by[n.layer] || 0) + 1; }
+    const scope = esc('layers: ' + (Array.isArray(f.layers) ? f.layers.join(', ') : f.layers || 'all') + (f.outcome ? ' · outcome: ' + f.outcome.join(', ') : '') + (f.kind ? ' · kind: ' + f.kind.join(', ') : ''));
+    /* A prompt answered by the pull says where it entered and how far the
+     * links went; one from before it, the candidates and the cut. */
+    const pulled = r.entries != null;
     const lines = [
       ['prompt', 'Prompt', '“' + esc(ask(rec)) + '”', esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at))],
       ['proc', 'Processing', (p.nodes || 0) + ' nodes indexed', esc((p.commits || 0) + ' commits · ' + (p.settled || 0) + ' settled · ' + (p.waiting || 0) + ' waiting · ' + (p.ms || 0) + ' ms')],
       ['search', 'Search', esc((s.words || []).join(' ') || '(ids and paths only)'),
         (s.unmatched && s.unmatched.length ? 'not in the graph: ' + esc(s.unmatched.join(' ')) : 'every word found in the graph') + (s.paths && s.paths.length ? ' · paths: ' + esc(s.paths.join(', ')) : '')],
-      ['results', 'Results', (r.candidates || 0) + ' candidates → ' + (r.matched || 0) + ' matched', esc('signals: ' + (r.signals || []).join(', ') + ' · ' + (r.ms || 0) + ' ms')],
-      ['filter', 'Filtering', 'kept ' + (f.returned || 0) + ' of ' + (r.matched || 0), esc('layers: ' + (Array.isArray(f.layers) ? f.layers.join(', ') : f.layers || 'all') + (f.outcome ? ' · outcome: ' + f.outcome.join(', ') : '') + (f.kind ? ' · kind: ' + f.kind.join(', ') : '') + ' · limit ' + (f.limit || ''))],
-      ['layers', 'Building the layers', 'context ' + by.context + ' · L3 ' + by.thought + ' · L2 ' + by.commit + ' · L1 ' + by.code, ((rec.stack && rec.stack.links) || []).length + ' links between them']
+      pulled
+        ? ['results', 'Entered and pulled', 'entered at ' + r.entries + ' · pulled ' + (r.pulled || 0) + ' within ' + (r.hops || 4) + ' hops',
+          esc(r.closest != null ? 'no node held 70% of the words - entered at the closest (' + Math.round(r.closest * 100) + '%)' : 'every entry holds 70% or more of the words') + ' · ' + (r.ms || 0) + ' ms']
+        : ['results', 'Results', (r.candidates || 0) + ' candidates → ' + (r.matched || 0) + ' matched', esc('signals: ' + (r.signals || []).join(', ') + ' · ' + (r.ms || 0) + ' ms')],
+      pulled
+        ? ['filter', 'The stack', 'core ' + (f.core || 0) + ' · edge ' + (f.edge || 0) + (f.words_only ? ' · words only ' + f.words_only : ''), scope + ' · ' + (f.returned || 0) + ' given in full']
+        : ['filter', 'Filtering', 'kept ' + (f.returned || 0) + ' of ' + (r.matched || 0), scope + ' · limit ' + (f.limit || '')],
+      ['layers', 'Building the layers', 'context ' + by.context + ' · L3 ' + by.thought + ' · L2 ' + by.commit + ' · L1 ' + by.code,
+        ((rec.stack && rec.stack.links) || []).length + ' links between them' + (edgeN ? ' · ' + edgeN + ' on the edge' : '')]
     ];
     let html = lines.map(([k, h, main, sub], i) =>
       '<li class="mon-l mon-l-' + k + '" style="--i:' + i + '"><span class="mon-l-h">' + h + '</span><span class="mon-l-main">' + main + '</span><span class="mon-l-sub">' + sub + '</span></li>').join('');
@@ -249,6 +269,7 @@
    * when animating, laid down at once otherwise (a resize, a return to the view). */
   function paint(rec, animate) {
     stopReplay();
+    resizeLater = false;
     drawStack(rec, animate);
     if (!rec.path.length) return;
     if (animate && !reduced) replayTimer = setTimeout(() => replay(rec), buildTime(rec) + 250);
@@ -259,7 +280,7 @@
     const nodes = (rec.stack && rec.stack.nodes) || [];
     return 4 * 90 + nodes.reduce((s, n) => s + nodeStep(n), 0) + 500;
   }
-  const nodeStep = (n) => (n.layer === 'code' ? 12 : 70);
+  const nodeStep = (n) => (n.role === 'edge' ? 3 : n.layer === 'code' ? 12 : 70);
 
   function stopReplay() { if (replayTimer) { clearTimeout(replayTimer); clearInterval(replayTimer); replayTimer = null; } }
 
@@ -268,7 +289,11 @@
     let i = 0;
     const next = () => {
       if (rec !== selected) return stopReplay();
-      if (i >= rec.path.length) { replayTimer = null; return; }
+      if (i >= rec.path.length) {
+        replayTimer = null;
+        if (resizeLater) { resizeLater = false; paint(rec, false); }
+        return;
+      }
       moveTo(rec, rec.path[i], i + 1, true);
       i++;
       replayTimer = setTimeout(next, STEP_MS);
@@ -288,7 +313,21 @@
       const mine = nodes.filter((n) => n.layer === band.layer);
       const x0 = band.x + 150, x1 = band.x + band.w - offW;
       if (band.layer === 'code') { placeCode(mine, band, placed, x1); continue; }
-      mine.forEach((n, i) => placed.set(n.id, { x: x0 + (i + 0.5) * ((x1 - x0) / mine.length), y: band.y + band.h / 2 + 4, band, node: n }));
+      /* The core across the middle of the band, only the strongest named
+       * when it is crowded; the edge of the pull as a strip of faint dots
+       * along the band's floor - on the stack, but not what it is about. */
+      const core = mine.filter((n) => n.role !== 'edge'), edge = mine.filter((n) => n.role === 'edge');
+      /* As many names as the band's width holds - a name is ~80px - at most
+       * LABELS_PER_BAND, the strongest first. */
+      const names = Math.max(2, Math.min(LABELS_PER_BAND, Math.floor((x1 - x0) / 80)));
+      const crowded = core.length > names;
+      const named = new Set(core.slice().sort((a, b) => (a.rank || 1e9) - (b.rank || 1e9)).slice(0, names).map((n) => n.id));
+      const y = band.y + band.h / 2 + 4 - (edge.length ? 6 : 0);
+      core.forEach((n, i) => placed.set(n.id, {
+        x: x0 + (i + 0.5) * ((x1 - x0) / core.length), y, band, node: n,
+        small: core.length > 14, labelled: !crowded || named.has(n.id), labelY: crowded && i % 2 ? 41 : 26
+      }));
+      edge.forEach((n, i) => placed.set(n.id, { x: x0 + (i + 0.5) * ((x1 - x0) / edge.length), y: band.y + band.h - 11, band, node: n, edge: true, labelled: false }));
     }
     return { W, H, bands, placed, offX: W - right - offW / 2 };
   }
@@ -323,14 +362,19 @@
      * and each label cut to the room that leaves it. */
     const gap = list.length > 1 ? Math.min(...list.slice(1).map((g, i) => g.x - list[i].x)) : Infinity;
     const levels = Math.min(3, Math.max(1, Math.ceil(150 / gap)));
-    const room = Math.max(6, Math.floor((gap * levels - 10) / 6.4));
+    /* Too close even for three rows: name every other commit's code, or every
+     * third - the rest name themselves on hover. Grids narrow to their room. */
+    const stride = Math.max(1, Math.ceil(90 / (gap * levels)));
+    const room = Math.max(6, Math.floor((gap * levels * stride - 10) / 6.4));
+    const maxCols = Math.max(...list.map((g) => g.cols));
+    const sx = Math.max(6, Math.min(dx, (gap - 4) / maxCols));
     list.forEach((g, gi) => {
       g.list.forEach((n, i) => {
         const c = i % g.cols, r = Math.floor(i / g.cols);
-        const x = g.x + (c - (g.cols - 1) / 2) * dx, y = y0 + r * dy;
+        const x = g.x + (c - (g.cols - 1) / 2) * sx, y = y0 + r * dy;
         placed.set(n.id, {
           x, y, band, node: n, minor: !n.major,
-          labelled: i === 0, labelX: g.x - x, labelY: base + (gi % levels) * 13 - y, labelMax: room
+          labelled: i === 0 && gi % stride === 0, labelX: g.x - x, labelY: base + (Math.floor(gi / stride) % levels) * 13 - y, labelMax: room
         });
       });
     });
@@ -391,21 +435,22 @@
 
   function drawNode(parent, p, off, delay) {
     const n = p.node;
-    const g = svg('g', { class: 'mon-node mon-n-' + n.layer + ' ' + statusClass(n) + (off ? ' mon-n-offstack' : '') + (n.role === 'via' ? ' mon-n-via' : '') + (p.minor ? ' mon-n-minor' : ''),
+    const g = svg('g', { class: 'mon-node mon-n-' + n.layer + ' ' + statusClass(n) + (off ? ' mon-n-offstack' : '') + (n.role === 'via' ? ' mon-n-via' : '') + (p.minor ? ' mon-n-minor' : '') + (p.edge ? ' mon-n-edge' : ''),
       transform: 'translate(' + p.x + ' ' + p.y + ')', style: delay != null ? '--d:' + delay + 'ms' : null, 'data-id': n.id }, parent);
     const shape = svg('g', { class: 'mon-n-shape' }, g);
-    if (n.layer === 'commit') svg('rect', { x: -9, y: -9, width: 18, height: 18, rx: 4, class: 'mon-n-body' }, shape);
+    if (p.edge) svg('circle', { r: 2.6, class: 'mon-n-body' }, shape);
+    else if (n.layer === 'commit') { const s = p.small ? 6 : 9; svg('rect', { x: -s, y: -s, width: 2 * s, height: 2 * s, rx: p.small ? 3 : 4, class: 'mon-n-body' }, shape); }
     else if (n.layer === 'code') {
       const s = p.minor ? 3 : 5;
       svg('rect', { x: -s, y: -s, width: 2 * s, height: 2 * s, rx: 1.5, class: 'mon-n-body' }, shape);
-    } else svg('circle', { r: 9, class: 'mon-n-body' }, shape);
+    } else svg('circle', { r: p.small ? 6 : 9, class: 'mon-n-body' }, shape);
     if (n.rank === 1) svg('circle', { r: 14, class: 'mon-n-entry' }, shape);
     if (p.labelled !== false) {
       const name = label(n.id);
       svg('text', { x: p.labelX || 0, y: p.labelY || 26, 'text-anchor': 'middle', class: 'mon-n-label' }, g).textContent =
         p.labelMax && name.length > p.labelMax ? name.slice(0, p.labelMax - 1) + '…' : name;
     }
-    if (n.rank) svg('text', { x: 12, y: -10, class: 'mon-n-rank' }, g).textContent = n.rank;
+    if (n.rank && p.labelled !== false) svg('text', { x: 12, y: -10, class: 'mon-n-rank' }, g).textContent = n.rank;
     g.addEventListener('mouseenter', (e) => tip(e, n, off));
     g.addEventListener('mouseleave', () => { els.tip.hidden = true; });
   }

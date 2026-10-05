@@ -146,41 +146,20 @@ function expand(ix, q) {
   return out;
 }
 
-/**
- * @param ix     from buildRankIndex
- * @param query
- *   text     words: a prompt, a question, a draft thought
- *   ids      nodes the caller is on or is linking to - their neighbours rank higher
- *   paths    files, directories or file::declaration the caller works in
- *   regions  region -> share, a staged diff (outranks paths, as in findRelated)
- *   topic    the topic the caller is filing under
- *   before   only nodes that existed before this time (ISO) - for replaying a
- *            past moment, as the evaluation does
- *   exclude  ids never to return (the thought being recorded)
- *   layers   ['commit', 'thought', 'context'] to limit what comes back
- *   limit    how many to return
- */
-export function rank(ix, query = {}) {
-  const text = String(query.text || '');
-  const given = (query.ids || []).filter((id) => ix.nodes.has(id));
-  const skip = new Set(query.exclude || []);
-  const before = query.before || null;
-  const layers = query.layers || null;
-  const outcomes = query.outcome && query.outcome.length ? query.outcome : null;
-  const kinds = query.kind && query.kind.length ? query.kind : null;
-  const limit = Math.max(1, Math.min(100, Number(query.limit) || 10));
-  const alive = (n) => n && !skip.has(n.id) && (!layers || layers.includes(n.layer)) &&
-    (!outcomes || outcomes.includes(n.outcome)) && (!kinds || kinds.includes(n.kind)) &&
-    (!before || !n.created || n.created < before);
+/* Words, with the idf of what each query word stands for among live nodes.
+ * `also` is secondary text - a draft's reasons beside its sentence - and
+ * counts at the weight a node's own reasons do. One stem is one word however
+ * many forms of it the query uses.
+ *
+ * A node's word score is a similarity in the sense t-0db141dc7d asks for: the
+ * idf of the question's words the node holds over the idf of all of them the
+ * graph knows, 1.0 when every meaning-bearing word is in its own text, so 70%
+ * means the same for every question. rank() and pull() both read it here. */
+function wordStage(ix, text, also, alive) {
   const N = [...ix.nodes.values()].filter(alive).length || 1;
-
-  /* ① words, with the idf of what each query word stands for among live nodes.
-   * `also` is secondary text - a draft's reasons beside its sentence - and
-   * counts at the weight a node's own reasons do. One stem is one word however
-   * many forms of it the query uses. */
   const shown = new Map();       // stem -> the word as the query wrote it
   const want = new Map();        // stem -> 1 for the text, REST for `also`
-  for (const [src, weight] of [[query.also, REST], [text, 1]]) {
+  for (const [src, weight] of [[also, REST], [text, 1]]) {
     for (const w of tokenize(String(src || ''))) {
       const s = stem(w);
       if (!shown.has(s) || weight === 1) shown.set(s, w);
@@ -209,6 +188,37 @@ export function rank(ix, query = {}) {
     }
   }
   for (const w of words.values()) w.s = idfTotal > 0 ? w.s / idfTotal : 0;
+  return { per, words, unmatched };
+}
+
+/**
+ * @param ix     from buildRankIndex
+ * @param query
+ *   text     words: a prompt, a question, a draft thought
+ *   ids      nodes the caller is on or is linking to - their neighbours rank higher
+ *   paths    files, directories or file::declaration the caller works in
+ *   regions  region -> share, a staged diff (outranks paths, as in findRelated)
+ *   topic    the topic the caller is filing under
+ *   before   only nodes that existed before this time (ISO) - for replaying a
+ *            past moment, as the evaluation does
+ *   exclude  ids never to return (the thought being recorded)
+ *   layers   ['commit', 'thought', 'context'] to limit what comes back
+ *   limit    how many to return
+ */
+export function rank(ix, query = {}) {
+  const text = String(query.text || '');
+  const given = (query.ids || []).filter((id) => ix.nodes.has(id));
+  const skip = new Set(query.exclude || []);
+  const before = query.before || null;
+  const layers = query.layers || null;
+  const outcomes = query.outcome && query.outcome.length ? query.outcome : null;
+  const kinds = query.kind && query.kind.length ? query.kind : null;
+  const limit = Math.max(1, Math.min(100, Number(query.limit) || 10));
+  const alive = (n) => n && !skip.has(n.id) && (!layers || layers.includes(n.layer)) &&
+    (!outcomes || outcomes.includes(n.outcome)) && (!kinds || kinds.includes(n.kind)) &&
+    (!before || !n.created || n.created < before);
+  /* ① words */
+  const { per, words, unmatched } = wordStage(ix, text, query.also, alive);
 
   /* ② regions: a staged diff is a distribution, a path list is a declaration
    * of interest - scored the two ways findRelated scores them. */
@@ -288,6 +298,157 @@ export function rank(ix, query = {}) {
   };
 }
 
+/* ─────────────────────────────────────────────── the pull */
+
+/*
+ * A question answered with a stack, not a cut list (t-8e3f4c2aa9). Every
+ * node whose word similarity reaches ENTRY_AT is an entry (t-0db141dc7d);
+ * every link in every layer is a string pulled from the entries out to
+ * PULL_HOPS, and a node's support is the sum over the entries of 0.5 per hop
+ * (t-7e316ab799) - many short strings make the core, one long string the
+ * edge. Nothing is dropped: what words alone found and no string reached
+ * comes back too, as its own group.
+ *
+ * Measured on 5 October before it was wired in: on the owner's 18 query
+ * cases the order kept the expected node about where rank() puts it (MRR
+ * 0.673 against 0.684, before the words-only group), and for "what is the
+ * 4th dimension" the pull held 80% of the 4th Dimension's nodes, the first
+ * 40 of them 95% on topic. Similarity-weighted entries, 3 hops and half-weight
+ * commit links were each no better and are not here.
+ *
+ * Two things the decisions did not say, decided while building: with no node
+ * at ENTRY_AT the search enters at the closest (within 80% of the best) and
+ * says so - 7 of the 18 questions have none; and a node words found that no
+ * string reaches is kept as "words only", or the pull would lose answers
+ * rank() finds (the sidebar commit 5d27166 is linked to nothing).
+ */
+export const ENTRY_AT = 0.7;
+export const PULL_HOPS = 4;
+export const CORE_AT = 1;        // support at which a node comes back in full - one entry's worth
+const CLOSEST = 0.8;
+const CLOSEST_MAX = 5;
+const HOP = 0.5;
+
+/**
+ * @param query  text, ids, paths, hops (1-6), layers, outcome, kind, exclude,
+ *               entryAt (for measuring)
+ * @returns { words, unmatched, entries, closest, hops, pulled, core, edge,
+ *            wordsOnly } - each row { n, support, reach, hop, sim, entry, via, w }
+ */
+export function pull(ix, query = {}) {
+  const hops = Math.max(1, Math.min(6, Number(query.hops) || PULL_HOPS));
+  const entryAt = query.entryAt != null ? query.entryAt : ENTRY_AT;
+  const { per, words, unmatched } = wordStage(ix, String(query.text || ''), '', () => true);
+  /* A word the graph does not hold still belongs to the question: it counts in
+   * the similarity at the rarest weight, so no node is 100% of a question it
+   * holds half of. Without it "zzzqqq nothing here" entered at 42 nodes that
+   * say "nothing". Here only: rank() mixes the word score with other signals
+   * and is judged as it is. */
+  const known = per.reduce((s, p) => s + p.idf, 0);
+  const missing = unmatched.length * Math.log((ix.nodes.size + 1) / 0.5);
+  if (missing && known) for (const w of words.values()) w.s = (w.s * known) / (known + missing);
+
+  /* ① entries: by words, by name, by the code a commit touched */
+  const entry = new Map();
+  for (const [id, w] of words) if (w.s >= entryAt) entry.set(id, { by: 'words', sim: w.s });
+  const wanted = regionsFromPaths(ix.commitIndex, query.paths);
+  if (wanted && wanted.size) {
+    for (const n of ix.nodes.values()) {
+      if (n.layer !== 'commit' || !Object.keys(n.regions).length) continue;
+      const cov = coverageScore(wanted, n, ix.regionIdf);
+      if (cov >= entryAt && !entry.has(n.id)) entry.set(n.id, { by: 'code', sim: cov });
+    }
+  }
+  for (const id of query.ids || []) if (ix.nodes.has(id)) entry.set(id, { by: 'named', sim: 1 });
+  /* Nothing at ENTRY_AT: the question is vaguer than the graph, so enter at
+   * the closest few - those within 80% of the best, CLOSEST_MAX at most, the
+   * best first and a node's own text before its reasons. */
+  let closest = null;
+  if (!entry.size && words.size) {
+    const best = Math.max(...[...words.values()].map((w) => w.s));
+    const own = (w) => w.matched.filter((m) => m.own).length;
+    [...words].filter(([, w]) => w.s >= best * CLOSEST)
+      .sort((a, b) => b[1].s - a[1].s || own(b[1]) - own(a[1]) || String(ix.nodes.get(b[0]).created).localeCompare(String(ix.nodes.get(a[0]).created)))
+      .slice(0, CLOSEST_MAX)
+      .forEach(([id, w]) => entry.set(id, { by: 'words', sim: w.s }));
+    closest = best;
+  }
+
+  /* ② strings: every link, both ways, out to `hops` - from each entry at full
+   * strength, and from every weaker word match (RELATED_FLOOR and up) at half
+   * its similarity. Without them a node one link from a 60% match was lost
+   * though rank() finds it - the sidebar commit 5d27166 - and three of the
+   * owner's answers fell to the edge: MRR 0.645 and one lost, against 0.668,
+   * 18 in the top ten and none lost with them (rank() 0.684, 17, none). */
+  const weak = query.weak !== undefined ? query.weak : { from: RELATED_FLOOR, scale: 0.5 };
+  const pullFrom = new Map([...entry.keys()].map((id) => [id, 1]));
+  if (weak) for (const [id, w] of words) if (!entry.has(id) && w.s >= weak.from) pullFrom.set(id, w.s * weak.scale);
+  const got = new Map();
+  for (const [e, strength] of pullFrom) {
+    const seen = new Map([[e, { h: 0 }]]);
+    let front = [e];
+    for (let h = 1; h <= hops; h++) {
+      const next = [];
+      for (const id of front) {
+        for (const x of ix.adj.get(id) || []) {
+          if (seen.has(x.to)) continue;
+          seen.set(x.to, { h, from: id, type: x.type });
+          next.push(x.to);
+        }
+      }
+      front = next;
+    }
+    for (const [id, p] of seen) {
+      const c = strength * HOP ** p.h;
+      const g = got.get(id) || { support: 0, reach: 0, hop: Infinity, best: 0, via: null };
+      g.support += c;
+      g.reach++;
+      g.hop = Math.min(g.hop, p.h);
+      if (p.from && c > g.best) { g.best = c; g.via = { from: p.from, type: p.type }; }
+      got.set(id, g);
+    }
+  }
+
+  /* ③ what comes back: filters decide what is shown, never what is walked */
+  const skip = new Set(query.exclude || []);
+  const list = (v) => (v && v.length ? v : null);
+  const layers = list(query.layers), outcomes = list(query.outcome), kinds = list(query.kind);
+  const shown = (n) => !skip.has(n.id) && (!layers || layers.includes(n.layer)) &&
+    (!outcomes || outcomes.includes(n.outcome)) && (!kinds || kinds.includes(n.kind));
+  const row = (id, g) => {
+    const w = words.get(id);
+    return { n: ix.nodes.get(id), support: g ? g.support : 0, reach: g ? g.reach : 0, hop: g ? g.hop : null,
+      sim: w ? w.s : 0, w, entry: entry.get(id) || null, via: g ? g.via : null };
+  };
+  const order = (a, b) => b.support - a.support || b.sim - a.sim || String(b.n.created).localeCompare(String(a.n.created));
+  const core = [], edge = [];
+  for (const [id, g] of got) {
+    const r = row(id, g);
+    if (!shown(r.n)) continue;
+    (r.entry || g.support >= CORE_AT ? core : edge).push(r);
+  }
+  const wordsOnly = [...words.keys()].filter((id) => !got.has(id) && words.get(id).s >= RELATED_FLOOR)
+    .map((id) => row(id, null)).filter((r) => shown(r.n)).sort((a, b) => b.sim - a.sim);
+  core.sort(order);
+  edge.sort(order);
+  return {
+    words: per.map((p) => p.q), unmatched, hops,
+    entries: entry.size, entered_by: [...entry.values()].reduce((m, e) => ((m[e.by] = (m[e.by] || 0) + 1), m), {}),
+    closest, pulled: got.size, core, edge, wordsOnly
+  };
+}
+
+/* Why a pulled node is on the stack, in one line. */
+function pullWhy(ix, r) {
+  const out = [];
+  if (r.entry) out.push('entry: ' + (r.entry.by === 'named' ? 'named' : r.entry.by === 'code' ? 'touches the named code' : 'words ' + pct(r.entry.sim)));
+  else if (r.w) out.push('words ' + pct(r.sim));
+  if (r.reach) out.push('support ' + r.support.toFixed(2) + ' from ' + r.reach + ' entr' + (r.reach === 1 ? 'y' : 'ies') + (r.hop ? ', nearest ' + r.hop + ' hop' + (r.hop === 1 ? '' : 's') : ''));
+  if (r.via) out.push(r.via.type.startsWith('by:') ? label(ix, r.via.from) + ' ' + r.via.type.slice(3) + ' it' : 'it ' + r.via.type + ' ' + label(ix, r.via.from));
+  return out.join(' · ');
+}
+const pct = (s) => Math.round(s * 100) + '%';
+
 /* ─────────────────────────────────────────────── callers */
 
 /* For a thought being recorded: what on record it most likely continues,
@@ -302,15 +463,22 @@ export function relatedToDraft(ix, { text, also = '', ids = [], exclude = [], to
   return out.results.filter((r) => r.score >= floor);
 }
 
-/* gitx_related: the engine as an agent asks it. One list over commits, the
- * thought graph and the context graph, each result with its status first,
- * its whole sentence - never cut, since a fragment reads as a finished
- * statement (t-ee4606572d) - why it ranked, and the call that reads it in
- * full. An empty answer says which kind of empty it is, as GitX's other
- * readers do. */
-const RELATED_DEFAULT = 8;
-const RELATED_MAX = 25;
+/* gitx_related: the pull as an agent asks it. The core comes in full - status
+ * first, the whole sentence, never cut, since a fragment reads as a finished
+ * statement (t-ee4606572d) - with why it is there and the call that reads it.
+ * The edge, and what words alone found, are counted by layer and topic and
+ * listed with edge: true, one line each and marked cut - the owner's choice on
+ * 5 October: every line of the edge cost 5,500-13,500 tokens a question, since
+ * four hops reach 145-300 nodes of a graph this tied together, while counted it
+ * costs a few lines and stays one call away. The edge's strongest
+ * EDGE_IN_FULL come in full too, also the owner's choice: with the core alone,
+ * 4 of their 18 questions' answers were only counted, though each was within
+ * the stack's first six; with the five strongest of the edge, all 18 are
+ * shown, for ~660 tokens. A broad subject's core is still large - 68 nodes,
+ * ~8,500 tokens for "what is the 4th dimension" - and limit caps it. An empty
+ * answer says which kind of empty it is. */
 const LAYER_NAME = { commit: 'commit', thought: 'thought graph', context: 'context graph' };
+const EDGE_IN_FULL = 5;
 
 export function related(repoDir, args = {}) {
   const query = String(args.query || '').trim();
@@ -322,7 +490,7 @@ export function related(repoDir, args = {}) {
   const layers = Array.isArray(args.layers) && args.layers.length
     ? args.layers.map((l) => ({ 'thought graph': 'thought', 'context graph': 'context', commits: 'commit' }[l] || l))
     : null;
-  const limit = Math.max(1, Math.min(RELATED_MAX, Number(args.limit) || RELATED_DEFAULT));
+  const limit = Number(args.limit) >= 1 ? Math.floor(Number(args.limit)) : Infinity;
 
   const t0 = Date.now();
   const ix = buildRankIndex(repoDir);
@@ -333,9 +501,42 @@ export function related(repoDir, args = {}) {
   const named = ids.map((id) => ix.nodes.has(id) ? id : ([...ix.nodes.values()].find((n) => n.short && id.length >= 7 && n.id.startsWith(id)) || {}).id).filter(Boolean);
 
   const list = (v) => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : null);
-  const filters = { layers, outcome: list(args.outcome), kind: list(args.kind), limit };
+  const filters = { layers, outcome: list(args.outcome), kind: list(args.kind) };
   const t1 = Date.now();
-  const out = rank(ix, { text: query, ids: named, paths, topic: args.topic || null, ...filters });
+  const out = pull(ix, { text: query, ids: named, paths, hops: args.hops, ...filters });
+  /* A topic named by the caller goes first within each group; it is not a
+   * filter, since what is linked to it from elsewhere belongs on the stack. */
+  if (args.topic) for (const g of [out.core, out.edge, out.wordsOnly]) g.sort((a, b) => (b.n.topic === args.topic) - (a.n.topic === args.topic));
+  const stack = [...out.core, ...out.edge, ...out.wordsOnly];
+  const coreFull = out.core.slice(0, limit);
+  const edgeFull = out.edge.slice(0, EDGE_IN_FULL);
+  const inFull = [...coreFull, ...edgeFull];
+  const rest = [...out.core.slice(coreFull.length), ...out.edge.slice(edgeFull.length)];
+  const onEdge = new Set(edgeFull);
+
+  const full = (r) => {
+    const n = r.n;
+    return prune({
+      id: n.layer === 'commit' ? n.short : n.id,
+      on: onEdge.has(r) ? 'edge' : 'core',
+      status: statusOf(ix, n),
+      text: n.text,
+      held_back_by: n.outcome === 'rejected' && n.held.length ? n.held : undefined,
+      code: n.layer === 'commit' ? codeOf(n) : undefined,
+      topic: n.topic ? topicName(ix, n.topic) : undefined,
+      in: LAYER_NAME[n.layer],
+      why: pullWhy(ix, r),
+      read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short + ' - code: true for the lines it changed' : 'gitx_thought id ' + n.id
+    });
+  };
+  /* One line: the id, the status, the first words - cut, and marked cut. */
+  const line = (r) => {
+    const n = r.n;
+    const words = String(n.text).split(/\s+/);
+    return (n.layer === 'commit' ? n.short : n.id) + ' · ' + statusOf(ix, n) + ' · ' +
+      (words.length > 14 ? words.slice(0, 14).join(' ') + ' …' : n.text) + ' · support ' + r.support.toFixed(2);
+  };
+
   /* For GitX Monitor only (t-0156b1d6c5): what GitX did with the question and
    * the layers it arranged the answer in. server.js takes this off before the
    * answer reaches the agent, so it costs the agent nothing. */
@@ -343,10 +544,15 @@ export function related(repoDir, args = {}) {
     phases: {
       processing: { nodes: ix.nodes.size, ...count, ms: indexMs },
       search: { words: out.words, unmatched: out.unmatched, ids: named, paths, topic: args.topic || null },
-      results: { candidates: out.candidates, matched: out.matched, signals: out.signals, ms: Date.now() - t1 },
-      filtering: { layers: layers || 'all', outcome: filters.outcome, kind: filters.kind, limit, returned: out.results.length }
+      results: {
+        entries: out.entries, entered_by: out.entered_by, closest: out.closest, hops: out.hops, pulled: out.pulled,
+        candidates: out.pulled + out.wordsOnly.length, matched: stack.length, ms: Date.now() - t1
+      },
+      filtering: { layers: layers || 'all', outcome: filters.outcome, kind: filters.kind, limit,
+        core: out.core.length, edge: out.edge.length, words_only: out.wordsOnly.length, returned: inFull.length }
     },
-    stack: stackOf(ix, out.results)
+    stack: stackOf(ix, out.core.map((r) => ({ ref: r.n.id, score: +r.support.toFixed(3), why: [pullWhy(ix, r)] })),
+      [...out.edge, ...out.wordsOnly].map((r) => r.n.id))
   };
   const head = {
     searched: count,
@@ -354,34 +560,41 @@ export function related(repoDir, args = {}) {
     not_in_the_graph: out.unmatched.length ? out.unmatched : undefined,
     unknown_ids: unknown.length ? unknown : undefined
   };
-  if (!out.results.length) {
+  if (!stack.length) {
     return prune({
       ...head, results: [],
       nothing_on_record: 'Nothing in the commits, the settled thoughts or the waiting ones relates to this. That is not evidence it was never considered - only that nothing recorded says so in these words. Try other words, or name a file with paths.',
       _monitor
     });
   }
+  const by = (rows) => rows.reduce((m, r) => ((m[LAYER_NAME[r.n.layer]] = (m[LAYER_NAME[r.n.layer]] || 0) + 1), m), {});
+  /* The edge counted: how many, in which layers, under which topics - enough
+   * to tell whether it is worth listing. */
+  const topics = (rows) => {
+    const m = new Map();
+    for (const r of rows) { const t = r.n.topic ? topicName(ix, r.n.topic) : r.n.layer === 'commit' ? 'commits (no topic)' : 'no topic yet'; m.set(t, (m.get(t) || 0) + 1); }
+    return Object.fromEntries([...m].sort((a, b) => b[1] - a[1]).slice(0, 8));
+  };
+  const counted = (rows, extra = {}) => prune({ nodes: rows.length, layers: by(rows), topics: topics(rows), ...extra, list: 'Ask again with edge: true to list each, one line and cut.' });
   return prune({
     _monitor,
     ...head,
-    matched: out.matched,
-    returned: out.results.length,
-    results: out.results.map((r) => {
-      const n = ix.nodes.get(r.ref);
-      return prune({
-        id: r.id,
-        hash: n.layer === 'commit' ? n.short : undefined,
-        status: statusOf(ix, n),
-        text: n.text,
-        held_back_by: n.outcome === 'rejected' && n.held.length ? n.held : undefined,
-        code: n.layer === 'commit' ? codeOf(n) : undefined,
-        topic: r.topic,
-        in: LAYER_NAME[n.layer],
-        why: r.why.join(' · '),
-        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short + ' - code: true for the lines it changed' : 'gitx_thought id ' + n.id
-      });
-    }),
-    how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'
+    entered: out.closest != null
+      ? 'No node holds ' + pct(ENTRY_AT) + ' of the question\'s words (the closest ' + pct(out.closest) + ') - entered at the ' + out.entries + ' closest.'
+      : 'At ' + out.entries + ' node' + (out.entries === 1 ? '' : 's') + (out.entered_by.words ? ' holding ' + pct(ENTRY_AT) + ' or more of the question\'s words' : '') +
+        (out.entered_by.named ? (out.entered_by.words ? ', ' : ' ') + out.entered_by.named + ' named' : '') +
+        (out.entered_by.code ? ', ' + out.entered_by.code + ' by the code named' : '') + '.',
+    pulled: 'Every link from the entries, ' + out.hops + ' hops out: ' + out.pulled + ' nodes, ' + out.core.length + ' of them in the core.',
+    core: by(out.core),
+    results: inFull.map(full),
+    edge: rest.length
+      ? (args.edge ? rest.map(line) : counted(rest, { of_them_core_beyond_limit: out.core.length > inFull.length ? out.core.length - inFull.length : undefined }))
+      : undefined,
+    words_only: out.wordsOnly.length
+      ? (args.edge ? out.wordsOnly.map((r) => line(r).replace(/ · support .*$/, ' · words ' + pct(r.sim))) : counted(out.wordsOnly))
+      : undefined,
+    further: out.hops < 6 ? 'hops: ' + (out.hops + 1) + ' pulls one ring further.' : undefined,
+    how_to_use: 'This is the stack for the question. results is the core in full - what many of the links from the entries reach, strongest first - then the strongest few of the edge, each marked on: edge. edge is the rest of what the links reach - a single long string each - and words_only what the question\'s words found that no link reaches: counted here, listed one line each and CUT with edge: true; read one with gitx_thought id or gitx_graph_commit hash before relying on it. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back.'
   });
 }
 
@@ -396,7 +609,7 @@ function prune(o) {
  * it, and the links between all of them. An agent reading code with its own
  * Read or Grep is still unseen until the hook event log; going down through
  * gitx_graph_commit with code is seen. */
-function stackOf(ix, results) {
+function stackOf(ix, results, edgeIds = []) {
   const nodes = [];
   const byRef = new Map();
   const place = (n, role, extra = {}) => {
@@ -422,6 +635,10 @@ function stackOf(ix, results) {
       links.push([node.id, e.type, byRef.get(e.to).id]);
     }
   }
+  /* The edge of the pull (t-8e3f4c2aa9): on the stack, so an agent opening
+   * one is still on it, but drawn as dots with no links and no code under
+   * them - a few hundred lines between them would hide the core. */
+  for (const id of edgeIds) if (ix.nodes.has(id) && !byRef.has(id)) place(ix.nodes.get(id), 'edge');
   /* One layer down (t-4f0de6c907): under each commit, every region it
    * changed, largest share first. A region two of them changed is one node
    * with a link from each - where two commits met in the code. `major` marks
@@ -430,7 +647,7 @@ function stackOf(ix, results) {
    * still on it. */
   const code = new Map();
   for (const [ref, node] of byRef) {
-    if (node.layer !== 'commit') continue;
+    if (node.layer !== 'commit' || node.role === 'edge') continue;
     const regions = Object.entries(ix.nodes.get(ref).regions || {}).sort((a, b) => b[1] - a[1]);
     regions.forEach(([region, share], i) => {
       const id = 'code:' + region;

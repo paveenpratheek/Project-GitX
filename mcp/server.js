@@ -387,7 +387,7 @@ const TOOLS = [
    * everything GitX holds, where the tools above each search one part. */
   {
     name: 'gitx_related',
-    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting, ranked together - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. Each result gives its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its full text, why it ranked, and the call that reads it in full. Results are pointers: read one before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. GitX enters at the nodes that hold most of your words, pulls every link from them across commits and both thought graphs four hops out, and answers with the stack: the core - what many of those links reach - in full, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its whole text, why it is there and the call that reads it; and the edge - what a single long link reaches - counted, listed with edge: true. Read a result before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -398,7 +398,9 @@ const TOOLS = [
         layers: { type: 'array', items: { type: 'string', enum: ['commit', 'thought', 'context'] }, description: 'Only these: commit, thought (settled), context (waiting). Default all three.' },
         outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only thoughts with these outcomes - "rejected" for ideas turned down, "open" for questions nobody has settled.' },
         kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'Only thoughts of these kinds.' },
-        limit: { type: 'number', description: 'Maximum results. Defaults to 8, at most 25.' },
+        edge: { type: 'boolean', description: 'Also list the edge and what words alone found, one line each and cut - the rest of the stack, beyond the core.' },
+        hops: { type: 'number', description: 'How far the links are pulled from the entries. Defaults to 4, at most 6.' },
+        limit: { type: 'number', description: 'Most of the core to give in full; the rest of it is counted with the edge. Default: the whole core.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in - pass this whenever you mean a DIFFERENT project.' }
       },
       required: []

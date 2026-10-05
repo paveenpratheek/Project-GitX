@@ -29,7 +29,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { buildRankIndex, rank, relatedToDraft } from './tools/rank.js';
+import { buildRankIndex, rank, relatedToDraft, pull } from './tools/rank.js';
 import { searchContext, searchThoughts, similarThoughts } from './tools/thought-query.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
@@ -136,16 +136,30 @@ for (const c of cases) {
   const t = Date.now();
   const out = engine(c);
   const ms = Date.now() - t;
-  rows.push({ c, eng: engineRank(out.results, c.expect), base: baseline(c), ms, out });
+  rows.push({ c, eng: engineRank(out.results, c.expect), base: baseline(c), ms, out, stack: stackRank(c) });
+}
+
+/* The stack gitx_related answers with (t-8e3f4c2aa9): where the expected node
+ * sits in its order - the core, then the edge, then what words alone found -
+ * and in which of them. A question only: a draft being recorded is asked of
+ * rank() through relatedToDraft. */
+function stackRank(c) {
+  if (c.mode !== 'query') return null;
+  const p = pull(ix, { text: c.q, layers: c.layers || null });
+  const order = [...p.core, ...p.edge, ...p.wordsOnly];
+  const i = order.findIndex((r) => c.expect.some((e) => same(r.n.id, e) || (r.n.commit && same(r.n.commit, e))));
+  if (i < 0) return { rank: null, group: 'lost' };
+  return { rank: i + 1, group: i < p.core.length ? 'core' : i < p.core.length + p.edge.length ? 'edge' : 'words' };
 }
 
 const fmt = (r) => (r === null ? '—' : String(r));
 console.log(`\nranking engine on ${path.basename(repo)}: ${ix.nodes.size} nodes indexed in ${built} ms\n`);
-console.log('case'.padEnd(24) + 'engine'.padStart(7) + 'today'.padStart(7) + '   ms');
+console.log('case'.padEnd(24) + 'engine'.padStart(7) + 'today'.padStart(7) + '   ms' + '     stack');
 for (const r of rows) {
   if (r.missing) { console.log(r.c.id.padEnd(24) + '   expected id not on record: ' + r.missing.join(', ')); continue; }
-  const mark = r.eng !== null && (r.base === null || r.eng < r.base) ? '  ▲' : (r.base !== null && (r.eng === null || r.eng > r.base) ? '  ▼' : '');
-  console.log(r.c.id.padEnd(24) + fmt(r.eng).padStart(7) + fmt(r.base).padStart(7) + String(r.ms).padStart(5) + mark);
+  const mark = r.eng !== null && (r.base === null || r.eng < r.base) ? '  ▲' : (r.base !== null && (r.eng === null || r.eng > r.base) ? '  ▼' : '   ');
+  console.log(r.c.id.padEnd(24) + fmt(r.eng).padStart(7) + fmt(r.base).padStart(7) + String(r.ms).padStart(5) + mark +
+    (r.stack ? '  ' + (r.stack.rank === null ? 'lost' : r.stack.rank + ' (' + r.stack.group + ')') : ''));
   if (verbose) {
     console.log('    ' + (r.c.q || 'record as ' + r.c.as) + '\n    words: ' + r.out.words.join(' ') + (r.out.unmatched.length ? '   unmatched: ' + r.out.unmatched.join(' ') : ''));
     for (const x of r.out.results.slice(0, 5)) {
@@ -161,3 +175,14 @@ const mrr = (key) => (scored.reduce((s, r) => s + (r[key] ? 1 / r[key] : 0), 0) 
 console.log(`\n${scored.length} cases        engine   today`);
 for (const k of [1, 3, 5, 10]) console.log(`  in top ${String(k).padEnd(3)}      ${String(at('eng', k)).padStart(6)}  ${String(at('base', k)).padStart(6)}`);
 console.log(`  MRR           ${mrr('eng').padStart(6)}  ${mrr('base').padStart(6)}\n`);
+
+const asked = scored.filter((r) => r.stack);
+if (asked.length) {
+  const engOf = asked.map((r) => r.eng), stOf = asked.map((r) => r.stack.rank);
+  const mrrOf = (list) => (list.reduce((s, x) => s + (x ? 1 / x : 0), 0) / list.length).toFixed(3);
+  const groups = asked.reduce((m, r) => ((m[r.stack.group] = (m[r.stack.group] || 0) + 1), m), {});
+  console.log(`${asked.length} questions    engine   stack`);
+  for (const k of [1, 3, 10]) console.log(`  in top ${String(k).padEnd(3)}      ${String(engOf.filter((x) => x && x <= k).length).padStart(6)}  ${String(stOf.filter((x) => x && x <= k).length).padStart(6)}`);
+  console.log(`  MRR           ${mrrOf(engOf).padStart(6)}  ${mrrOf(stOf).padStart(6)}`);
+  console.log(`  the expected node is in the stack's ${Object.entries(groups).map(([g, n]) => g + ' ' + n).join(', ')}\n`);
+}
