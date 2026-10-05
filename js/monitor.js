@@ -20,7 +20,7 @@
     { layer: 'context', name: 'Context graph', sub: 'waiting · beside the stack', cls: 'ctx' },
     { layer: 'thought', name: 'L3 · Thoughts', sub: 'settled reasoning', cls: 'l3' },
     { layer: 'commit', name: 'L2 · Commits', sub: 'what changed', cls: 'l2' },
-    { layer: 'code', name: 'L1 · Code', sub: 'seen once the hooks are in', cls: 'l1' }
+    { layer: 'code', name: 'L1 · Code', sub: 'what each commit changed', cls: 'l1' }
   ];
   const MOVE_WORD = { enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to' };
   const STEP_MS = 900;
@@ -47,7 +47,21 @@
   };
   const time = (iso) => { try { return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); } catch (_) { return ''; } };
   const day = (iso) => { try { const d = new Date(iso); return d.toDateString() === new Date().toDateString() ? 'today' : d.toLocaleDateString([], { day: 'numeric', month: 'short' }); } catch (_) { return ''; } };
-  const label = (id) => (/^t-/.test(id) ? id.slice(0, 8) : String(id).slice(0, 7));
+  const label = (id) => {
+    const s = String(id);
+    if (/^t-/.test(s)) return s.slice(0, 8);
+    if (s.startsWith('code:')) return codeName(s.slice(5));
+    return s.slice(0, 7);
+  };
+  /* A region in a few characters: the file's name and the declaration's -
+   * "rank.js statusOf", "gitx.css .mon-node". */
+  const codeName = (region) => {
+    const [file, decl] = region.split('::');
+    const base = file.split('/').pop();
+    if (!decl || decl === '*') return base;
+    const m = decl.match(/([A-Za-z_$][\w$]*)\s*\(/) || decl.match(/[.#]?[A-Za-z_$][\w$-]*/);
+    return base + ' ' + (m ? m[1] || m[0] : decl).slice(0, 16);
+  };
   const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const sameRepo = (r) => !repo || !r || norm(r) === norm(repo);
   const ask = (rec) => (rec.question && rec.question.query) || [].concat(rec.question && rec.question.ids || [], rec.question && rec.question.paths || []).join(', ') || '(no words)';
@@ -170,7 +184,7 @@
   function logHtml(rec) {
     const g = rec.gitx || {};
     const p = g.processing || {}, s = g.search || {}, r = g.results || {}, f = g.filtering || {};
-    const by = { context: 0, thought: 0, commit: 0 };
+    const by = { context: 0, thought: 0, commit: 0, code: 0 };
     for (const n of (rec.stack && rec.stack.nodes) || []) by[n.layer] = (by[n.layer] || 0) + 1;
     const lines = [
       ['prompt', 'Prompt', '“' + esc(ask(rec)) + '”', esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at))],
@@ -179,7 +193,7 @@
         (s.unmatched && s.unmatched.length ? 'not in the graph: ' + esc(s.unmatched.join(' ')) : 'every word found in the graph') + (s.paths && s.paths.length ? ' · paths: ' + esc(s.paths.join(', ')) : '')],
       ['results', 'Results', (r.candidates || 0) + ' candidates → ' + (r.matched || 0) + ' matched', esc('signals: ' + (r.signals || []).join(', ') + ' · ' + (r.ms || 0) + ' ms')],
       ['filter', 'Filtering', 'kept ' + (f.returned || 0) + ' of ' + (r.matched || 0), esc('layers: ' + (Array.isArray(f.layers) ? f.layers.join(', ') : f.layers || 'all') + (f.outcome ? ' · outcome: ' + f.outcome.join(', ') : '') + (f.kind ? ' · kind: ' + f.kind.join(', ') : '') + ' · limit ' + (f.limit || ''))],
-      ['layers', 'Building the layers', 'context ' + by.context + ' · L3 ' + by.thought + ' · L2 ' + by.commit + ' · L1 0', ((rec.stack && rec.stack.links) || []).length + ' links between them']
+      ['layers', 'Building the layers', 'context ' + by.context + ' · L3 ' + by.thought + ' · L2 ' + by.commit + ' · L1 ' + by.code, ((rec.stack && rec.stack.links) || []).length + ' links between them']
     ];
     let html = lines.map(([k, h, main, sub], i) =>
       '<li class="mon-l mon-l-' + k + '" style="--i:' + i + '"><span class="mon-l-h">' + h + '</span><span class="mon-l-main">' + main + '</span><span class="mon-l-sub">' + sub + '</span></li>').join('');
@@ -242,9 +256,10 @@
   }
 
   function buildTime(rec) {
-    const n = (rec.stack && rec.stack.nodes ? rec.stack.nodes.length : 0);
-    return 4 * 90 + n * 70 + 500;
+    const nodes = (rec.stack && rec.stack.nodes) || [];
+    return 4 * 90 + nodes.reduce((s, n) => s + nodeStep(n), 0) + 500;
   }
+  const nodeStep = (n) => (n.layer === 'code' ? 12 : 70);
 
   function stopReplay() { if (replayTimer) { clearTimeout(replayTimer); clearInterval(replayTimer); replayTimer = null; } }
 
@@ -272,9 +287,53 @@
     for (const band of bands) {
       const mine = nodes.filter((n) => n.layer === band.layer);
       const x0 = band.x + 150, x1 = band.x + band.w - offW;
+      if (band.layer === 'code') { placeCode(mine, band, placed, x1); continue; }
       mine.forEach((n, i) => placed.set(n.id, { x: x0 + (i + 0.5) * ((x1 - x0) / mine.length), y: band.y + band.h / 2 + 4, band, node: n }));
     }
     return { W, H, bands, placed, offX: W - right - offW / 2 };
+  }
+
+  /* The code sits under the commit that changed it - a small grid of chips
+   * below each commit, its largest regions full size and the rest small, and
+   * only the largest named, since a commit can change thirty regions and the
+   * band is one row of commits wide. Every chip names itself on hover. A
+   * region two commits changed sits under the first, linked from both. */
+  function placeCode(mine, band, placed, x1) {
+    const groups = new Map();
+    for (const n of mine) {
+      const at = (n.commits || []).map((id) => placed.get(id)).filter(Boolean).sort((a, b) => a.x - b.x)[0];
+      const key = at ? at.node.id : '';
+      if (!groups.has(key)) groups.set(key, { x: at ? at.x : x1 - 20, list: [] });
+      groups.get(key).list.push(n);
+    }
+    const dx = 13, dy = 13;
+    const list = [...groups.values()].sort((a, b) => a.x - b.x);
+    for (const g of list) {
+      g.list.sort((a, b) => (b.major - a.major) || (b.share || 0) - (a.share || 0));
+      g.cols = Math.max(4, Math.ceil(g.list.length / 6));
+      g.rows = Math.ceil(g.list.length / g.cols);
+    }
+    /* Every grid hangs from one line and every label sits on one baseline
+     * under the tallest; neighbouring commits sit closer than a label is
+     * wide in a narrow window, so every other label drops a line. */
+    const tallest = Math.max(1, ...list.map((g) => g.rows));
+    const y0 = band.y + Math.max(30, band.h / 2 - ((tallest - 1) * dy) / 2 - 8);
+    const base = y0 + (tallest - 1) * dy + 18;
+    /* As many label rows as the closest pair of commits needs (at most three),
+     * and each label cut to the room that leaves it. */
+    const gap = list.length > 1 ? Math.min(...list.slice(1).map((g, i) => g.x - list[i].x)) : Infinity;
+    const levels = Math.min(3, Math.max(1, Math.ceil(150 / gap)));
+    const room = Math.max(6, Math.floor((gap * levels - 10) / 6.4));
+    list.forEach((g, gi) => {
+      g.list.forEach((n, i) => {
+        const c = i % g.cols, r = Math.floor(i / g.cols);
+        const x = g.x + (c - (g.cols - 1) / 2) * dx, y = y0 + r * dy;
+        placed.set(n.id, {
+          x, y, band, node: n, minor: !n.major,
+          labelled: i === 0, labelX: g.x - x, labelY: base + (gi % levels) * 13 - y, labelMax: room
+        });
+      });
+    });
   }
 
   function drawStack(rec, animate) {
@@ -305,8 +364,10 @@
     const nodeLayer = svg('g', { class: 'mon-nodes' }, root);
     const nodeDelay0 = BANDS.length * 90 + 150;
     let k = 0;
-    for (const [id, p] of L.placed) { pos.set(id, p); drawNode(nodeLayer, p, false, nodeDelay0 + (k++) * 70); }
-    const linkDelay = nodeDelay0 + k * 70;
+    /* Code chips pop quickly after one another: there can be dozens. */
+    let t = nodeDelay0;
+    for (const [id, p] of L.placed) { pos.set(id, p); drawNode(nodeLayer, p, false, t); t += nodeStep(p.node); k++; }
+    const linkDelay = t;
     ((rec.stack && rec.stack.links) || []).forEach(([a, type, b], i) => {
       const pa = pos.get(a), pb = pos.get(b);
       if (!pa || !pb) return;
@@ -330,13 +391,20 @@
 
   function drawNode(parent, p, off, delay) {
     const n = p.node;
-    const g = svg('g', { class: 'mon-node mon-n-' + n.layer + ' ' + statusClass(n) + (off ? ' mon-n-offstack' : '') + (n.role === 'via' ? ' mon-n-via' : ''),
+    const g = svg('g', { class: 'mon-node mon-n-' + n.layer + ' ' + statusClass(n) + (off ? ' mon-n-offstack' : '') + (n.role === 'via' ? ' mon-n-via' : '') + (p.minor ? ' mon-n-minor' : ''),
       transform: 'translate(' + p.x + ' ' + p.y + ')', style: delay != null ? '--d:' + delay + 'ms' : null, 'data-id': n.id }, parent);
     const shape = svg('g', { class: 'mon-n-shape' }, g);
     if (n.layer === 'commit') svg('rect', { x: -9, y: -9, width: 18, height: 18, rx: 4, class: 'mon-n-body' }, shape);
-    else svg('circle', { r: 9, class: 'mon-n-body' }, shape);
+    else if (n.layer === 'code') {
+      const s = p.minor ? 3 : 5;
+      svg('rect', { x: -s, y: -s, width: 2 * s, height: 2 * s, rx: 1.5, class: 'mon-n-body' }, shape);
+    } else svg('circle', { r: 9, class: 'mon-n-body' }, shape);
     if (n.rank === 1) svg('circle', { r: 14, class: 'mon-n-entry' }, shape);
-    svg('text', { y: 26, 'text-anchor': 'middle', class: 'mon-n-label' }, g).textContent = label(n.id);
+    if (p.labelled !== false) {
+      const name = label(n.id);
+      svg('text', { x: p.labelX || 0, y: p.labelY || 26, 'text-anchor': 'middle', class: 'mon-n-label' }, g).textContent =
+        p.labelMax && name.length > p.labelMax ? name.slice(0, p.labelMax - 1) + '…' : name;
+    }
     if (n.rank) svg('text', { x: 12, y: -10, class: 'mon-n-rank' }, g).textContent = n.rank;
     g.addEventListener('mouseenter', (e) => tip(e, n, off));
     g.addEventListener('mouseleave', () => { els.tip.hidden = true; });
@@ -355,9 +423,10 @@
   function tip(e, n, off) {
     const box = els.canvas.getBoundingClientRect();
     els.tip.innerHTML = '<div class="mon-tip-h">' + esc(n.status || layerName(n.layer)) + (off ? ' · off the stack' : '') + '</div>' +
-      '<div class="mon-tip-id">' + esc(n.id) + (n.topic ? ' · ' + esc(n.topic) : '') + '</div>' +
+      (n.layer === 'code' ? '' : '<div class="mon-tip-id">' + esc(n.id) + (n.topic ? ' · ' + esc(n.topic) : '') + '</div>') +
       (n.text ? '<div class="mon-tip-t">' + esc(n.text) + '</div>' : '') +
-      (n.why ? '<div class="mon-tip-w">' + esc(n.why) + '</div>' : '');
+      (n.why ? '<div class="mon-tip-w">' + esc(n.why) + '</div>' : '') +
+      (n.commits ? '<div class="mon-tip-w">changed by ' + esc(n.commits.join(', ')) + (n.share ? ' · ' + Math.round(n.share * 100) + '% of its change' : '') + '</div>' : '');
     els.tip.hidden = false;
     els.tip.style.left = Math.min(box.width - 300, e.clientX - box.left + 14) + 'px';
     els.tip.style.top = Math.max(8, e.clientY - box.top - 10) + 'px';

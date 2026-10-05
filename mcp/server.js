@@ -17,6 +17,7 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related } from './tools/rank.js';
+import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
  * broker for GitX Monitor. Its own module and folder; the only coupling is the
@@ -331,11 +332,14 @@ const TOOLS = [
   },
   {
     name: 'gitx_graph_commit',
-    description: 'One commit in full: its whole message (and the original git subject if a fuller message was written later), what it builds on and what was built on it, its line of work and thread, and the exact files and code regions it changed. Read those regions before describing how something works today.',
+    description: 'One commit in full: its whole message (and the original git subject if a fuller message was written later), what it builds on and what was built on it, its line of work and thread, and the exact files and code regions it changed. Pass code: true to go down to the code itself - the lines it added and removed, exactly as git has them, under each region - with region to read one region, file or folder whole, and today: true for where each region\'s declaration is now. Read those regions before describing how something works today.',
     inputSchema: {
       type: 'object',
       properties: {
         hash: { type: 'string', description: 'Commit hash or prefix (at least 4 characters).' },
+        code: { type: 'boolean', description: 'Also return the code this commit changed: its added (+) and removed (-) lines per region, largest first, up to 400 lines.' },
+        region: { type: 'string', description: 'With code: only this region ("file::declaration"), file, folder ("dir/") or declaration name - returned whole.' },
+        today: { type: 'boolean', description: 'With code: say where each region\'s declaration is in the working tree now, or that it was renamed or removed since.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
       required: ['hash']
@@ -1022,7 +1026,16 @@ async function handleToolCall(name, args) {
       if (name === 'gitx_graph_map') return reply({ ...head, ...graphMap(graph) });
       if (name === 'gitx_graph_area') return reply({ ...head, ...graphArea(graph, args.name) });
       if (name === 'gitx_graph_chain') return reply({ ...head, ...graphChain(graph, args.hash, args.limit) });
-      return reply({ ...head, ...graphCommit(graph, args.hash) });
+      const commit = graphCommit(graph, args.hash);
+      if (!args.code || commit.error) return reply({ ...head, ...commit });
+      /* Down a layer (t-4f0de6c907): the code under the commit, in place of
+       * the region names, which the code repeats with its lines. */
+      const { regions, how_to_use, ...rest } = commit;
+      return reply({
+        ...head, ...rest,
+        ...commitCode(target.dir, commit.hash, { region: args.region, today: !!args.today }),
+        how_to_use: 'code is what this commit added (+) and removed (-), exactly as git has it, under the region the index names - "at" is where those lines were in that commit. With today: true each region says where its declaration is now, or that it is gone. The message says what was intended; the code is what was done. Before describing how something works TODAY, read the file where today points.'
+      });
     }
 
     case 'gitx_thought_history': {

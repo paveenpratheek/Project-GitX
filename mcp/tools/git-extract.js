@@ -44,46 +44,78 @@ export function normalizeContext(raw) {
 }
 
 /**
- * Parse unified-diff text (produced with -U0) into changed lines per region.
- * A region key is `path::enclosing declaration`, taken from git's own hunk
- * header - a NAME, not a coordinate, so it survives the file growing above it.
+ * Parse unified-diff text (produced with -U0) into its hunks, each under the
+ * region it changed. A region key is `path::enclosing declaration`, taken
+ * from git's own hunk header - a NAME, not a coordinate, so it survives the
+ * file growing above it.
+ *
+ * The one place a region key is made: parseHunks counts these for the index,
+ * and the code under a commit (commit-code.js) shows their lines, so the code
+ * an agent opens is filed under exactly the key the index scored.
+ *
+ * Each hunk: { file, region, context, file_status ('added' | 'deleted' |
+ * null), old: {start, lines}, new: {start, lines}, lines: ['+...', '-...'] }.
+ * A binary file is one hunk with binary: true and no lines; it names no region.
  * @param {string} patchText
- * @returns {{regions: Map<string, number>, hunks: number, withContext: number}}
  */
-export function parseHunks(patchText) {
-  const regions = new Map();
+export function parseHunkBlocks(patchText) {
+  const blocks = [];
   let curFile = null;
-  let curRegion = null;
-  let hunks = 0;
-  let withContext = 0;
+  let fileStatus = null;
+  let cur = null;
 
   for (const line of (patchText || '').split(/\r?\n/)) {
     if (line.startsWith('diff --git ')) {
       const m = line.match(/ b\/(.+)$/);
       curFile = m ? m[1] : null;
-      curRegion = null;
+      fileStatus = null;
+      cur = null;
+      continue;
+    }
+    if (line.startsWith('new file')) { fileStatus = 'added'; continue; }
+    if (line.startsWith('deleted file')) { fileStatus = 'deleted'; continue; }
+    if (line.startsWith('Binary files')) {
+      if (curFile) blocks.push({ file: curFile, region: curFile + '::*', context: '', file_status: fileStatus, binary: true, lines: [] });
       continue;
     }
     if (line.startsWith('--- ') || line.startsWith('+++ ') || line.startsWith('index ') ||
-        line.startsWith('new file') || line.startsWith('deleted file') ||
-        line.startsWith('similarity ') || line.startsWith('Binary files')) continue;
+        line.startsWith('similarity ')) continue;
 
     if (line.startsWith('@@')) {
-      const m = line.match(/^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@(.*)$/);
+      const m = line.match(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/);
       if (!m || !curFile) continue;
-      hunks++;
-      const ctx = normalizeContext(m[1]);
-      if (ctx) withContext++;
+      const ctx = normalizeContext(m[5]);
       /* no usable declaration -> whole-file key. Degrades to file-level
        * resolution for that hunk rather than dropping it. */
-      curRegion = curFile + '::' + (ctx || '*');
-      if (!regions.has(curRegion)) regions.set(curRegion, 0);
+      cur = {
+        file: curFile, region: curFile + '::' + (ctx || '*'), context: ctx, file_status: fileStatus,
+        old: { start: +m[1], lines: m[2] === undefined ? 1 : +m[2] },
+        new: { start: +m[3], lines: m[4] === undefined ? 1 : +m[4] },
+        lines: []
+      };
+      blocks.push(cur);
       continue;
     }
 
-    if (curRegion && (line.startsWith('+') || line.startsWith('-'))) {
-      regions.set(curRegion, regions.get(curRegion) + 1);
-    }
+    if (cur && (line.startsWith('+') || line.startsWith('-'))) cur.lines.push(line);
+  }
+  return blocks;
+}
+
+/**
+ * Changed lines per region, for the index.
+ * @param {string} patchText
+ * @returns {{regions: Map<string, number>, hunks: number, withContext: number}}
+ */
+export function parseHunks(patchText) {
+  const regions = new Map();
+  let hunks = 0;
+  let withContext = 0;
+  for (const b of parseHunkBlocks(patchText)) {
+    if (b.binary) continue;
+    hunks++;
+    if (b.context) withContext++;
+    regions.set(b.region, (regions.get(b.region) || 0) + b.lines.length);
   }
   return { regions, hunks, withContext };
 }

@@ -244,7 +244,13 @@ function stepOf(tool, args, body, error) {
     case 'gitx_graph_commit':
     case 'gitx_graph_chain':
       if (!args.hash) return null;
-      return { kind: 'open', tool, node: { id: String(args.hash), layer: 'commit', text: body && body.commit ? String(body.commit.subject || '').slice(0, 160) : undefined } };
+      /* Down to the code under the commit (t-4f0de6c907): the step lands on
+       * the region asked for, or the one the commit changed most. */
+      if (tool === 'gitx_graph_commit' && args.code && body && body.code && body.code.length) {
+        const region = body.code[0].region;
+        return { kind: 'open', tool, node: { id: 'code:' + region, layer: 'code', text: region, commit: String(body.short || args.hash) } };
+      }
+      return { kind: 'open', tool, node: { id: String(args.hash), layer: 'commit', text: body && body.subject ? String(body.subject).slice(0, 160) : undefined } };
     case 'gitx_graph_area':
     case 'gitx_graph_map':
       return { kind: 'overview', tool, what: args.name || 'map' };

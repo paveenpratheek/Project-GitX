@@ -374,10 +374,11 @@ export function related(repoDir, args = {}) {
         status: statusOf(ix, n),
         text: n.text,
         held_back_by: n.outcome === 'rejected' && n.held.length ? n.held : undefined,
+        code: n.layer === 'commit' ? codeOf(n) : undefined,
         topic: r.topic,
         in: LAYER_NAME[n.layer],
         why: r.why.join(' · '),
-        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short : 'gitx_thought id ' + n.id
+        read: n.layer === 'commit' ? 'gitx_graph_commit hash ' + n.short + ' - code: true for the lines it changed' : 'gitx_thought id ' + n.id
       });
     }),
     how_to_use: 'Results are pointers, best first across commits, settled reasoning and thinking still waiting. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back. Read a result in full with the call in its "read" field before relying on anything it does not show.'
@@ -391,8 +392,10 @@ function prune(o) {
 
 /* The answer arranged in the layers, for GitX Monitor: every result in its
  * layer, the commit each settled result was carried out in (shown as reached
- * through it, since the result names it), and the links between all of them.
- * L1 stays empty until the hook event log can see the agent read code. */
+ * through it, since the result names it), the code each commit changed under
+ * it, and the links between all of them. An agent reading code with its own
+ * Read or Grep is still unseen until the hook event log; going down through
+ * gitx_graph_commit with code is seen. */
 function stackOf(ix, results) {
   const nodes = [];
   const byRef = new Map();
@@ -419,8 +422,45 @@ function stackOf(ix, results) {
       links.push([node.id, e.type, byRef.get(e.to).id]);
     }
   }
+  /* One layer down (t-4f0de6c907): under each commit, every region it
+   * changed, largest share first. A region two of them changed is one node
+   * with a link from each - where two commits met in the code. `major` marks
+   * a commit's largest few, the ones GitX Monitor names; the rest are drawn
+   * small but are on the stack all the same, so an agent opening one is
+   * still on it. */
+  const code = new Map();
+  for (const [ref, node] of byRef) {
+    if (node.layer !== 'commit') continue;
+    const regions = Object.entries(ix.nodes.get(ref).regions || {}).sort((a, b) => b[1] - a[1]);
+    regions.forEach(([region, share], i) => {
+      const id = 'code:' + region;
+      if (!code.has(id)) {
+        const c = { id, layer: 'code', role: 'code', kind: 'code', status: 'CODE', text: region, commits: [], share: 0, major: false };
+        code.set(id, c);
+        nodes.push(c);
+      }
+      const c = code.get(id);
+      c.commits.push(node.id);
+      c.share = Math.max(c.share, +share.toFixed(2));
+      if (i < CODE_NAMED) c.major = true;
+      links.push([node.id, 'changed', id]);
+    });
+  }
   for (const node of nodes) for (const k of Object.keys(node)) if (node[k] === undefined) delete node[k];
   return { nodes, links };
+}
+
+/* How many of a commit's regions GitX Monitor names under it, and a commit
+ * result lists. */
+const CODE_NAMED = 4;
+
+/* The code under a commit result, in one line: where it changed most, so the
+ * agent sees which code the commit is about before choosing to go down. */
+function codeOf(n) {
+  const regions = Object.entries(n.regions || {}).sort((a, b) => b[1] - a[1]);
+  if (!regions.length) return undefined;
+  const named = regions.slice(0, CODE_NAMED).map(([r]) => r).join(' · ');
+  return regions.length > CODE_NAMED ? named + ' · and ' + (regions.length - CODE_NAMED) + ' more' : named;
 }
 
 /* What a node is, in capitals, first - the detail a hasty reader gets wrong

@@ -1856,6 +1856,10 @@ body { padding: 10px; gap: 10px; }
 .mon-n-offstack .mon-n-body { fill: var(--cm-halo); stroke: var(--cm-red); stroke-width: 1.6; stroke-dasharray: 3 2; }
 .mon-visited .mon-n-body { stroke: var(--cm-accent); stroke-width: 3; }
 .mon-cited .mon-n-body { stroke: var(--cm-green); stroke-width: 3.5; }
+/* L1: the code each commit changed, as small chips under it */
+.mon-n-code .mon-n-body { fill: rgb(var(--mon-l1)); stroke-width: 1.5; }
+.mon-n-code.mon-n-minor .mon-n-body { fill-opacity: 0.55; stroke-width: 1; }
+.mon-link-changed { stroke: rgb(var(--mon-l1)); stroke-opacity: 0.22; stroke-width: 1; }
 
 .mon-trail-seg { fill: none; stroke: var(--cm-accent); stroke-width: 2; stroke-linecap: round; }
 .mon-trail-off { stroke: var(--cm-red); stroke-dasharray: 5 4; }
