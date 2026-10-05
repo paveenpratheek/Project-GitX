@@ -486,6 +486,46 @@ const TOOLS = [
   }
 ];
 
+/* What reaches the agent, less what it already has (the owner's trims, 6
+ * October). Measured on the owner's 18 questions, a gitx_related answer was
+ * ~2,500 tokens of which 11% was indentation, 274 tokens the same how_to_use
+ * as last time, and 550 the same topic summaries as the last question in
+ * that topic. So every answer goes out as compact JSON; each how_to_use text
+ * once per session; and a topic summary once per session until it changes -
+ * after that a line saying it was given and how to read it again.
+ *
+ * A session is this server's life, one per agent session. The page, the
+ * Monitor and rank-eval call the readers directly and see everything. The
+ * cost: an agent whose context is compacted mid-session loses what was sent
+ * once - the stub names the call that reads a summary again, and each tool's
+ * description still says how to use it. */
+const sentOnce = { howTo: new Set(), summaries: new Map() };
+function lean(tool, result) {
+  const first = result && Array.isArray(result.content) ? result.content[0] : null;
+  if (!first || first.type !== 'text') return result;
+  let body;
+  try { body = JSON.parse(first.text); } catch (_) { return result; }
+  if (body && typeof body === 'object' && !Array.isArray(body)) {
+    if (typeof body.how_to_use === 'string') {
+      const key = tool + '|' + body.how_to_use;
+      if (sentOnce.howTo.has(key)) delete body.how_to_use;
+      else sentOnce.howTo.add(key);
+    }
+    if (Array.isArray(body.summaries)) {
+      body.summaries = body.summaries.map((s) => {
+        const key = (body.repo || '') + '|' + s.topic;
+        const said = [s.summary || s.no_summary || '', s.written || '', s.since_written || ''].join('|');
+        if (sentOnce.summaries.get(key) === said) {
+          return { topic: s.topic, title: s.title, given: 'Earlier in this session, unchanged - gitx_thought topic ' + s.topic + ' reads it again.' };
+        }
+        sentOnce.summaries.set(key, said);
+        return s;
+      });
+    }
+  }
+  return { ...result, content: [{ ...first, text: JSON.stringify(body) }, ...result.content.slice(1)] };
+}
+
 async function handleToolCall(name, args) {
   switch (name) {
     case 'gitx_get_assigned_task': {
@@ -1153,7 +1193,7 @@ rl.on('line', async (line) => {
       const toolArgs = params?.arguments || {};
       let result = null, failure = null;
       try {
-        result = await handleToolCall(toolName, toolArgs);
+        result = lean(toolName, await handleToolCall(toolName, toolArgs));
         sendResponse({ jsonrpc: '2.0', id, result });
       } catch (err) {
         failure = err;
