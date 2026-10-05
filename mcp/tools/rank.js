@@ -306,15 +306,19 @@ export function rank(ix, query = {}) {
  * every link in every layer is a string pulled from the entries out to
  * PULL_HOPS, and a node's support is the sum over the entries of 0.5 per hop
  * (t-7e316ab799) - many short strings make the core, one long string the
- * edge. Nothing is dropped: what words alone found and no string reached
- * comes back too, as its own group.
+ * edge. A shared topic ties too, as weakly as three hops. Nothing is dropped:
+ * what words alone found and no string reached comes back too, as its own
+ * group.
  *
- * Measured on 5 October before it was wired in: on the owner's 18 query
- * cases the order kept the expected node about where rank() puts it (MRR
- * 0.673 against 0.684, before the words-only group), and for "what is the
- * 4th dimension" the pull held 80% of the 4th Dimension's nodes, the first
- * 40 of them 95% on topic. Similarity-weighted entries, 3 hops and half-weight
- * commit links were each no better and are not here.
+ * Judged by rank-eval.js on the owner's 18 questions: first place 11, the top
+ * ten 18 and every answer shown in full, MRR 0.729 against rank()'s 0.752 on
+ * the same graph - the stack trades the single best match for completeness,
+ * and both move as the graph grows - and for "what is
+ * the 4th dimension" every one of its 113 nodes on the stack, the first 40
+ * 95% on it. Similarity-weighted entries, 3 hops and half-weight commit links
+ * were each no better and are not here. Neither is widening by the words the
+ * entries repeat (t-8661f9e247): on the stack it found nothing the pull had
+ * not, for all 18 questions and the 4th Dimension.
  *
  * Two things the decisions did not say, decided while building: with no node
  * at ENTRY_AT the search enters at the closest (within 80% of the best) and
@@ -328,6 +332,7 @@ export const CORE_AT = 1;        // support at which a node comes back in full -
 const CLOSEST = 0.8;
 const CLOSEST_MAX = 5;
 const HOP = 0.5;
+const TOPIC_TIE = 3;         // a shared topic ties as strongly as a string 3 hops long
 
 /**
  * @param query  text, ids, paths, hops (1-6), layers, outcome, kind, exclude,
@@ -398,6 +403,16 @@ export function pull(ix, query = {}) {
       }
       front = next;
     }
+    /* A shared topic is a string too: every node in the entry's topic that no
+     * link reached is tied in as if TOPIC_TIE hops away. Thoughts nobody linked
+     * still sit in the topic they are about - 17 of the 4th Dimension's 113,
+     * its "three layers" definition among them, were on no string; tied, all
+     * 113 are on the stack, and the owner's questions improved (MRR 0.698 to
+     * 0.729, all 18 still shown in full). A topic is a curated domain, so it
+     * ties weaker than a link and never more than once. */
+    const tie = query.topicTie !== undefined ? query.topicTie : TOPIC_TIE;
+    const t = tie && ix.nodes.get(e).topic;
+    if (t) for (const n of ix.nodes.values()) if (n.topic === t && !seen.has(n.id)) seen.set(n.id, { h: tie, from: e, type: 'topic' });
     for (const [id, p] of seen) {
       const c = strength * HOP ** p.h;
       const g = got.get(id) || { support: 0, reach: 0, hop: Infinity, best: 0, via: null };
@@ -444,7 +459,11 @@ function pullWhy(ix, r) {
   if (r.entry) out.push('entry: ' + (r.entry.by === 'named' ? 'named' : r.entry.by === 'code' ? 'touches the named code' : 'words ' + pct(r.entry.sim)));
   else if (r.w) out.push('words ' + pct(r.sim));
   if (r.reach) out.push('support ' + r.support.toFixed(2) + ' from ' + r.reach + ' entr' + (r.reach === 1 ? 'y' : 'ies') + (r.hop ? ', nearest ' + r.hop + ' hop' + (r.hop === 1 ? '' : 's') : ''));
-  if (r.via) out.push(r.via.type.startsWith('by:') ? label(ix, r.via.from) + ' ' + r.via.type.slice(3) + ' it' : 'it ' + r.via.type + ' ' + label(ix, r.via.from));
+  if (r.via) {
+    out.push(r.via.type === 'topic' ? 'shares the topic ' + topicName(ix, r.n.topic) + ' with ' + label(ix, r.via.from)
+      : r.via.type.startsWith('by:') ? label(ix, r.via.from) + ' ' + r.via.type.slice(3) + ' it'
+      : 'it ' + r.via.type + ' ' + label(ix, r.via.from));
+  }
   return out.join(' · ');
 }
 const pct = (s) => Math.round(s * 100) + '%';
