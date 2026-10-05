@@ -16,7 +16,7 @@ import { readLog } from './tools/thought-watch.js';
 import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
-import { related } from './tools/rank.js';
+import { related, buildRankIndex, summaryOf } from './tools/rank.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -367,12 +367,13 @@ const TOOLS = [
    * Searching by words is gitx_related's - see tools/thought-query.js. */
   {
     name: 'gitx_thought',
-    description: 'Read reasoning GitX holds, by address rather than by words: one thought by id in full - every force, every link both ways, where it sits, whether a commit settled it - from the thought graph (settled) or the context graph (waiting); the thinking behind one commit; every thought of an outcome or kind, or rejected ideas that can come back (reopenable), from both graphs; or the stashes. To find thinking by words, use gitx_related. An empty answer says which kind of empty it is.',
+    description: 'Read reasoning GitX holds, by address rather than by words: one thought by id in full - every force, every link both ways, where it sits, whether a commit settled it - from the thought graph (settled) or the context graph (waiting); the thinking behind one commit; one topic\'s summary in full, with every commit that built it, its code and everything still open; every thought of an outcome or kind, or rejected ideas that can come back (reopenable), from both graphs; or the stashes. To find thinking by words, use gitx_related. An empty answer says which kind of empty it is.',
     inputSchema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'One thought id (t-...) to read in full, whichever graph holds it.' },
         commit: { type: 'string', description: 'Commit hash or prefix (4+ characters): the thinking that led to this commit.' },
+        topic: { type: 'string', description: 'A topic id (tp-...): its summary in full - what it does today, every commit that built it, its code, everything still open.' },
         outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'List thoughts with these outcomes, settled and waiting. "open" lists questions nobody has settled; an accepted one that is waiting is decided but not built.' },
         kind: { type: 'array', items: { type: 'string', enum: ['decision', 'finding', 'cost', 'learned'] }, description: 'List thoughts of these kinds, settled and waiting.' },
         reopenable: { type: 'boolean', description: 'List rejected ideas held back only by something that can change, each with its revisit_if.' },
@@ -410,7 +411,7 @@ const TOOLS = [
    * context graph until a commit names it - see tools/record.js. */
   {
     name: 'gitx_thought_record',
-    description: 'Record thinking as it happens: a decision and the alternatives it beat, a cost accepted, a finding, an open question, a rule learned from a correction. It goes to the context graph and waits there; when the commit that carries a decision out names it (GitX-Thoughts in the message, or thoughts in gitx_commit_chronicle), it moves to the thought graph with what supports it. Give kind, text (one sentence that stands on its own), outcome, decided_by for a decision, the forces behind it, and links; GitX stamps the id, the commit it was thought at, who and when. Record several at once with keys, so a decision, what lost to it (lost-to) and its cost (cost-of) link in one call; a link may also name any thought on record by id. Nothing is written unless every thought passes - a lost-to must run from a rejection to an accepted thought, a cost-of from a cost to an accepted decision, a contingent force needs revisit_if, and an exact repeat of a thought on record is refused. The reply gives each id, the line that settles a decision, and the thoughts on record it most likely continues, repeats, answers or contradicts, each with why - link to one if so.',
+    description: 'Record thinking as it happens: a decision and the alternatives it beat, a cost accepted, a finding, an open question, a rule learned from a correction. It goes to the context graph and waits there; when the commit that carries a decision out names it (GitX-Thoughts in the message, or thoughts in gitx_commit_chronicle), it moves to the thought graph with what supports it. Give kind, text (one sentence that stands on its own), outcome, decided_by for a decision, the forces behind it, and links; GitX stamps the id, the commit it was thought at, who and when. Record several at once with keys, so a decision, what lost to it (lost-to) and its cost (cost-of) link in one call; a link may also name any thought on record by id. Nothing is written unless every thought passes - a lost-to must run from a rejection to an accepted thought, a cost-of from a cost to an accepted decision, a contingent force needs revisit_if, and an exact repeat of a thought on record is refused. The reply gives each id, the topic it was filed under, the line that settles a decision, and the thoughts on record it most likely continues, repeats, answers or contradicts, each with why - link to one if so. Pass summary to rewrite a topic\'s summary, alone or beside thoughts.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,6 +427,7 @@ const TOOLS = [
               text: { type: 'string', description: 'One sentence that stands on its own: what was decided, found, accepted as a cost, or learned. The reasoning goes in forces.' },
               outcome: { type: 'string', enum: ['accepted', 'rejected', 'open', 'stashed'], description: '"accepted" for a decision made (built or not), "rejected" for an alternative turned down, "open" for a question nobody has settled, "stashed" for an idea set aside on purpose.' },
               decided_by: { type: 'string', enum: ['user', 'agent', 'agent-delegated'], description: 'For a decision: who made it. Defaults to agent.' },
+              topic: { type: 'string', description: 'The topic (tp-...) the thought is about. Leave it out and it is filed under the topic most of what it links to is in.' },
               forces: {
                 type: 'array',
                 description: 'What pushed it forward or held it back.',
@@ -455,9 +457,18 @@ const TOOLS = [
             },
             required: ['kind', 'text', 'outcome']
           }
+        },
+        summary: {
+          type: 'object',
+          description: 'Rewrite a topic\'s summary in place: what that part of the project does TODAY, in a few lines (20-1200 characters). Read first by gitx_related; the reply of every record says which topics\' summaries are missing or have fallen behind.',
+          properties: {
+            topic: { type: 'string', description: 'The topic id (tp-...).' },
+            text: { type: 'string', description: 'What it does today - not its history, which its thoughts and commits already hold.' }
+          },
+          required: ['topic', 'text']
         }
       },
-      required: ['cwd', 'thoughts']
+      required: ['cwd']
     }
   },
   {
@@ -1075,6 +1086,11 @@ async function handleToolCall(name, args) {
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: thoughts, drafts and git are only read, nothing is written. */
       const head = { repo: target.dir };
+      if (name === 'gitx_thought' && args.topic) {
+        const ix = buildRankIndex(target.dir);
+        const s = summaryOf(ix, String(args.topic), { full: true });
+        return reply({ ...head, ...(s || { error: 'No topic "' + args.topic + '" here - one of ' + [...ix.topics.keys()].join(', ') + '.' }) });
+      }
       if (name === 'gitx_thought') return reply({ ...head, ...readThought(target.dir, args) });
       return reply({ ...head, ...catchUp(target.dir, args) });
     }

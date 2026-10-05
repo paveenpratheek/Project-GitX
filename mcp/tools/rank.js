@@ -311,9 +311,9 @@ export function rank(ix, query = {}) {
  * group.
  *
  * Judged by rank-eval.js on the owner's 18 questions: first place 11, the top
- * ten 18 and every answer shown in full, MRR 0.729 against rank()'s 0.752 on
- * the same graph - the stack trades the single best match for completeness,
- * and both move as the graph grows - and for "what is
+ * ten 18 and every answer shown in full, MRR 0.755 against rank()'s 0.752 on
+ * the same graph once a node's own match counts in the order (both move as
+ * the graph grows) - and for "what is
  * the 4th dimension" every one of its 113 nodes on the stack, the first 40
  * 95% on it. Similarity-weighted entries, 3 hops and half-weight commit links
  * were each no better and are not here. Neither is widening by the words the
@@ -333,6 +333,7 @@ const CLOSEST = 0.8;
 const CLOSEST_MAX = 5;
 const HOP = 0.5;
 const TOPIC_TIE = 3;         // a shared topic ties as strongly as a string 3 hops long
+const SIM_IN_ORDER = 1;      // a node's own word match counts beside its support in the order
 
 /**
  * @param query  text, ids, paths, hops (1-6), layers, outcome, kind, exclude,
@@ -435,7 +436,16 @@ export function pull(ix, query = {}) {
     return { n: ix.nodes.get(id), support: g ? g.support : 0, reach: g ? g.reach : 0, hop: g ? g.hop : null,
       sim: w ? w.s : 0, w, entry: entry.get(id) || null, via: g ? g.via : null };
   };
-  const order = (a, b) => b.support - a.support || b.sim - a.sim || String(b.n.created).localeCompare(String(a.n.created));
+  /* The order is support plus the node's own word match. By support alone a
+   * hub many strings reach outranked the thought that says the question
+   * outright - "agents read the context graph only when they ask for it" fell
+   * to second behind a hub by 0.01 as the graph grew - MRR 0.701 on the
+   * owner's 18; adding the match at equal weight gave 0.755, first place 11,
+   * for 88% to 84% on topic in the 4th Dimension's first 25. At double
+   * weight 0.759 and 72%. */
+  const simW = query.simInOrder != null ? query.simInOrder : SIM_IN_ORDER;
+  const key = (r) => r.support + simW * r.sim;
+  const order = (a, b) => key(b) - key(a) || b.sim - a.sim || String(b.n.created).localeCompare(String(a.n.created));
   const core = [], edge = [];
   for (const [id, g] of got) {
     const r = row(id, g);
@@ -498,6 +508,9 @@ export function relatedToDraft(ix, { text, also = '', ids = [], exclude = [], to
  * answer says which kind of empty it is. */
 const LAYER_NAME = { commit: 'commit', thought: 'thought graph', context: 'context graph' };
 const EDGE_IN_FULL = 5;
+const LANDING_SHARE = 0.2;
+const LANDING_MAX = 3;
+const CORE_CAP = 25;
 
 export function related(repoDir, args = {}) {
   const query = String(args.query || '').trim();
@@ -527,8 +540,27 @@ export function related(repoDir, args = {}) {
    * filter, since what is linked to it from elsewhere belongs on the stack. */
   if (args.topic) for (const g of [out.core, out.edge, out.wordsOnly]) g.sort((a, b) => (b.n.topic === args.topic) - (a.n.topic === args.topic));
   const stack = [...out.core, ...out.edge, ...out.wordsOnly];
-  const coreFull = out.core.slice(0, limit);
   const edgeFull = out.edge.slice(0, EDGE_IN_FULL);
+
+  /* The topics the answer lands in, read first (t-aca34dc7d9): those holding
+   * a fifth or more of the support of the core and the edge's strongest, with
+   * two nodes at least, three topics at most. */
+  const mass = new Map();
+  let massTotal = 0;
+  const lands = [...out.core.slice(0, limit), ...edgeFull];
+  for (const r of lands) if (r.n.topic) { mass.set(r.n.topic, (mass.get(r.n.topic) || 0) + r.support); massTotal += r.support; }
+  const landing = [...mass].filter(([t, m]) => m >= massTotal * LANDING_SHARE && lands.filter((r) => r.n.topic === t).length >= 2)
+    .sort((a, b) => b[1] - a[1]).slice(0, LANDING_MAX).map(([t]) => t);
+  const summaries = landing.map((t) => summaryOf(ix, t)).filter(Boolean);
+
+  /* A large core stands behind its summaries (the owner's choice, 5 October,
+   * t-67083a740f's revisit): when it is over CORE_CAP and every topic it lands
+   * in has its summary written, the strongest CORE_CAP come in full and the
+   * rest are counted with the edge - "what is the 4th dimension" had grown to
+   * 106 nodes, ~15,000 tokens. An explicit limit decides instead. */
+  const covered = summaries.length > 0 && summaries.every((s) => s.summary);
+  const capped = !Number.isFinite(limit) && covered && out.core.length > CORE_CAP;
+  const coreFull = out.core.slice(0, capped ? CORE_CAP : limit);
   const inFull = [...coreFull, ...edgeFull];
   const rest = [...out.core.slice(coreFull.length), ...out.edge.slice(edgeFull.length)];
   const onEdge = new Set(edgeFull);
@@ -568,7 +600,8 @@ export function related(repoDir, args = {}) {
         candidates: out.pulled + out.wordsOnly.length, matched: stack.length, ms: Date.now() - t1
       },
       filtering: { layers: layers || 'all', outcome: filters.outcome, kind: filters.kind, limit,
-        core: out.core.length, edge: out.edge.length, words_only: out.wordsOnly.length, returned: inFull.length }
+        core: out.core.length, edge: out.edge.length, words_only: out.wordsOnly.length, returned: inFull.length,
+        summaries: summaries.map((s) => s.title + (s.summary ? '' : ' (none written)')) }
     },
     stack: stackOf(ix, out.core.map((r) => ({ ref: r.n.id, score: +r.support.toFixed(3), why: [pullWhy(ix, r)] })),
       [...out.edge, ...out.wordsOnly].map((r) => r.n.id))
@@ -604,16 +637,20 @@ export function related(repoDir, args = {}) {
         (out.entered_by.named ? (out.entered_by.words ? ', ' : ' ') + out.entered_by.named + ' named' : '') +
         (out.entered_by.code ? ', ' + out.entered_by.code + ' by the code named' : '') + '.',
     pulled: 'Every link from the entries, ' + out.hops + ' hops out: ' + out.pulled + ' nodes, ' + out.core.length + ' of them in the core.',
+    summaries: summaries.length ? summaries : undefined,
+    core_in_full: capped
+      ? 'The core is ' + out.core.length + ' nodes; its strongest ' + CORE_CAP + ' are below in full, the rest counted with the edge - the summaries above say what the whole is. Pass limit to have more in full.'
+      : undefined,
     core: by(out.core),
     results: inFull.map(full),
     edge: rest.length
-      ? (args.edge ? rest.map(line) : counted(rest, { of_them_core_beyond_limit: out.core.length > inFull.length ? out.core.length - inFull.length : undefined }))
+      ? (args.edge ? rest.map(line) : counted(rest, { of_them_core: out.core.length > coreFull.length ? out.core.length - coreFull.length : undefined }))
       : undefined,
     words_only: out.wordsOnly.length
       ? (args.edge ? out.wordsOnly.map((r) => line(r).replace(/ · support .*$/, ' · words ' + pct(r.sim))) : counted(out.wordsOnly))
       : undefined,
     further: out.hops < 6 ? 'hops: ' + (out.hops + 1) + ' pulls one ring further.' : undefined,
-    how_to_use: 'This is the stack for the question. results is the core in full - what many of the links from the entries reach, strongest first - then the strongest few of the edge, each marked on: edge. edge is the rest of what the links reach - a single long string each - and words_only what the question\'s words found that no link reaches: counted here, listed one line each and CUT with edge: true; read one with gitx_thought id or gitx_graph_commit hash before relying on it. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back.'
+    how_to_use: 'This is the stack for the question. summaries, read first, are the topics it lands in: what each does today in an agent\'s words, and - computed now - the commits that built it, its code and what is open; since_written says whether the words may be out of date. results is the core in full - what many of the links from the entries reach, strongest first - then the strongest few of the edge, each marked on: edge. edge is the rest of what the links reach - a single long string each - and words_only what the question\'s words found that no link reaches: counted here, listed one line each and CUT with edge: true; read one with gitx_thought id or gitx_graph_commit hash before relying on it. Read the status before the text: an OPEN QUESTION is not decided, a PROPOSED one was put forward and nobody confirmed it, ANSWERED names the settled thought that answered it, ACCEPTED - NOT BUILT is decided but not in the code - unless it names a settled thought that refined it, which says what was built instead - and a REJECTED idea is not to be proposed again without answering what held it back.'
   });
 }
 
@@ -684,6 +721,66 @@ function stackOf(ix, results, edgeIds = []) {
   }
   for (const node of nodes) for (const k of Object.keys(node)) if (node[k] === undefined) delete node[k];
   return { nodes, links };
+}
+
+/* ─────────────────────────────────────────────── topic summaries */
+
+/* A topic's summary as an agent reads it (t-aca34dc7d9): the words an agent
+ * wrote about what the feature does today, then what is computed afresh on
+ * every read and so cannot go stale - the commits that carried out its
+ * thoughts, the code those commits changed, and what is still open - and
+ * how much has happened on the topic since the words were written. Members
+ * are the thoughts filed under the topic, in either graph. */
+export function summaryOf(ix, topicId, { full = false } = {}) {
+  const t = ix.topics.get(topicId);
+  if (!t) return null;
+  const d = t.digest && typeof t.digest === 'object' ? t.digest : t.digest ? { text: String(t.digest) } : null;
+  const members = [...ix.nodes.values()].filter((n) => n.layer !== 'commit' && n.topic === topicId);
+  const order = ix._order || (ix._order = new Map(ix.commitIndex.commits.map((c, i) => [c.hash, i])));   // newest first
+
+  const byCommit = new Map();
+  for (const n of members) if (n.commit && ix.nodes.has(n.commit)) byCommit.set(n.commit, (byCommit.get(n.commit) || 0) + 1);
+  const built = [...byCommit].sort((a, b) => (order.has(a[0]) ? order.get(a[0]) : 1e9) - (order.has(b[0]) ? order.get(b[0]) : 1e9));
+  const regions = new Map();
+  for (const [h] of built) for (const [r, s] of Object.entries(ix.nodes.get(h).regions || {})) regions.set(r, (regions.get(r) || 0) + s);
+  const code = [...regions].sort((a, b) => b[1] - a[1]).map(([r]) => r);
+
+  const status = members.map((n) => ({ n, s: statusOf(ix, n) }));
+  const open = (re) => status.filter((x) => re.test(x.s));
+  const groups = { questions: open(/^OPEN QUESTION/), proposals: open(/^PROPOSED - NOT CONFIRMED/), decided_not_built: open(/NOT BUILT$/) };
+
+  /* Since the words: commits that settled the topic's thoughts after the one
+   * the summary was written at, and thoughts filed under it after. */
+  let since = null;
+  if (d && d.at) {
+    const atHash = d.at_commit && [...order.keys()].find((h) => h.startsWith(d.at_commit));
+    const at = atHash ? order.get(atHash) : null;
+    const commits = at == null ? 0 : built.filter(([h]) => order.has(h) && order.get(h) < at).length;
+    const thoughts = members.filter((n) => n.created && n.created > d.at).length;
+    since = { commits, thoughts };
+  }
+  const commitLine = ([h, k]) => ix.nodes.get(h).short + ' ' + cap(ix.nodes.get(h).text, 80) + ' (' + k + ' thought' + (k === 1 ? '' : 's') + ')';
+  const listOf = (g) => (full ? g.map((x) => x.n.id + ' · ' + x.s + ' · ' + x.n.text) : g.slice(0, 5).map((x) => x.n.id));
+  const more = (list, k) => (list.length > k ? ' and ' + (list.length - k) + ' more' : '');
+  const nBuilt = full ? 50 : 5, nCode = full ? 20 : 6;
+  return prune({
+    topic: topicId,
+    title: t.title,
+    summary: d ? d.text : undefined,
+    written: d ? [d.by || 'someone', d.at ? 'on ' + String(d.at).slice(0, 10) : null, d.at_commit ? 'at ' + String(d.at_commit).slice(0, 7) : null].filter(Boolean).join(' ') : undefined,
+    since_written: since
+      ? (since.commits || since.thoughts
+        ? since.commits + ' commit(s) settled thinking on this topic and ' + since.thoughts + ' thought(s) were filed under it since - check the summary still holds, and rewrite it if not.'
+        : 'Nothing on this topic has been settled or filed since it was written.')
+      : undefined,
+    no_summary: d ? undefined : 'Nobody has written this topic\'s summary yet. Write one - what it does today, in a few lines - with gitx_thought_record summary: { topic: "' + topicId + '", text }.',
+    thoughts: members.length,
+    built_by: built.length ? built.slice(0, nBuilt).map(commitLine).concat(built.length > nBuilt ? ['and ' + (built.length - nBuilt) + ' more'] : []) : undefined,
+    code: code.length ? code.slice(0, nCode).concat(code.length > nCode ? ['and ' + (code.length - nCode) + ' more regions'] : []) : undefined,
+    open: Object.values(groups).some((g) => g.length) ? prune(Object.fromEntries(Object.entries(groups).filter(([, g]) => g.length)
+      .map(([k, g]) => [k, full ? listOf(g) : g.length + ': ' + listOf(g).join(', ') + more(g, 5)]))) : undefined,
+    read: full ? undefined : 'gitx_thought topic ' + topicId
+  });
 }
 
 /* How many of a commit's regions GitX Monitor names under it, and a commit

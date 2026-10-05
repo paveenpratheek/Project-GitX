@@ -25,8 +25,8 @@
  * off. The active part is what agents read (t-3decb21a95). Domains are listed
  * when OFF, so a domain added later starts on.
  *
- * mcp/assign-topics.js writes topics; writeGoal below is the one write here,
- * for the context map's own controls.
+ * mcp/assign-topics.js writes topics; the writes here are writeGoal, for the
+ * context map's own controls, and writeDigest, a topic's summary.
  */
 
 import fs from 'node:fs';
@@ -156,6 +156,45 @@ export function writeGoal(repoDir, patch, { by = 'user' } = {}) {
   return { ok: true, goal: loadGoal(repoDir).goal };
 }
 
+/* A topic's summary (t-aca34dc7d9): what the feature does today, in a few
+ * lines, written by an agent and EDITED IN PLACE - the one thing in the
+ * context graph that is rewritten rather than superseded, because it states
+ * the present and the present changes. It lives in the topic's own `digest`,
+ * the field the plan left for "a digest read first" (t-1f4ac40ec2), with who
+ * wrote it, when and at which commit, so a reader can tell how much has
+ * happened since. The previous text is kept beside it, one version back.
+ *
+ * Only the words are stored. What built the topic, where its code lives and
+ * what is still open are computed from its thoughts whenever it is read
+ * (summaryOf in rank.js), so those parts cannot go stale. */
+/* The summary's words, whichever form the digest is in - the page shows text. */
+export const digestText = (d) => (d && typeof d === 'object' ? d.text || null : d || null);
+export const DIGEST_MIN = 20;
+export const DIGEST_MAX = 1200;
+export function writeDigest(repoDir, topicId, { text, by = 'agent', head = null } = {}) {
+  const t = loadTopics(repoDir).topics.find((x) => x.id === topicId);
+  if (!t) return { ok: false, problems: ['no topic "' + topicId + '"'] };
+  const words = String(text || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  if (words.length < DIGEST_MIN) return { ok: false, problems: ['a summary needs at least ' + DIGEST_MIN + ' characters - what the feature does today'] };
+  if (words.length > DIGEST_MAX) return { ok: false, problems: ['a summary is at most ' + DIGEST_MAX + ' characters, a few lines; this is ' + words.length] };
+  const old = t.digest && typeof t.digest === 'object' ? t.digest : t.digest ? { text: String(t.digest) } : null;
+  const now = new Date().toISOString();
+  const next = {
+    ...t,
+    digest: {
+      text: words, by, at: now, at_commit: head,
+      edits: old ? (old.edits || 1) + 1 : 1,
+      previous: old && old.text ? { text: old.text, by: old.by || null, at: old.at || null } : null
+    },
+    updated: now
+  };
+  const file = path.join(mapPaths(repoDir).topics, topicId + '.json');
+  const tmp = file + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n');
+  fs.renameSync(tmp, file);
+  return { ok: true, topic: topicId, title: t.title, edits: next.digest.edits };
+}
+
 /* "GitX suggests": the topics a goal's words point at. A topic scores for
  * each of the goal's words in its title (strongly) and in its thoughts' text
  * (by how many of them carry it), and a little for being worked on lately.
@@ -196,7 +235,7 @@ export function contextMap(repoDir, thoughts) {
     domains: DOMAINS,
     topics: topics.map((t) => ({
       id: t.id, title: t.title, status: t.status || 'open', waiting_for: t.waiting_for || null,
-      revisit_if: t.revisit_if || null, digest: t.digest || null, owner: t.owner || null,
+      revisit_if: t.revisit_if || null, digest: digestText(t.digest), owner: t.owner || null,
       thoughts: placed.filter((p) => p.topic === t.id).length
     })),
     goal,

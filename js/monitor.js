@@ -210,7 +210,8 @@
           esc(r.closest != null ? 'no node held 70% of the words - entered at the closest (' + Math.round(r.closest * 100) + '%)' : 'every entry holds 70% or more of the words') + ' · ' + (r.ms || 0) + ' ms']
         : ['results', 'Results', (r.candidates || 0) + ' candidates → ' + (r.matched || 0) + ' matched', esc('signals: ' + (r.signals || []).join(', ') + ' · ' + (r.ms || 0) + ' ms')],
       pulled
-        ? ['filter', 'The stack', 'core ' + (f.core || 0) + ' · edge ' + (f.edge || 0) + (f.words_only ? ' · words only ' + f.words_only : ''), scope + ' · ' + (f.returned || 0) + ' given in full']
+        ? ['filter', 'The stack', 'core ' + (f.core || 0) + ' · edge ' + (f.edge || 0) + (f.words_only ? ' · words only ' + f.words_only : ''),
+          scope + ' · ' + (f.returned || 0) + ' given in full' + (f.summaries && f.summaries.length ? ' · led by the summary of ' + esc(f.summaries.join(', ')) : '')]
         : ['filter', 'Filtering', 'kept ' + (f.returned || 0) + ' of ' + (r.matched || 0), scope + ' · limit ' + (f.limit || '')],
       ['layers', 'Building the layers', 'context ' + by.context + ' · L3 ' + by.thought + ' · L2 ' + by.commit + ' · L1 ' + by.code,
         ((rec.stack && rec.stack.links) || []).length + ' links between them' + (edgeN ? ' · ' + edgeN + ' on the edge' : '')]

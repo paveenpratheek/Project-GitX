@@ -39,7 +39,8 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
 import { similarThoughts } from './thought-query.js';
-import { buildRankIndex, relatedToDraft } from './rank.js';
+import { buildRankIndex, relatedToDraft, summaryOf } from './rank.js';
+import { loadTopics, writeDigest, DIGEST_MIN, DIGEST_MAX } from './topics.js';
 
 const SCHEMA = 'gitx.thought/0';
 const KINDS = ['decision', 'finding', 'cost', 'learned'];
@@ -61,7 +62,10 @@ const idFor = (repoDir, anchor, text) => 't-' + crypto.createHash('sha1').update
 export function recordThoughts(repoDir, args = {}, who = {}) {
   const input = Array.isArray(args.thoughts) ? args.thoughts : [];
   const problems = [];
-  if (!input.length) problems.push('thoughts is empty - give at least one thought to record.');
+  const summary = args.summary && typeof args.summary === 'object' ? args.summary : null;
+  if (!input.length && !summary) problems.push('thoughts is empty - give at least one thought to record, or a summary to write.');
+  const topicIds = new Set(loadTopics(repoDir).topics.map((t) => t.id));
+  if (summary && !topicIds.has(String(summary.topic))) problems.push('summary.topic "' + summary.topic + '" is no topic here - one of ' + [...topicIds].join(', ') + '.');
   if (input.length > MAX_BATCH) problems.push('at most ' + MAX_BATCH + ' thoughts in one call; this has ' + input.length + '.');
 
   let head, branch, patchId = null;
@@ -130,9 +134,36 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
       return { direction: f.direction, kind: f.kind || null, text: norm(f.text), revisit_if: norm(f.revisit_if) || null, cites, superseded_by: null };
     }).filter(Boolean);
 
+    if (t.topic != null && !topicIds.has(String(t.topic))) err('topic "' + t.topic + '" is no topic here - one of ' + [...topicIds].join(', ') + '.');
+
     built.push({ key, id, t, text, links, forces });
   });
 
+  /* The topic each thought is filed under: the one it names, or else the one
+   * most of what it links to and cites is filed under - a thought continues
+   * the subject of what it continues. Inside the batch too, in order, so a
+   * rejection linked to a filed decision follows it. Unfiled, a thought is in
+   * no topic summary and no topic tie (t-4d9004674e: 26 of the stack's design
+   * thoughts were outside every topic). */
+  const topicOf = new Map();
+  for (let pass = 0; pass < 2; pass++) {
+    for (const b of built) {
+      if (topicOf.has(b.id)) continue;
+      if (b.t.topic != null) { topicOf.set(b.id, { topic: String(b.t.topic), how: 'given' }); continue; }
+      const votes = new Map();
+      for (const to of [...b.links.map((l) => l.to), ...b.forces.flatMap((f) => f.cites)]) {
+        const tp = topicOf.has(to) ? topicOf.get(to).topic : onRecord.has(to) ? onRecord.get(to).topic : null;
+        if (tp && topicIds.has(tp)) votes.set(tp, (votes.get(tp) || 0) + 1);
+      }
+      const best = [...votes].sort((a, c) => c[1] - a[1])[0];
+      if (best) topicOf.set(b.id, { topic: best[0], how: 'from what it links to' });
+    }
+  }
+
+  if (summary) {
+    const n = String(summary.text || '').trim().length;
+    if (n < DIGEST_MIN || n > DIGEST_MAX) problems.push('summary.text is ' + n + ' characters; a summary is ' + DIGEST_MIN + '-' + DIGEST_MAX + ' - what the topic does today, in a few lines.');
+  }
   if (problems.length) return { ok: false, recorded: false, problems, note: 'Nothing was recorded. Fix these and send the whole batch again.' };
 
   /* Write: temp name, then rename, so the watcher never reads half a file. */
@@ -148,6 +179,7 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
       decided_by: b.t.kind === 'decision' ? (b.t.decided_by || 'agent') : null,
       ...(b.t.outcome === 'stashed' ? { applied_to: null } : {}),
       anchor: { commit: head, patch_id: patchId, branch },
+      ...(topicOf.has(b.id) ? { topic: topicOf.get(b.id).topic } : {}),
       resulted_in: null, parent, session: who.session || null,
       links: b.links, forces: b.forces,
       sources: [{ type: 'tool', tool: 'gitx_thought_record', agent: who.agent || null, at: now }],
@@ -163,6 +195,11 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
   }
   lastRecorded.set(repoDir, parent);
 
+  /* A topic's summary, rewritten in place (t-aca34dc7d9), stamped with the
+   * commit it was written at so a reader can tell what came after. */
+  let wrote = null;
+  if (summary) wrote = writeDigest(repoDir, String(summary.topic), { text: summary.text, by: who.name || who.agent || 'agent', head });
+
   /* What each new thought may continue, repeat, answer or contradict, from the
    * ranking engine (t-d69e5f5910) - its sentence, its reasons and what it links
    * to, so a thought said in other words than one on record can still be
@@ -170,8 +207,9 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
    * Asked after the write, so it can never stop one; if the engine cannot run
    * here, the word-overlap check it replaced answers instead. */
   let related;
+  let ix = null;
   try {
-    const ix = buildRankIndex(repoDir);
+    ix = buildRankIndex(repoDir);
     related = (b) => relatedToDraft(ix, {
       text: b.text,
       also: b.forces.map((f) => f.text + ' ' + (f.revisit_if || '')).join(' '),
@@ -188,12 +226,21 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
   for (const b of built) {
     const settles = b.t.outcome === 'accepted' && (b.t.kind === 'decision' || b.t.kind === 'cost');
     const near = related(b);
+    const filed = topicOf.get(b.id);
     results.push({
       key: b.key, id: b.id, kind: b.t.kind, outcome: b.t.outcome,
+      topic: filed ? filed.topic + (filed.how === 'given' ? '' : ' (' + filed.how + ')') : 'none - name one with topic, or link it to a filed thought',
       settle_with: settles ? 'GitX-Thoughts: ' + b.id : undefined,
       maybe_related: near.length ? near : undefined
     });
   }
+
+  /* The summaries of the topics just written into that are missing or have
+   * fallen behind - the step that keeps them true (t-656813fd70). Not for the
+   * one this call rewrote. */
+  const touched = [...new Set([...topicOf.values()].map((x) => x.topic))].filter((t) => !(wrote && wrote.ok && wrote.topic === t));
+  const toUpdate = ix ? touched.map((t) => summaryOf(ix, t)).filter((s) => s && (s.no_summary || (s.since_written && !/^Nothing/.test(s.since_written))))
+    .map((s) => s.title + ' (' + s.topic + '): ' + (s.no_summary ? 'no summary yet' : 'written ' + s.written + '; ' + s.since_written.split(' - ')[0])) : [];
 
   const settle = results.filter((r) => r.settle_with).map((r) => r.id);
   return {
@@ -201,10 +248,12 @@ export function recordThoughts(repoDir, args = {}, who = {}) {
     recorded: results.length,
     graph: 'context',
     anchored_at: head.slice(0, 7) + ' on ' + branch,
-    thoughts: results,
-    next: settle.length
+    summary: wrote ? (wrote.ok ? 'Rewrote the summary of ' + wrote.title + ' (edit ' + wrote.edits + ').' : wrote.problems.join('; ')) : undefined,
+    summaries_to_update: toUpdate.length ? toUpdate.concat(['Rewrite one with gitx_thought_record summary: { topic, text } - what the topic does today, in a few lines.']) : undefined,
+    thoughts: results.length ? results : undefined,
+    next: !results.length ? undefined : settle.length
       ? 'When the commit that carries these out is made, name them in its message - GitX-Thoughts: ' + settle.join(', ') + ' - or pass them as thoughts to gitx_commit_chronicle. They then move to the thought graph with what supports them.'
       : 'Nothing here settles a commit on its own: findings, rejections and open questions move with the decision that rests on them.',
-    how_to_use: 'maybe_related lists the thoughts on record this most likely continues, repeats, answers or contradicts, each with why it came up - shared words, the same topic, a link to what you linked. If one is what this continues, answers or contradicts, record a link to it (refines, supersedes, supports, contradicts, derived-from) rather than leaving the two unconnected; if it says the same thing, this is a repeat.'
+    how_to_use: !results.length ? undefined : 'maybe_related lists the thoughts on record this most likely continues, repeats, answers or contradicts, each with why it came up - shared words, the same topic, a link to what you linked. If one is what this continues, answers or contradicts, record a link to it (refines, supersedes, supports, contradicts, derived-from) rather than leaving the two unconnected; if it says the same thing, this is a repeat.'
   };
 }

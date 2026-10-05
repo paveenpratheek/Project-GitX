@@ -493,7 +493,7 @@ export function readThought(repoDir, args = {}) {
       how_to_use: 'settled is the thought graph - reasoning a commit carried out; waiting is the context graph - thinking no commit has settled yet, where an accepted decision is decided but not built. Read one in full with gitx_thought and its id.'
     };
   }
-  return { error: 'Give id (one thought), commit (the thinking behind it), outcome, kind or reopenable (a list from both graphs), or stashes. To search by words, use gitx_related.' };
+  return { error: 'Give id (one thought), commit (the thinking behind it), topic (its summary), outcome, kind or reopenable (a list from both graphs), or stashes. To search by words, use gitx_related.' };
 }
 
 /* ─────────────────────────────────────────────── catch up */
