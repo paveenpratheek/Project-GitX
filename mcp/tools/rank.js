@@ -33,6 +33,7 @@ import { loadThoughts, laterOf, asksQuestion } from './thoughts.js';
 import { loadTopics, loadGoal, domainOf } from './topics.js';
 import { tokenize } from './git-extract.js';
 import { regionsFromPaths, coverageScore, regionScore } from './retrieval.js';
+import { learnedFor } from './learn.js';
 
 /* Hand-set first (t-6c830b6b34); learned from outcomes once there are any. */
 export const WEIGHTS = {
@@ -389,6 +390,15 @@ export function pull(ix, query = {}) {
   const weak = query.weak !== undefined ? query.weak : { from: RELATED_FLOOR, scale: 0.5 };
   const pullFrom = new Map([...entry.keys()].map((id) => [id, 1]));
   if (weak) for (const [id, w] of words) if (!entry.has(id) && w.s >= weak.from) pullFrom.set(id, w.s * weak.scale);
+  /* Words agents' declared paths learned for this question's key
+   * (t-4f44aa05bb) pull as weak matches do - never as entries, so what was
+   * learned widens the search and never decides it (t-11190c437f). */
+  if (weak && query.learnedWords && query.learnedWords.length) {
+    for (const [id, w] of wordStage(ix, query.learnedWords.join(' '), '', () => true).words) {
+      if (entry.has(id) || w.s < weak.from) continue;
+      pullFrom.set(id, Math.max(pullFrom.get(id) || 0, w.s * weak.scale));
+    }
+  }
   const got = new Map();
   for (const [e, strength] of pullFrom) {
     const seen = new Map([[e, { h: 0 }]]);
@@ -512,7 +522,7 @@ const LANDING_SHARE = 0.2;
 const LANDING_MAX = 3;
 const CORE_CAP = 25;
 
-export function related(repoDir, args = {}) {
+export function related(repoDir, args = {}, { dataDir = null } = {}) {
   const query = String(args.query || '').trim();
   const ids = Array.isArray(args.ids) ? args.ids.map(String) : [];
   const paths = Array.isArray(args.paths) ? args.paths.map(String) : [];
@@ -535,7 +545,12 @@ export function related(repoDir, args = {}) {
   const list = (v) => (Array.isArray(v) ? v.map(String) : v ? [String(v)] : null);
   const filters = { layers, outcome: list(args.outcome), kind: list(args.kind) };
   const t1 = Date.now();
-  const out = pull(ix, { text: query, ids: named, paths, hops: args.hops, ...filters });
+  /* What agents' declared paths learned for this question's key - read from
+   * the path files on every call; a broken file never stops the answer. */
+  let learned = { key: [], matched: [], bridge: [] };
+  if (query) { try { learned = learnedFor(ix, repoDir, dataDir, query); } catch (_) { /* no paths readable */ } }
+  const learnedWords = [...new Set(learned.matched.flatMap((m) => m.words))];
+  const out = pull(ix, { text: query, ids: named, paths, hops: args.hops, learnedWords, ...filters });
   /* A topic named by the caller goes first within each group; it is not a
    * filter, since what is linked to it from elsewhere belongs on the stack. */
   if (args.topic) for (const g of [out.core, out.edge, out.wordsOnly]) g.sort((a, b) => (b.n.topic === args.topic) - (a.n.topic === args.topic));
@@ -594,7 +609,8 @@ export function related(repoDir, args = {}) {
   const _monitor = {
     phases: {
       processing: { nodes: ix.nodes.size, ...count, ms: indexMs },
-      search: { words: out.words, unmatched: out.unmatched, ids: named, paths, topic: args.topic || null },
+      search: { words: out.words, unmatched: out.unmatched, ids: named, paths, topic: args.topic || null,
+        learned: learned.matched.map((m) => m.key + ' (' + m.paths + ' path' + (m.paths === 1 ? '' : 's') + ')') },
       results: {
         entries: out.entries, entered_by: out.entered_by, closest: out.closest, hops: out.hops, pulled: out.pulled,
         candidates: out.pulled + out.wordsOnly.length, matched: stack.length, ms: Date.now() - t1
@@ -638,6 +654,20 @@ export function related(repoDir, args = {}) {
         (out.entered_by.code ? ', ' + out.entered_by.code + ' by the code named' : '') + '.',
     pulled: 'Every link from the entries, ' + out.hops + ' hops out: ' + out.pulled + ' nodes, ' + out.core.length + ' of them in the core.',
     summaries: summaries.length ? summaries : undefined,
+    /* A hint, never the answer (t-11190c437f): where agents who asked this
+     * went and what they used, with what has come since. */
+    most_walked: learned.matched.length ? learned.matched.map((m) => {
+      const fresh = inFull.filter((r) => r.n.created && String(r.n.created) > m.newest).map((r) => (r.n.layer === 'commit' ? r.n.short : r.n.id));
+      return prune({
+        key: m.key,
+        learned_from: m.paths + ' declared path' + (m.paths === 1 ? '' : 's') + ', the newest ' + m.newest.slice(0, 10),
+        route: m.route.length ? m.route.map((id) => label(ix, id)).join(' > ') + ' (taken ' + m.walked + ' of ' + m.paths + ')' : undefined,
+        used: m.used.slice(0, 8).map((u) => label(ix, u.id) + (u.n > 1 ? ' x' + u.n : '')),
+        learned_words: m.words.length ? m.words : undefined,
+        new_since: fresh.length ? fresh.slice(0, 8).concat(fresh.length > 8 ? ['and ' + (fresh.length - 8) + ' more'] : []) : undefined
+      });
+    }) : undefined,
+    bridge: learned.bridge.length ? learned.bridge.map((id) => label(ix, id)) : undefined,
     core_in_full: capped
       ? 'The core is ' + out.core.length + ' nodes; its strongest ' + CORE_CAP + ' are below in full, the rest counted with the edge - the summaries above say what the whole is. Pass limit to have more in full.'
       : undefined,

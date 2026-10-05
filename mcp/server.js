@@ -1073,7 +1073,9 @@ async function handleToolCall(name, args) {
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
-      const out = related(target.dir, args);
+      /* Learned keys come from the path files this server's recorder writes,
+       * so they are read from the folder it resolved (t-4f44aa05bb). */
+      const out = related(target.dir, args, { dataDir: paths.base || logDataDir() });
       lastMonitor = out._monitor || null;
       delete out._monitor;
       return reply({ repo: target.dir, ...out });

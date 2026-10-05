@@ -204,7 +204,8 @@
       ['prompt', 'Prompt', '“' + esc(ask(rec)) + '”', esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at))],
       ['proc', 'Processing', (p.nodes || 0) + ' nodes indexed', esc((p.commits || 0) + ' commits · ' + (p.settled || 0) + ' settled · ' + (p.waiting || 0) + ' waiting · ' + (p.ms || 0) + ' ms')],
       ['search', 'Search', esc((s.words || []).join(' ') || '(ids and paths only)'),
-        (s.unmatched && s.unmatched.length ? 'not in the graph: ' + esc(s.unmatched.join(' ')) : 'every word found in the graph') + (s.paths && s.paths.length ? ' · paths: ' + esc(s.paths.join(', ')) : '')],
+        (s.unmatched && s.unmatched.length ? 'not in the graph: ' + esc(s.unmatched.join(' ')) : 'every word found in the graph') + (s.paths && s.paths.length ? ' · paths: ' + esc(s.paths.join(', ')) : '') +
+        (s.learned && s.learned.length ? ' · learned from earlier walks: ' + esc(s.learned.join(', ')) : '')],
       pulled
         ? ['results', 'Entered and pulled', 'entered at ' + r.entries + ' · pulled ' + (r.pulled || 0) + ' within ' + (r.hops || 4) + ' hops',
           esc(r.closest != null ? 'no node held 70% of the words - entered at the closest (' + Math.round(r.closest * 100) + '%)' : 'every entry holds 70% or more of the words') + ' · ' + (r.ms || 0) + ' ms']
