@@ -16,12 +16,15 @@
  */
 (function () {
   const NS = 'http://www.w3.org/2000/svg';
+  /* Code on top, as an agent walks it (t-6a7335ce0a): the code, the commits
+   * that wrote it, the thoughts they settled; the context graph beside. */
   const BANDS = [
-    { layer: 'context', name: 'Context graph', sub: 'waiting · beside the stack', cls: 'ctx' },
-    { layer: 'thought', name: 'L3 · Thoughts', sub: 'settled reasoning', cls: 'l3' },
-    { layer: 'commit', name: 'L2 · Commits', sub: 'what changed', cls: 'l2' },
-    { layer: 'code', name: 'L1 · Code', sub: 'what each commit changed', cls: 'l1' }
+    { layer: 'code', name: 'L1 · Code', sub: 'where it lives today · read first', cls: 'l1' },
+    { layer: 'commit', name: 'L2 · Commits', sub: 'who wrote those lines, and why', cls: 'l2' },
+    { layer: 'thought', name: 'L3 · Thoughts', sub: 'what they settled · docs', cls: 'l3' },
+    { layer: 'context', name: 'Context graph', sub: 'waiting · beside the stack', cls: 'ctx' }
   ];
+  const codeFirst = (rec) => !!(rec.gitx && rec.gitx.mode === 'code');
   const LABELS_PER_BAND = 8;
   const MOVE_WORD = { enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to', open: 'opened' };
   const STEP_MS = 900;
@@ -52,6 +55,8 @@
   const label = (id) => {
     const s = String(id);
     if (/^t-/.test(s)) return s.slice(0, 8);
+    if (s.startsWith('code:') && /:\d+$/.test(s)) return s.slice(5).replace(/:\d+$/, '').split('/').pop();
+    if (s.startsWith('doc:')) return s.slice(4).replace(/:\d+$/, '').split('/').pop();
     if (s.startsWith('code:')) return codeName(s.slice(5));
     return s.slice(0, 7);
   };
@@ -67,7 +72,7 @@
   const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const sameRepo = (r) => !repo || !r || norm(r) === norm(repo);
   const ask = (rec) => (rec.question && rec.question.query) || [].concat(rec.question && rec.question.ids || [], rec.question && rec.question.paths || []).join(', ') || (rec.started_by ? tool(rec.started_by) : '(no words)');
-  const found = (rec) => (rec.gitx && rec.gitx.results ? rec.gitx.results.matched : (rec.stack && rec.stack.nodes ? rec.stack.nodes.length : 0));
+  const found = (rec) => (rec.gitx && rec.gitx.results && rec.gitx.results.matched != null ? rec.gitx.results.matched : (rec.stack && rec.stack.nodes ? rec.stack.nodes.length : 0));
   /* A path started by a call rather than a question - gitx_find_related, the
    * record tool, a commit by hash: no search ran, so no stack and no count. */
   const tool = (t) => String(t || '').replace(/^gitx_/, '');
@@ -195,6 +200,7 @@
   function statusWord(s) { return { walking: 'walking', declared: 'declared', 're-asked': 're-asked', left: 'left', ended: 'ended' }[s] || s || ''; }
 
   function logHtml(rec) {
+    if (codeFirst(rec)) return codeLogHtml(rec);
     if (rec.started_by) {
       let html = '<li class="mon-l mon-l-prompt" style="--i:0"><span class="mon-l-h">Call</span><span class="mon-l-main">' + esc(tool(rec.started_by)) + (rec.question && rec.question.query ? ' “' + esc(rec.question.query) + '”' : '') + '</span>' +
         '<span class="mon-l-sub">' + esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at) + ' · no question asked first, so no stack') + '</span></li>';
@@ -232,6 +238,23 @@
     (rec.path || []).forEach((step, i) => { html += stepHtml(step, lines.length + i); });
     html += '<li class="mon-l mon-l-status" style="--i:' + (lines.length + (rec.path || []).length) + '"><span class="mon-l-h">Status</span><span class="mon-l-main mon-st-word mon-st-' + esc(rec.status) + '" id="mon-status">' + esc(statusWord(rec.status)) + '</span></li>';
     return html;
+  }
+
+  /* A question answered from the code down: where it entered, then the chain. */
+  function codeLogHtml(rec) {
+    const g = rec.gitx || {}, p = g.processing || {}, s = g.search || {}, r = g.results || {};
+    const lines = [
+      ['prompt', 'Prompt', '“' + esc(ask(rec)) + '”', esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at))],
+      ['proc', 'Processing', (p.regions || 0) + ' code regions at HEAD', esc((p.commits || 0) + ' commits · ' + (p.settled || 0) + ' settled · ' + (p.waiting || 0) + ' waiting · ' + (p.ms || 0) + ' ms')],
+      ['search', 'Search', esc((s.words || []).join(' ') || '(no words)'), esc(s.carried ? 'carried from the last question: ' + s.carried.join(' ') : 'nothing carried')],
+      ['results', 'Code', s.no_code ? 'no code about this' : (r.code || 0) + ' region' + (r.code === 1 ? '' : 's') + (r.docs ? ' · ' + r.docs + ' doc section' + (r.docs === 1 ? '' : 's') : ''),
+        esc(s.no_code ? 'the closest region holds ' + (s.best || 0) + '% of the question - answered from the plans' : 'the best holds ' + (s.best || 0) + '% of the question')],
+      ['filter', 'The chain', (r.commits || 0) + ' commits wrote it · ' + (r.thoughts || 0) + ' thoughts settled', esc((r.context || 0) + ' waiting beside · ' + (r.ms || 0) + ' ms')]
+    ];
+    let html = lines.map(([k, h, main, sub], i) =>
+      '<li class="mon-l mon-l-' + k + '" style="--i:' + i + '"><span class="mon-l-h">' + h + '</span><span class="mon-l-main">' + main + '</span><span class="mon-l-sub">' + sub + '</span></li>').join('');
+    (rec.path || []).forEach((step, i) => { html += stepHtml(step, lines.length + i); });
+    return html + '<li class="mon-l mon-l-status" style="--i:' + (lines.length + (rec.path || []).length) + '"><span class="mon-l-h">Status</span><span class="mon-l-main mon-st-word mon-st-' + esc(rec.status) + '" id="mon-status">' + esc(statusWord(rec.status)) + '</span></li>';
   }
 
   function stepHtml(step, i) {
@@ -323,10 +346,11 @@
     const bands = BANDS.map((b, i) => ({ ...b, x: left, y: top + i * (bh + gap), w: W - left - right, h: bh }));
     const placed = new Map();
     const nodes = (rec.stack && rec.stack.nodes) || [];
-    for (const band of bands) {
+    const order = bands.slice().sort((a, b) => (a.layer === 'code') - (b.layer === 'code'));
+    for (const band of order) {
       const mine = nodes.filter((n) => n.layer === band.layer);
       const x0 = band.x + 150, x1 = band.x + band.w - offW;
-      if (band.layer === 'code') { placeCode(mine, band, placed, x1); continue; }
+      if (band.layer === 'code' && !codeFirst(rec)) { placeCode(mine, band, placed, x1); continue; }
       /* The core across the middle of the band, only the strongest named
        * when it is crowded; the edge of the pull as a strip of faint dots
        * along the band's floor - on the stack, but not what it is about. */

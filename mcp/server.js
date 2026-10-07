@@ -18,6 +18,7 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
+import { codeFirst } from './tools/code-find.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -436,7 +437,7 @@ const TOOLS = [
    * everything GitX holds, where the tools above each search one part. */
   {
     name: 'gitx_related',
-    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally ids you are on, paths you work in, or a topic. GitX enters at the nodes that hold most of your words, pulls every link from them across commits and both thought graphs four hops out, and answers with the stack: the core - what many of those links reach - in full, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED, COMMIT), its whole text, why it is there and the call that reads it; and the edge - what a single long link reaches - counted, listed with edge: true. Read a result before relying on what it does not show. An empty answer says so, and is not evidence nothing was considered.',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down: the code at HEAD your question is about, as the lines worth reading - no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -548,6 +549,10 @@ const TOOLS = [
  * once - the stub names the call that reads a summary again, and each tool's
  * description still says how to use it. */
 const sentOnce = { howTo: new Set(), summaries: new Map() };
+
+/* The last question per repository, for the next one to carry (t-71baf0316b). */
+const lastAsked = new Map();
+const CODE_FIRST_HOW = 'Read top down. code is where the answer lives today: each region with the lines worth reading - its comment, its declaration and the lines holding your words - and line numbers at HEAD. commits are the ones git blame names for those lines: why holds the reason the code is as it is. thoughts are what those commits settled - read the status first - and docs the question landed in, as thinking. summaries says what the topic does today. context sits beside the stack: waiting thinking - open questions, proposals, decided but not built, rules - for when you work on it. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question. Open a commit with gitx_graph_commit, a thought with gitx_thought.';
 function lean(tool, result) {
   const first = result && Array.isArray(result.content) ? result.content[0] : null;
   if (!first || first.type !== 'text') return result;
@@ -1161,6 +1166,20 @@ async function handleToolCall(name, args) {
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
       /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
+      /* A question in words enters at the code (t-e688562831): the regions at
+       * HEAD it is about, then the commits that wrote them and the thoughts
+       * they settled, with the context graph beside. The previous question's
+       * rare words ride along until the subject changes (t-71baf0316b). A
+       * listing - by layer, outcome or kind, by ids with no words, the edge -
+       * is still the stack's to answer. */
+      const words = String(args.query || '').trim();
+      if (words && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
+        const prev = lastAsked.get(target.dir) || { carry: [], landed: [] };
+        const cf = codeFirst(target.dir, { query: words, carry: prev.carry, previous: prev.landed, paths: args.paths });
+        lastAsked.set(target.dir, { carry: cf.carry, landed: cf.landed });
+        lastMonitor = cf.monitor;
+        return reply({ repo: target.dir, ...cf.answer, how_to_use: CODE_FIRST_HOW });
+      }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */
       const out = related(target.dir, args, { dataDir: paths.base || logDataDir() });

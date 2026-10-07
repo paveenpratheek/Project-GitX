@@ -27,8 +27,10 @@ import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const SCHEMA = 'gitx.path/0';
-/* Context sits beside L3; for telling up from down it counts as above it. */
-const LEVEL = { context: 4, thought: 3, commit: 2, code: 1 };
+/* Code on top, as an agent walks the stack (t-6a7335ce0a): from the code down
+ * to the commits that wrote it and the thoughts they settled. Context sits
+ * beside the stack; for telling up from down it counts as below it. */
+const LEVEL = { code: 4, commit: 3, thought: 2, context: 1 };
 
 /* A repository is known by its first commit, as the thought log knows it, so a
  * clone can move or be renamed and keep its paths. */
