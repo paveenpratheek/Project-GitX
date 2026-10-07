@@ -23,7 +23,7 @@
     { layer: 'code', name: 'L1 · Code', sub: 'what each commit changed', cls: 'l1' }
   ];
   const LABELS_PER_BAND = 8;
-  const MOVE_WORD ={ enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to' };
+  const MOVE_WORD = { enter: 'entered at', along: 'along to', up: 'up to', down: 'down to', off: 'off the stack to', open: 'opened' };
   const STEP_MS = 900;
   const reduced = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -66,8 +66,12 @@
   };
   const norm = (p) => String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
   const sameRepo = (r) => !repo || !r || norm(r) === norm(repo);
-  const ask = (rec) => (rec.question && rec.question.query) || [].concat(rec.question && rec.question.ids || [], rec.question && rec.question.paths || []).join(', ') || '(no words)';
+  const ask = (rec) => (rec.question && rec.question.query) || [].concat(rec.question && rec.question.ids || [], rec.question && rec.question.paths || []).join(', ') || (rec.started_by ? tool(rec.started_by) : '(no words)');
   const found = (rec) => (rec.gitx && rec.gitx.results ? rec.gitx.results.matched : (rec.stack && rec.stack.nodes ? rec.stack.nodes.length : 0));
+  /* A path started by a call rather than a question - gitx_find_related, the
+   * record tool, a commit by hash: no search ran, so no stack and no count. */
+  const tool = (t) => String(t || '').replace(/^gitx_/, '');
+  const answered = (rec) => (rec.started_by ? tool(rec.started_by) + ' · no stack' : found(rec) + ' found');
 
   /* ------------------------------------------------------------ lifecycle */
 
@@ -176,21 +180,27 @@
 
   function cardHtml(rec, quiet) {
     const sel = rec === selected;
-    const steps = (rec.path || []).filter((s) => s.node || s.kind === 'declare').length;
+    const steps = (rec.path || []).filter((s) => s.node || s.kind === 'declare' || rec.started_by).length;
     const off = (rec.path || []).filter((s) => s.in_stack === false).length;
     return '<div class="mon-card' + (sel ? ' mon-sel' : '') + '" data-id="' + esc(rec.id) + '">' +
       '<div class="mon-card-top"><span class="mon-dot mon-st-' + esc(rec.status) + '"></span>' +
       '<span class="mon-q">' + esc(ask(rec)) + '</span></div>' +
       '<div class="mon-card-meta">' + esc((rec.agent && rec.agent.name) || 'agent') + ' · ' + esc(day(rec.at)) + ' ' + esc(time(rec.at)) +
-      ' · ' + found(rec) + ' found · ' + steps + ' step' + (steps === 1 ? '' : 's') + (off ? ' · ' + off + ' off' : '') +
+      ' · ' + answered(rec) + ' · ' + steps + ' step' + (steps === 1 ? '' : 's') + (off ? ' · ' + off + ' off' : '') +
       ' · <span class="mon-st-word mon-st-' + esc(rec.status) + '">' + esc(statusWord(rec.status)) + '</span></div>' +
       (sel ? '<ol class="mon-log' + (quiet ? ' mon-quiet' : '') + '">' + logHtml(rec) + '</ol>' : '') +
       '</div>';
   }
 
-  function statusWord(s) { return { walking: 'walking', declared: 'declared', 're-asked': 're-asked', left: 'left' }[s] || s || ''; }
+  function statusWord(s) { return { walking: 'walking', declared: 'declared', 're-asked': 're-asked', left: 'left', ended: 'ended' }[s] || s || ''; }
 
   function logHtml(rec) {
+    if (rec.started_by) {
+      let html = '<li class="mon-l mon-l-prompt" style="--i:0"><span class="mon-l-h">Call</span><span class="mon-l-main">' + esc(tool(rec.started_by)) + (rec.question && rec.question.query ? ' “' + esc(rec.question.query) + '”' : '') + '</span>' +
+        '<span class="mon-l-sub">' + esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at) + ' · no question asked first, so no stack') + '</span></li>';
+      (rec.path || []).forEach((step, i) => { html += stepHtml(step, 1 + i); });
+      return html + '<li class="mon-l mon-l-status" style="--i:' + (1 + (rec.path || []).length) + '"><span class="mon-l-h">Status</span><span class="mon-l-main mon-st-word mon-st-' + esc(rec.status) + '" id="mon-status">' + esc(statusWord(rec.status)) + '</span></li>';
+    }
     const g = rec.gitx || {};
     const p = g.processing || {}, s = g.search || {}, r = g.results || {}, f = g.filtering || {};
     const by = { context: 0, thought: 0, commit: 0, code: 0 };
@@ -231,13 +241,15 @@
       return '<li class="mon-l mon-l-step mon-l-declare" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · Declared</span><span class="mon-l-main">recorded ' + esc((step.recorded || []).map(label).join(', ')) + '</span><span class="mon-l-sub">cites ' + c + ' node' + (c === 1 ? '' : 's') + ' from the stack</span></li>';
     }
     if (!step.node) {
-      return '<li class="mon-l mon-l-step mon-l-other" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · ' + esc(step.kind) + '</span><span class="mon-l-main">' + esc(step.tool) + '</span><span class="mon-l-sub">' + esc(step.what || '') + '</span></li>';
+      return '<li class="mon-l mon-l-step mon-l-other" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · ' + esc(tool(step.tool)) + '</span><span class="mon-l-main">' + esc(step.asked ? '“' + step.asked + '”' : step.what || step.kind) + '</span><span class="mon-l-sub">' + esc(got(step) || step.what || '') + '</span></li>';
     }
     const off = step.in_stack === false;
     return '<li class="mon-l mon-l-step' + (off ? ' mon-l-off' : '') + '" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · ' + esc(off ? 'Off the stack' : (step.move || 'move')) + '</span>' +
       '<span class="mon-l-main">' + esc((MOVE_WORD[step.move] || 'to') + ' ' + label(step.node.id)) + ' <span class="mon-layer">' + esc(layerName(step.node.layer)) + '</span></span>' +
-      '<span class="mon-l-sub">' + esc(step.node.text || step.tool) + '</span></li>';
+      '<span class="mon-l-sub">' + esc([step.node.text || tool(step.tool), got(step)].filter(Boolean).join(' · ')) + '</span></li>';
   }
+  /* What a call gave back, said only where it adds to the node it opened. */
+  const got = (step) => (step.got && step.got !== 'answered' && !/^read /.test(step.got) ? 'got ' + step.got : '');
   function layerName(l) { return { context: 'context', thought: 'L3', commit: 'L2', code: 'L1' }[l] || l || '?'; }
 
   function appendStepLog(rec, step) {
@@ -391,7 +403,7 @@
     root.setAttribute('viewBox', '0 0 ' + L.W + ' ' + L.H);
     root.classList.toggle('mon-anim', !!animate && !reduced);
     els.title.innerHTML = '<div class="mon-t-q">“' + esc(ask(rec)) + '”</div><div class="mon-t-sub">' +
-      esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + day(rec.at) + ' ' + time(rec.at) + ' · ' + found(rec) + ' found · ' + ((rec.stack && rec.stack.nodes) || []).length + ' in the stack') + '</div>';
+      esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + day(rec.at) + ' ' + time(rec.at) + ' · ' + answered(rec) + ' · ' + ((rec.stack && rec.stack.nodes) || []).length + ' in the stack') + '</div>';
 
     const defs = svg('defs', {}, root);
     const mk = svg('marker', { id: 'mon-arrow', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '6', markerHeight: '6', orient: 'auto-start-reverse' }, defs);
@@ -427,7 +439,7 @@
       }
     });
     if (!((rec.stack && rec.stack.nodes) || []).length) {
-      svg('text', { x: L.W / 2, y: L.H / 2, 'text-anchor': 'middle', class: 'mon-none' }, root).textContent = 'Nothing matched this prompt - the stack is empty';
+      svg('text', { x: L.W / 2, y: L.H / 2, 'text-anchor': 'middle', class: 'mon-none' }, root).textContent = rec.started_by ? 'Started by ' + tool(rec.started_by) + ' - no question was asked, so there is no stack' : 'Nothing matched this prompt - the stack is empty';
     }
     svg('g', { class: 'mon-trail', id: 'mon-trail' }, root);
     drawPointer(root, L);

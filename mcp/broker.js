@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +22,22 @@ const STATE_FILE = path.join(DEFAULT_ROOT, '.gitx', 'state.json');
 /* Overridable so a second instance can run beside a live one - otherwise the
  * only way to try a change is to stop the broker someone is using. */
 const PORT = Number(process.env.GITX_BROKER_PORT) || 7771;
+
+/* One broker per port. An agent's GitX server starts the broker when it finds
+ * none (server.js), and two agents can find none at the same moment: the
+ * second must leave before it reads git, promotes or opens the watcher, not
+ * fail at listen() after doing all three. */
+await new Promise((resolve) => {
+  const probe = net.createServer();
+  probe.once('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.log('[GitX Broker] A broker is already running on port ' + PORT + ' - this one is not needed.');
+      process.exit(0);
+    }
+    resolve();
+  });
+  probe.listen(PORT, '127.0.0.1', () => probe.close(() => resolve()));
+});
 
 /* The watcher: there is no gate on the thought files and cannot be one, so
  * what is kept instead is a record of every change, with the old values. Its
@@ -528,7 +545,8 @@ wss.on('connection', (ws) => {
     if (w) {
       walking.delete(ws.agentId);
       try {
-        if (markLeft(w.repo, watcher.dataDir || null, w.id)) broadcast({ type: 'GITX_MONITOR', event: 'status', repo: w.repo, prompt: w.id, status: 'left' });
+        const status = markLeft(w.repo, watcher.dataDir || null, w.id);
+        if (status) broadcast({ type: 'GITX_MONITOR', event: 'status', repo: w.repo, prompt: w.id, status });
       } catch (err) { console.warn('[GitX Broker] Could not close out a left prompt: ' + err.message); }
     }
   });
@@ -675,6 +693,14 @@ function handleMessage(msg, ws) {
       console.warn('[GitX Broker] Unknown message type:', msg.type);
   }
 }
+
+/* What the probe above cannot close: another broker taking the port between
+ * the probe and here. */
+server.on('error', (err) => {
+  if (err.code !== 'EADDRINUSE') throw err;
+  console.log('[GitX Broker] Port ' + PORT + ' was taken by another broker as this one started - leaving it to that one.');
+  process.exit(0);
+});
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log('===========================================================');

@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+import os from 'node:os';
+import { execFileSync, spawn } from 'node:child_process';
 import { WebSocket } from 'ws';
 
 import { scanStaged } from './tools/guardrails.js';
@@ -168,6 +169,45 @@ const AGENT_MODEL = process.env.GITX_AGENT_MODEL || 'Antigravity/Claude';
 let brokerWs = null;
 let brokerReady = false;
 
+/* GitX Monitor and its logs live in the broker, and they have to work
+ * whenever GitX does, not only when someone remembered `npm run broker`
+ * (the owner, 7 October). So this server starts one when it finds none - and
+ * when one it was talking to goes away - detached, so it outlives this agent
+ * and serves the next. Only at the default address unless asked: a test that
+ * points GITX_BROKER_URL at a spare or dead port starts nothing, except with
+ * GITX_BROKER_AUTOSTART=1, when the broker is started on that URL's port.
+ * GITX_BROKER_AUTOSTART=0 turns it off. At most once a minute; a broker that
+ * loses the port to another leaves on its own (broker.js). Its output goes
+ * to broker.log in the data folder, as there is no terminal to show it. */
+const BROKER_AUTOSTART = process.env.GITX_BROKER_AUTOSTART === '1' || (!process.env.GITX_BROKER_URL && process.env.GITX_BROKER_AUTOSTART !== '0');
+let brokerStartedAt = 0;
+function startBroker() {
+  if (!BROKER_AUTOSTART || Date.now() - brokerStartedAt < 60000) return;
+  brokerStartedAt = Date.now();
+  try {
+    const dir = paths.base || logDataDir() || path.join(os.tmpdir(), 'gitx');
+    fs.mkdirSync(dir, { recursive: true });
+    const log = path.join(dir, 'broker.log');
+    const out = fs.openSync(log, 'a');
+    fs.writeSync(out, '\n[GitX MCP] ' + new Date().toISOString() + ' - no broker at ' + BROKER_WS + ', started by ' + AGENT_NAME + '\n');
+    const child = spawn(process.execPath, [path.join(path.dirname(__filename), 'broker.js')], {
+      cwd: path.join(path.dirname(__filename), '..'), detached: true, windowsHide: true, stdio: ['ignore', out, out],
+      env: process.env.GITX_BROKER_URL ? { ...process.env, GITX_BROKER_PORT: new URL(BROKER_WS).port } : process.env
+    });
+    child.unref();
+    fs.closeSync(out);
+    process.stderr.write('[GitX MCP] No broker at ' + BROKER_WS + ' - started one (pid ' + child.pid + '); its output is in ' + log + '\n');
+  } catch (err) {
+    process.stderr.write('[GitX MCP] Could not start the broker: ' + err.message + '\n');
+  }
+}
+
+/* What the Monitor is told while the broker is away - starting, or between
+ * two of them - is held and sent when it is back, in order: an 'ask' lost
+ * here leaves every later step of that path with no card to land on. */
+const MONITOR_HELD = 200;
+let held = [];
+
 function connectBroker() {
   try {
     brokerWs = new WebSocket(BROKER_WS);
@@ -182,6 +222,9 @@ function connectBroker() {
         model: AGENT_MODEL,
         pid: process.pid
       }));
+      const waiting = held;
+      held = [];
+      for (const m of waiting) sendToBroker(m);
     });
 
     brokerWs.on('error', () => {
@@ -190,6 +233,7 @@ function connectBroker() {
 
     brokerWs.on('close', () => {
       brokerReady = false;
+      startBroker();
       setTimeout(connectBroker, 3000);
     });
   } catch (_) {
@@ -201,7 +245,11 @@ connectBroker();
 
 function sendToBroker(payload) {
   if (brokerWs && brokerReady) {
-    try { brokerWs.send(JSON.stringify(payload)); } catch (_) {}
+    try { brokerWs.send(JSON.stringify(payload)); return; } catch (_) {}
+  }
+  if (payload && payload.type === 'GITX_MONITOR') {
+    held.push(payload);
+    if (held.length > MONITOR_HELD) held.shift();
   }
 }
 

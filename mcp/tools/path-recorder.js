@@ -76,12 +76,12 @@ export function markLeft(repoDir, dataDir, id) {
   let rec;
   try { rec = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) { return false; }
   if (!rec || rec.status !== 'walking') return false;
-  rec.status = 'left';
+  rec.status = rec.started_by ? 'ended' : 'left';
   rec.ended_at = new Date().toISOString();
   const tmp = file + '.tmp-' + process.pid;
   fs.writeFileSync(tmp, JSON.stringify(rec, null, 2) + '\n');
   fs.renameSync(tmp, file);
-  return true;
+  return rec.status;
 }
 
 const parse = (result) => { try { return JSON.parse(result.content[0].text); } catch (_) { return null; } };
@@ -127,7 +127,15 @@ export class PathRecorder {
     this.agent = agent || null;
   }
 
-  /* One tool call, after its answer has gone. Never throws. */
+  /* One tool call, after its answer has gone. Never throws.
+   *
+   * Every call is kept, not only the ones after a gitx_related: GitX Logs show
+   * an agent's movement, and most of it - find_related before a commit, the
+   * record tool, a commit opened by hash - happens with no question asked
+   * first (measured: 4 gitx_related against about 200 other GitX calls in one
+   * session). A call with no path open starts a path of its own, with no
+   * stack; it teaches nothing, since only a declare citing its own stack does
+   * (learn.js). Each step carries the words the agent gave and what it got. */
   onCall(tool, args, repoDir, result, error, monitor) {
     try {
       const body = error ? null : parse(result);
@@ -135,17 +143,38 @@ export class PathRecorder {
         if (body && !body.error && monitor) this.ask(repoDir, args || {}, monitor);
         return;
       }
-      const rec = this.current.get(repoDir);
-      if (!rec) return;
-      const step = stepOf(tool, args || {}, body, error);
-      if (!step) return;
+      const step = stepOf(tool, args || {}, body, error) || { kind: 'call', tool };
+      step.asked = wordsOf(tool, args || {}) || undefined;
+      step.got = gotOf(body, error);
+      let rec = this.current.get(repoDir);
+      if (!rec || rec.ended_at) rec = this.open(repoDir, tool, step.asked);
       this.walk(rec, step);
     } catch (err) { this.warn(err); }
   }
 
+  /* A path started by a call rather than a question: no stack to walk. */
+  open(repoDir, tool, words) {
+    const at = new Date().toISOString();
+    const rec = {
+      schema: SCHEMA,
+      id: 'p-' + at.replace(/[-:.TZ]/g, '').slice(0, 14) + '-' + crypto.randomBytes(3).toString('hex'),
+      repo: repoDir, at, agent: this.agent, client: this.client,
+      started_by: tool,
+      question: { query: words || null },
+      gitx: null,
+      stack: { nodes: [], links: [] },
+      path: [],
+      status: 'walking'
+    };
+    this.current.set(repoDir, rec);
+    this.save(rec);
+    this.send({ type: 'GITX_MONITOR', event: 'ask', repo: repoDir, record: rec });
+    return rec;
+  }
+
   ask(repoDir, args, monitor) {
     const prev = this.current.get(repoDir);
-    if (prev && prev.status === 'walking') this.finish(prev, 're-asked');
+    if (prev && prev.status === 'walking') this.finish(prev, prev.started_by ? 'ended' : 're-asked');
     const at = new Date().toISOString();
     const rec = {
       schema: SCHEMA,
@@ -167,7 +196,9 @@ export class PathRecorder {
 
   walk(rec, step) {
     step.at = new Date().toISOString();
-    if (step.node) {
+    /* No stack, so nothing is on or off it: the call opened what it opened. */
+    if (step.node && rec.started_by) step.move = 'open';
+    else if (step.node) {
       const inStack = inStackOf(rec.stack, step.node);
       const prev = [...rec.path].reverse().find((s) => s.node && s.in_stack);
       step.in_stack = !!inStack;
@@ -213,10 +244,11 @@ export class PathRecorder {
   end() {
     for (const rec of this.current.values()) {
       if (rec.status !== 'walking') continue;
-      rec.status = 'left';
+      /* Calls with no question have nothing to leave unanswered: they ended. */
+      rec.status = rec.started_by ? 'ended' : 'left';
       rec.ended_at = new Date().toISOString();
       if (this.base) { try { fs.writeFileSync(path.join(pathsHome(rec.repo, this.base), rec.id + '.json'), JSON.stringify(rec, null, 2) + '\n'); } catch (_) {} }
-      try { this.send({ type: 'GITX_MONITOR', event: 'status', repo: rec.repo, prompt: rec.id, status: 'left' }); } catch (_) {}
+      try { this.send({ type: 'GITX_MONITOR', event: 'status', repo: rec.repo, prompt: rec.id, status: rec.status }); } catch (_) {}
     }
   }
 
@@ -271,6 +303,35 @@ function stepOf(tool, args, body, error) {
     default:
       return null;
   }
+}
+
+/* The words an agent gave a call: what it searched for, or what it named. */
+const ASKED = ['query', 'description', 'text', 'subject', 'title', 'id', 'hash', 'commit', 'topic', 'name'];
+function wordsOf(tool, args) {
+  const cut = (s) => String(s).replace(/\s+/g, ' ').trim().slice(0, 160);
+  if (tool === 'gitx_thought_record') {
+    const ts = Array.isArray(args.thoughts) ? args.thoughts : [];
+    if (ts.length) return cut((ts.length > 1 ? ts.length + ' thoughts: ' : '') + (ts[0] && ts[0].text || ''));
+    if (args.summary && args.summary.topic) return 'summary of ' + args.summary.topic;
+  }
+  const said = ASKED.filter((k) => args[k] != null && args[k] !== '').map((k) => args[k]);
+  const files = [].concat(args.items || [], args.paths || [], args.ids || []).map(String);
+  const words = [...said, ...files].join(' · ');
+  if (words) return cut(words);
+  const rest = Object.keys(args).filter((k) => k !== 'cwd');
+  return rest.length ? cut(rest.map((k) => k + ' ' + JSON.stringify(args[k])).join(', ')) : null;
+}
+
+/* What a call gave back, in a line: refused, or how many of each list. */
+function gotOf(body, error) {
+  if (error) return 'error: ' + String(error.message || error).slice(0, 140);
+  if (!body) return 'answered';
+  if (body.error) return 'error: ' + String(body.error).slice(0, 140);
+  if (body.ok === false) return 'refused: ' + String([].concat(body.problems || body.reason || '')[0] || '').slice(0, 140);
+  if (body.thought && body.thought.id) return 'read ' + body.thought.id;
+  const lists = Object.entries(body).filter(([, v]) => Array.isArray(v) && v.length).slice(0, 4).map(([k, v]) => v.length + ' ' + k.replace(/_/g, ' '));
+  if (body.recorded) lists.unshift('recorded ' + body.recorded);
+  return lists.length ? lists.join(' · ') : (body.nothing_on_record ? 'nothing on record' : 'answered');
 }
 
 /* The stack node a step landed on, if any: by id, a commit by its hash prefix,
