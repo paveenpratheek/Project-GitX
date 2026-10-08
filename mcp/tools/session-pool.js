@@ -25,7 +25,8 @@
  * In memory, per server process - one agent session. Nothing here is written.
  */
 
-import { buildCodeIndex, termsOf, idfOf, RARE_SHARE, codeFirst } from './code-find.js';
+import { buildCodeIndex, termsOf, idfOf, RARE_SHARE, codeFirst, rankIndexFor } from './code-find.js';
+import { learnFor } from './walk-learn.js';
 import { stem } from './rank.js';
 
 const POOLS_KEPT = 2;
@@ -183,7 +184,7 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
     try {
       const cx = buildCodeIndex(repoDir);
       const { weights, avoid } = nextWeights(pool, word, null, null);
-      ahead.set(aheadKey(pool, word, pool.paths), { stamp: cx, cf: codeFirst(repoDir, { query: word, weights, avoid, paths: pool.paths }) });
+      ahead.set(aheadKey(pool, word, pool.paths), { stamp: cx, cf: codeFirst(repoDir, { query: word, weights, avoid, paths: pool.paths, use: pool.learned ? pool.learned.use : null }) });
       done++;
     } catch (_) { /* worked out when asked instead */ }
     setImmediate(next);
@@ -192,7 +193,9 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
 }
 
 /* One gitx_related call through the session's pool. */
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [] } = {}) {
+const LEARNED = 0.5;         // a learned word's weight: it widens the search, never decides it
+
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null } = {}) {
   const cx = buildCodeIndex(repoDir);
   const s = sessions.get(repoDir) || { pool: null, kept: [] };
   sessions.set(repoDir, s);
@@ -222,8 +225,15 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   const key = aheadKey(pool, q, paths);
   const ready = !add && !drop && kind === 'follow-up' ? ahead.get(key) : null;
   Object.assign(pool, nextWeights(pool, q, add, drop));
+  /* A new question learns from earlier agents' walks of questions like it
+   * (walk-learn.js): the words they added come in at LEARNED, and what they
+   * opened is passed to the search, which ranks it higher. */
+  if (kind === 'new' && q && dataDir) {
+    try { pool.learned = learnFor(repoDir, dataDir, rankIndexFor(repoDir), q); } catch (_) { pool.learned = null; }
+    for (const w of (pool.learned && pool.learned.words) || []) if (!pool.weights.has(w)) pool.weights.set(w, LEARNED);
+  }
   pool.round++;
-  const cf = ready && ready.stamp === cx ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths });
+  const cf = ready && ready.stamp === cx ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths, use: pool.learned ? pool.learned.use : null });
   const prefetched = !!(ready && ready.stamp === cx);
   for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
   let body;
@@ -246,7 +256,13 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
       words: words.length ? words : undefined,
       dropped: pool.avoid.size ? [...pool.avoid].map((w) => pool.spell.get(w) || w) : undefined,
       ...body,
-      asked_first: pool.round > 1 ? pool.first : undefined
+      asked_first: pool.round > 1 ? pool.first : undefined,
+      learned: pool.round === 1 && pool.learned ? {
+        from: pool.learned.paths + ' earlier walk' + (pool.learned.paths === 1 ? '' : 's') + ' of questions like this, the newest ' + String(pool.learned.newest).slice(0, 10),
+        words_added: pool.learned.words.length ? pool.learned.words : undefined,
+        they_read: pool.learned.read.length ? pool.learned.read.map((x) => x.what + ' - ' + x.opened) : undefined,
+        note: 'a hint from earlier agents, never the whole answer: the map above is searched fresh'
+      } : undefined
     },
     monitor: cf.monitor,
     kind,

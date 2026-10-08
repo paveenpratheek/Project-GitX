@@ -519,7 +519,7 @@ const TREES = 2;
 const WORDS = 8;
 
 /* The name of a region in a word or two: learnKeys, PathRecorder.walk. */
-const shortName = (r) => {
+export const shortName = (r) => {
   const m = String(r.name).replace(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?/, '').match(/^(?:function\*?\s+|class\s+|const\s+|let\s+|var\s+|def\s+|static\s+|get\s+|set\s+)?([\w$.-]+)/);
   return m ? m[1] : String(r.name).slice(0, 30);
 };
@@ -686,7 +686,7 @@ function wordsOfCore(cx, coreRegions, asked) {
     .sort((a, b) => b[1] * idfOf(cx, b[0]) - a[1] * idfOf(cx, a[0])).slice(0, WORDS).map(([w]) => spelled.get(w));
 }
 
-export function buildMap(repoDir, cx, query, terms, scored) {
+export function buildMap(repoDir, cx, query, terms, scored, use = null) {
   const g = codeGraph(repoDir);
   const topic = topicOf(cx, query, scored);
   const byFile = new Map();
@@ -702,6 +702,9 @@ export function buildMap(repoDir, cx, query, terms, scored) {
   }).sort((a, b) => b.score - a.score);
   const top = files.length ? files[0].score : 0;
   const near = files.filter((x) => x.score >= top * CORE_NEAR).slice(0, CORE_FILES);
+  /* A file holding a function earlier agents used for questions like this
+   * comes in too, after the rest - the hint widens the map. */
+  for (const x of files) if (!near.includes(x) && x.xs.some((y) => y.hit.includes('learned'))) near.push(x);
   /* A front-end file among them is where the feature is shown - surface,
    * not core (monitor.js for path knowledge) - unless the feature lives only
    * in the front end, when there is no other core. */
@@ -723,7 +726,11 @@ export function buildMap(repoDir, cx, query, terms, scored) {
       const w = wordOf.get(r);
       const own = ownershipOf(cx, [r], topic);
       const size = 0.6 + 0.4 * Math.min(1, lines(r) / 30);
-      return { r, score: w ? w.score : 0, hit: w ? w.hit : [], own, rankBy: ((w ? w.score : 0) + own) * size };
+      /* Used by earlier agents asking this: up to half again; left alone by
+       * them: down to half. No evidence: unchanged. */
+      const learned = use && use.get(r.file + '::' + shortName(r));
+      const lift = learned ? 0.5 + learned.mean : 1;
+      return { r, score: w ? w.score : 0, hit: w ? w.hit : [], own, rankBy: ((w ? w.score : 0) + own) * size * lift };
     }).filter((x) => x.score > 0 || x.own >= 0.5);
     const max = Math.max(0, ...all.map((x) => x.rankBy));
     return all.filter((x) => x.rankBy >= max * 0.5)
@@ -848,7 +855,14 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
  * ride along at half weight unless this question is on a new subject
  * (newSubject). `paths` keeps the code to those files when any holds some
  * of the question. */
-export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null } = {}) {
+/* `use` is what earlier agents' walks of questions like this one used
+ * (walk-learn.js): key -> { mean, a, b }. A function they clearly used joins
+ * the search even when the question's words miss it, ranks higher in the
+ * map, and their thoughts come first in their commits - a hint that widens
+ * what is found and orders it, never what is hidden (t-11190c437f). */
+const USED_MEAN = 0.6, USED_A = 1;
+const learnedUse = (v) => v && v.a >= USED_A && v.mean >= USED_MEAN;
+export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null, use = null } = {}) {
   const t0 = Date.now();
   const cx = buildCodeIndex(repoDir);
   const rx = rankIndexFor(repoDir);
@@ -864,15 +878,31 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const carried = !weights && carry.length && !newSubject(cx, query, previous, carry) ? carry : [];
   const { terms, found } = search({ carry: carried });
   const tSearch = Date.now() - t0;
+  const wordBest = found.length ? found[0].score : 0;
+  /* Functions earlier agents used for questions like this, found or not. */
+  const learnedHere = [];
+  if (use) {
+    const byKey = new Map(cx.regions.map((r) => [r.file + '::' + shortName(r), r]));
+    for (const [k, v] of use) {
+      const r = learnedUse(v) && byKey.get(k);
+      if (!r) continue;
+      const have = found.find((x) => x.r === r);
+      if (have) have.hit.push('learned');
+      else learnedHere.push({ r, score: Math.max(NO_CODE, wordBest * 0.6), hit: ['learned'] });
+    }
+    found.push(...learnedHere);
+    found.sort((a, b) => b.score - a.score);
+  }
   const best = found.length ? found[0].score : 0;
   const noCode = best < NO_CODE;
   const words = weights ? [...weights].filter(([w, m]) => m >= 0.5 && !w.includes('_')).map(([w]) => w).join(' ')
     : carried.length ? query + ' ' + carried.join(' ') : query;
   const order = new Map(rank(rx, { text: words, layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
+  for (const [k, v] of use || []) if (k.startsWith('t-') && learnedUse(v)) order.set(k, -1 - v.a);
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   const context = rank(rx, { text: words, layers: ['context'], limit: 20 }).results;
 
-  const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3));
+  const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3), use);
   const docs = noCode ? [] : spread(found.filter(({ r }) => r.kind === 'doc'), DOCS_SHOWN).filter((x) => x.score >= best * 0.5);
   const seen = { commits: new Map(), thoughts: new Map() };
   /* Trees from different files and different commits: two written by one

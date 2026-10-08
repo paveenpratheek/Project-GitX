@@ -1199,7 +1199,7 @@ async function handleToolCall(name, args) {
       const words = String(args.query || '').trim();
       const refine = (Array.isArray(args.add) ? args.add.length : args.add) || (Array.isArray(args.drop) ? args.drop.length : args.drop);
       if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
-        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths });
+        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir() });
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);

@@ -38,7 +38,7 @@ const PATHS_READ = 5000;
  * them: "tell" and "explain" are rare in a graph of decisions, and kept, they
  * split "tell me about 4th dimension" and "explain the 4th dimension" into
  * keys of their own, none of which ever learns anything. */
-const ASKING = new Set(('what whats which who whom whose when where why how is are was were do does did doe can could should would will ' +
+export const ASKING = new Set(('what whats which who whom whose when where why how is are was were do does did doe can could should would will ' +
   'tell me about explain describe show give list please know want need understand mean means meaning there here this that these those it its ' +
   'thing things way work works working happen happens ' +
   /* commit subjects' type prefixes, and plain words rare only because the
