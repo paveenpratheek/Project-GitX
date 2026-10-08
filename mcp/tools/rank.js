@@ -850,7 +850,11 @@ export function statusOf(ix, n) {
   if (n.outcome === 'stashed') return 'STASHED';
   if (n.kind === 'learned') return 'RULE';
   if (n.kind === 'finding') return n.layer === 'thought' ? 'FINDING, SETTLED' : 'FINDING';
-  if (n.layer === 'thought') return 'SETTLED' + built;
+  /* A settled decision a later settled one refined is still what was built
+   * then, but no longer the whole of it: the promotion rule that brings what
+   * a decision cites read as plain SETTLED beside the later rule that stops
+   * it at a decision still waiting. The status still starts SETTLED in. */
+  if (n.layer === 'thought') return 'SETTLED' + built + (later ? ' - refined later by ' + later.by + settled(later) : '');
   const waiting = n.kind === 'cost' ? 'COST ACCEPTED - NOT BUILT' : 'ACCEPTED - NOT BUILT';
   return later ? waiting + ' itself - refined by ' + later.by + settled(later) : waiting;
 }

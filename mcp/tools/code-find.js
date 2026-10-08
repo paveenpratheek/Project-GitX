@@ -30,6 +30,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { tokenize, parseMessage } from './git-extract.js';
+import { ASKING } from './learn.js';
 import { stem, buildRankIndex, rank, statusOf, summaryOf } from './rank.js';
 import { loadThoughts } from './thoughts.js';
 import { loadTopics } from './topics.js';
@@ -801,7 +802,23 @@ export function buildMap(repoDir, cx, query, terms, scored, use = null) {
  * names for them with their why, the thoughts each settled - nearest the
  * question first - and what is still open about them. A commit or thought
  * already given in an earlier tree is named, not repeated. */
-function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, topic = null } = {}) {
+/* Is a thought about the question? It shares one of the question's
+ * distinctive words - in at most ABOUT_SHARE of what GitX holds: domain,
+ * goal, waiting, not context, graph or thought, which every thought here
+ * says. Rank scores could not tell: the topic-summary thoughts scored above
+ * the domain rule on context, graph and the shared topic. A thought earlier
+ * agents used for questions like this is about it too. Null when the
+ * question has no distinctive word: then nothing is filtered. */
+const ABOUT_SHARE = 0.12;
+const ABOUT_RANK = 60;       // a fallback thought must rank in the top this many for the question
+function aboutTest(rx, query, order) {
+  const n = rx.nodes.size;
+  const distinct = new Set(tokenize(String(query || '')).map(stem).filter((w) => !ASKING.has(w) && ((rx.postings.get(w) || { size: 0 }).size) <= n * ABOUT_SHARE));
+  if (!distinct.size) return null;
+  return (t) => (order && order.get(t.id) < 0) || tokenize(t.text).map(stem).some((w) => distinct.has(w));
+}
+
+function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, about = null } = {}) {
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   const n = r.to - r.from + 1;
   /* Which commits: the one that wrote most of it, and then those whose
@@ -809,23 +826,38 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
    * wrote few of promote.js's lines but settled the rule asked about, was
    * left out. */
   const near = (c) => { const cm = cx.commits.get(c); const best = cm ? Math.min(999, ...cm.thoughts.map((t) => (order.has(t.id) ? order.get(t.id) : 999))) : 999; return best < 20 ? 1 : best < 60 ? 0.5 : 0; };
+  /* Only the thoughts about the question (`about`): a commit that wrote the
+   * code also settled thoughts on other things - topics.js's header carries
+   * the topic-summary commit, and its summary thoughts came with every
+   * question landing there. A second commit comes only with something about
+   * the question; the first always, its other thoughts counted, not shown. */
+  const isAbout = (t) => !about || about(t);
   const byLines = Object.entries(r.commits).sort((a, b) => b[1] - a[1]);
-  const picked = [byLines[0], ...byLines.slice(1).sort((a, b) => (near(b[0]) + b[1] / n) - (near(a[0]) + a[1] / n))].filter(Boolean).slice(0, commitsShown);
+  const relevant = (c) => { const cm = cx.commits.get(c); return !!cm && cm.thoughts.some(isAbout); };
+  const picked = [byLines[0], ...byLines.slice(1).filter(([c]) => relevant(c)).sort((a, b) => (near(b[0]) + b[1] / n) - (near(a[0]) + a[1] / n))].filter(Boolean).slice(0, commitsShown);
   const written = picked.map(([c, k]) => {
     const cm = cx.commits.get(c);
     if (!cm) return null;
     const short = c.slice(0, 7);
     if (seen.commits.has(short)) return { commit: short, wrote: k + ' of ' + n + ' lines', see: seen.commits.get(short) };
     seen.commits.set(short, shortName(r));
-    const ts = cm.thoughts.slice().sort((a, b) => (order.has(a.id) ? order.get(a.id) : 999) - (order.has(b.id) ? order.get(b.id) : 999));
+    const byOrder = (a, b) => (order.has(a.id) ? order.get(a.id) : 999) - (order.has(b.id) ? order.get(b.id) : 999);
+    let ts = cm.thoughts.filter(isAbout).sort(byOrder);
+    /* Nothing above the cut: the one the question's words rank best, if it
+     * ranks at all - the commit wrote the code the question landed on, and an
+     * empty tree lost the rule that a thought pointing back stays waiting,
+     * which says it in words every thought here uses. */
+    if (!ts.length) { const best = cm.thoughts.slice().sort(byOrder)[0]; if (best && order.has(best.id) && order.get(best.id) < ABOUT_RANK) ts = [best]; }
+    const elsewhere = cm.thoughts.length - ts.length;
     return {
       commit: short, date: cm.date, wrote: k + ' of ' + n + ' lines', subject: cap(cm.subject, 110), why: cm.body ? cap(cm.body, 260) : undefined,
-      settled: ts.slice(0, thoughtsShown).map((t) => {
+      settled: ts.length ? ts.slice(0, thoughtsShown).map((t) => {
         if (seen.thoughts.has(t.id)) return { id: t.id, see: seen.thoughts.get(t.id) };
         seen.thoughts.set(t.id, shortName(r));
         return { id: t.id, status: statusFor(t.id), text: t.text };
-      }),
-      more_settled: ts.length > thoughtsShown ? ts.slice(thoughtsShown).map((t) => t.id).join(', ') : undefined
+      }) : undefined,
+      more_settled: ts.length > thoughtsShown ? ts.slice(thoughtsShown).map((t) => t.id).join(', ') : undefined,
+      on_other_things: elsewhere ? elsewhere + ' more thought' + (elsewhere === 1 ? '' : 's') + ' it settled, not about this question' : undefined
     };
   }).filter(Boolean);
   /* Still open about it: waiting thoughts that link to what these commits
@@ -835,7 +867,6 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
   const open = cx.waiting.filter((t) => (t.links || []).some((l) => settledIds.has(l.to)) || (t.forces || []).some((f) => (f.cites || []).some((x) => settledIds.has(x))))
     .sort((a, b) => (order.has(a.id) ? order.get(a.id) : 999) - (order.has(b.id) ? order.get(b.id) : 999))
     .slice(0, 3).map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, 200) }));
-  void topic;
   return { function: entry(r), ref: r.file + ':' + r.from, code: linesFor(r, terms), written_by: written, open: open.length ? open : undefined };
 }
 
@@ -900,7 +931,15 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const order = new Map(rank(rx, { text: words, layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
   for (const [k, v] of use || []) if (k.startsWith('t-') && learnedUse(v)) order.set(k, -1 - v.a);
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
-  const context = rank(rx, { text: words, layers: ['context'], limit: 20 }).results;
+  /* The context layer is found by words alone; what agents asking questions
+   * like this did reorders it (t-9299c80214). A waiting thought they opened
+   * or cited rises, one they were shown and left sinks, by CONTEXT_SHIFT
+   * places for every half of the mean away from even. Given in full, a thought
+   * is rarely opened, so being left weighs on all alike - what separates the
+   * stale from the useful is which ones get opened or cited. */
+  const CONTEXT_SHIFT = 10;
+  const found20 = rank(rx, { text: words, layers: ['context'], limit: 20 }).results;
+  const context = use ? found20.map((x, i) => { const v = use.get(x.id); return { x, k: i + (v ? (0.5 - v.mean) * 2 * CONTEXT_SHIFT : 0) }; }).sort((a, b) => a.k - b.k).map((y) => y.x) : found20;
 
   const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3), use);
   const docs = noCode ? [] : spread(found.filter(({ r }) => r.kind === 'doc'), DOCS_SHOWN).filter((x) => x.score >= best * 0.5);
@@ -914,7 +953,8 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     if (treeRegions.some((r) => r.file === r0.file || topCommit(r) === topCommit(r0))) continue;
     treeRegions.push(r0);
   }
-  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen));
+  const about = aboutTest(rx, words, order);
+  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen, { about }));
   const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
 
   /* No code holds the question's words - but a commit's message may say it
@@ -1023,7 +1063,8 @@ export function expandRegion(repoDir, name, { query = '' } = {}) {
   const terms = [...termsOf(query)];
   const order = new Map(rank(rx, { text: query || shortName(candidates[0]), layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
   const seen = { commits: new Map(), thoughts: new Map() };
-  return { expanded: candidates.slice(0, 2).map((r) => treeOf(cx, rx, r, terms, order, seen, { commitsShown: 3, thoughtsShown: 4 })) };
+  const about = query ? aboutTest(rx, query, order) : null;
+  return { expanded: candidates.slice(0, 2).map((r) => treeOf(cx, rx, r, terms, order, seen, { commitsShown: 3, thoughtsShown: 4, about })) };
 }
 
 /* Everything a question needs, built now - for the server to call when HEAD
