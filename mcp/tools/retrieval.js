@@ -23,6 +23,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 import { parseHunks, toShares, tokenize } from './git-extract.js';
 import { COMMON_WORD_CUTOFF } from './commit-index.js';
 
@@ -50,7 +51,7 @@ const BLEND = 0.5;   // regions vs words - see the note in findRelated
 export function stagedRegions(repoDir) {
   try {
     const out = execFileSync('git', ['diff', '--cached', '-U0', '--no-renames', '--no-color'],
-      { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
+      { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
     const { regions } = parseHunks(out);
     return toShares(regions);
   } catch (_) {

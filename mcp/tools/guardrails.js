@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 
 // File patterns that must never be staged or committed
 const BLOCKED_FILE_PATTERNS = [
@@ -73,7 +74,7 @@ export function scanContent(content, fileName = 'unspecified') {
  */
 export function scanStaged(repoDir) {
   const git = (args) => execFileSync('git', args,
-    { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let files;
   try {

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './tools/no-console.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { scanGitHistory } from './tools/chronicle-parser.js';
 import { loadOrBuildIndex } from './tools/commit-index.js';
@@ -94,7 +95,7 @@ function thoughtStatsOf(dir) {
 function getBranch(dir) {
   try {
     return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      windowsHide: true,
+      windowsHide: NO_CONSOLE,
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
@@ -106,7 +107,7 @@ function getBranch(dir) {
 
 function getHead(dir) {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch (_) {
     return null;
   }
@@ -137,8 +138,8 @@ function watchHead(dir) {
   headWatchedDir = dir;
   let gitDir, common;
   try {
-    gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    common = path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    common = path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
   } catch (_) { return; }   // not a repository: nothing to watch
   const moved = () => {
     clearTimeout(headTimer);

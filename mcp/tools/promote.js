@@ -39,6 +39,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 import { fileURLToPath } from 'node:url';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
 import { parseMessage } from './git-extract.js';
@@ -48,7 +49,7 @@ const WEIGHED_AGAINST_IT = ['lost-to', 'cost-of', 'supports'];
 const ITS_OWN_HISTORY = ['supersedes', 'refines', 'derived-from'];
 const REC = '\x1e', FLD = '\x1f';
 
-const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
 const leads = (t) => t.outcome === 'accepted' && (t.kind === 'decision' || t.kind === 'cost');
 
 /* The recent commits that name thoughts, newest first. */

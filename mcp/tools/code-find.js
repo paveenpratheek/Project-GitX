@@ -29,6 +29,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 import { tokenize, parseMessage } from './git-extract.js';
 import { ASKING } from './learn.js';
 import { stem, buildRankIndex, rank, statusOf, summaryOf } from './rank.js';
@@ -51,7 +52,7 @@ const LINES_KEEP = 30;       // lines shown per region at most
 const CONTEXT = 2;           // lines around a line that holds a question's word
 const SENTENCE_MAX = 8;      // lines a comment sentence may span when it comes whole
 
-const git = (repoDir, args) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+const git = (repoDir, args) => execFileSync('git', args, { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
 
 /* Words as the rest of GitX counts them, after taking identifiers apart:
  * domainByKind is "domain by kind", path_recorder "path recorder". */

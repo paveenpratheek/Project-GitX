@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 
 /**
  * Ensures an isolated Git Worktree exists for a given feature branch.
@@ -34,7 +35,7 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
     let branchExists = false;
     try {
       execFileSync('git', ['rev-parse', '--verify', branch], {
-        windowsHide: true,
+        windowsHide: NO_CONSOLE,
         cwd: repoRoot,
         stdio: 'ignore'
       });
@@ -46,14 +47,14 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
     if (branchExists) {
       // Branch exists: attach worktree to existing branch
       execFileSync('git', ['worktree', 'add', targetWorktreePath, branch], {
-        windowsHide: true,
+        windowsHide: NO_CONSOLE,
         cwd: repoRoot,
         encoding: 'utf8'
       });
     } else {
       // Branch does not exist: create branch from sourceBranch and mount worktree
       execFileSync('git', ['worktree', 'add', '-b', branch, targetWorktreePath, sourceBranch], {
-        windowsHide: true,
+        windowsHide: NO_CONSOLE,
         cwd: repoRoot,
         encoding: 'utf8'
       });
@@ -82,7 +83,7 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
 export function listWorktrees(repoRoot) {
   try {
     const raw = execFileSync('git', ['worktree', 'list', '--porcelain'], {
-      windowsHide: true,
+      windowsHide: NO_CONSOLE,
       cwd: repoRoot,
       encoding: 'utf8'
     });
@@ -121,7 +122,7 @@ export function listWorktrees(repoRoot) {
 export function removeWorktree(repoRoot, worktreePath) {
   try {
     execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], {
-      windowsHide: true,
+      windowsHide: NO_CONSOLE,
       cwd: repoRoot,
       stdio: 'ignore'
     });

@@ -4,6 +4,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { execFileSync, spawn } from 'node:child_process';
+import { NO_CONSOLE } from './tools/no-console.js';
 import { WebSocket } from 'ws';
 
 import { scanStaged } from './tools/guardrails.js';
@@ -43,7 +44,7 @@ const MIN_WHY_WORDS = 3;
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: NO_CONSOLE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch (_) {
     return process.cwd();
   }
@@ -194,7 +195,8 @@ function startBroker() {
     fs.writeSync(out, '\n[GitX MCP] ' + new Date().toISOString() + ' - no broker at ' + BROKER_WS + ', started by ' + AGENT_NAME + '\n');
     const child = spawn(process.execPath, [path.join(path.dirname(__filename), 'broker.js')], {
       cwd: path.join(path.dirname(__filename), '..'), detached: true, windowsHide: true, stdio: ['ignore', out, out],
-      env: process.env.GITX_BROKER_URL ? { ...process.env, GITX_BROKER_PORT: new URL(BROKER_WS).port } : process.env
+      /* Detached is no console, so the broker's git calls need windowsHide - see no-console.js. */
+      env: { ...process.env, GITX_NO_CONSOLE: '1', ...(process.env.GITX_BROKER_URL ? { GITX_BROKER_PORT: new URL(BROKER_WS).port } : {}) }
     });
     child.unref();
     fs.closeSync(out);
@@ -767,7 +769,7 @@ async function handleToolCall(name, args) {
         return reply({ ok: false, committed: false, error: 'No such folder: ' + target.requested + ' - nothing was committed.' });
       }
       const dir = target.dir;
-      const git = (...a) => execFileSync('git', a, { windowsHide: true, cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      const git = (...a) => execFileSync('git', a, { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
       const gitOk = (...a) => { try { git(...a); return true; } catch (_) { return false; } };
       if (!gitOk('rev-parse', '--is-inside-work-tree')) {
         return reply({ ok: false, committed: false, error: dir + ' is not inside a git repository - nothing was committed.' });
@@ -933,7 +935,7 @@ async function handleToolCall(name, args) {
       const readBack = parseMessage(header, message);
       let gitRead = [];
       try {
-        gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { windowsHide: true, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+        gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { windowsHide: NO_CONSOLE, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
           .split('\n').filter((l) => /^GitX-/i.test(l));
       } catch (_) {}
       if (readBack.trailers.length !== buildsOn.length + relatesTo.length || (readBack.root || '') !== root || readBack.thoughts.length !== thoughtIds.length || gitRead.length !== trailers.length) {
@@ -948,7 +950,7 @@ async function handleToolCall(name, args) {
       }
 
       try {
-        execFileSync('git', ['commit', '--cleanup=whitespace', '-F', '-'], { windowsHide: true, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
+        execFileSync('git', ['commit', '--cleanup=whitespace', '-F', '-'], { windowsHide: NO_CONSOLE, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
       } catch (err) {
         return reply({ ok: false, committed: false, error: 'git commit failed: ' + String(err.stderr || err.stdout || err.message).trim(), message });
       }

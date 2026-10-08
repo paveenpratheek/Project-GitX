@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 
 /**
  * Parses raw git commit body using the GitX 4-Layer Chronicle Grammar.
@@ -91,7 +92,7 @@ export function scanGitHistory(repoDir, limit = 50) {
       `-n`, String(limit),
       `--pretty=format:%H%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%B%x1e`
     ], {
-      windowsHide: true,
+      windowsHide: NO_CONSOLE,
       cwd: repoDir,
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024

@@ -47,6 +47,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
 import { loadTopics, loadGoal, mapPaths } from './topics.js';
 
@@ -60,7 +61,7 @@ const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 
 function repoKey(repoDir) {
   try {
     const root = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
-      windowsHide: true,
+      windowsHide: NO_CONSOLE,
       cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
     }).trim().split('\n').pop();
     if (root) return root.slice(0, 16);

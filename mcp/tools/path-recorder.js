@@ -25,6 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 
 const SCHEMA = 'gitx.path/0';
 /* Code on top, as an agent walks the stack (t-6a7335ce0a): from the code down
@@ -39,7 +40,7 @@ export function repoKey(dir) {
   if (keys.has(dir)) return keys.get(dir);
   let k = null;
   try {
-    k = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    k = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .trim().split('\n').pop().slice(0, 16) || null;
   } catch (_) { /* not a repository, or no commits */ }
   if (!k) k = crypto.createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16);

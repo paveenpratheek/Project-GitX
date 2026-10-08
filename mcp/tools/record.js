@@ -37,6 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 import { loadThoughts, thoughtDirs } from './thoughts.js';
 import { similarThoughts } from './thought-query.js';
 import { buildRankIndex, relatedToDraft, summaryOf } from './rank.js';
@@ -55,7 +56,7 @@ const MAX_TEXT = 600;
  * or a run of calls reads as a thread. It starts empty with each server. */
 const lastRecorded = new Map();
 
-const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 const idFor = (repoDir, anchor, text) => 't-' + crypto.createHash('sha1').update(path.basename(repoDir) + ':' + String(anchor).slice(0, 12) + ':' + norm(text).toLowerCase()).digest('hex').slice(0, 10);
 

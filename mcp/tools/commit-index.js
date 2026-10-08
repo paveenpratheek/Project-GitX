@@ -20,6 +20,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { NO_CONSOLE } from './no-console.js';
 
 import { SEP_REC, SEP_FLD, parseHunks, toShares, tokenize, parseMessage } from './git-extract.js';
 
@@ -32,7 +33,7 @@ export const COMMON_WORD_CUTOFF = 0.25;   // a word in >25% of commits carries n
 export const INDEX_VERSION = 2;
 
 export function buildIndex(repoDir) {
-  const gitArgs = { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };
+  const gitArgs = { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };
 
   let head = '';
   try { head = execFileSync('git', ['rev-parse', 'HEAD'], { ...gitArgs, maxBuffer: 1024 }).trim(); } catch (_) {}
@@ -176,7 +177,7 @@ function cachePath(repoDir) {
 export function loadOrBuildIndex(repoDir) {
   const file = cachePath(repoDir);
   let head = '';
-  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 1024 }).trim(); } catch (_) {}
+  try { head = execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 1024 }).trim(); } catch (_) {}
 
   try {
     if (fs.existsSync(file)) {
