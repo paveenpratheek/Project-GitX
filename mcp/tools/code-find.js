@@ -49,6 +49,7 @@ const WHY_LINES = 3;         // ... or this many lines of: a small fix spread ov
 const WHY_WEIGHT = 0.5;      // a word only in the why counts half
 const LINES_KEEP = 30;       // lines shown per region at most
 const CONTEXT = 2;           // lines around a line that holds a question's word
+const SENTENCE_MAX = 8;      // lines a comment sentence may span when it comes whole
 
 const git = (repoDir, args) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
 
@@ -389,7 +390,26 @@ export function linesFor(region, terms) {
   const add = (i, v) => { if (i >= 0 && i < lines.length) keep.set(i, Math.max(keep.get(i) || 0, v)); };
   for (let i = 0; i < Math.min(2, lines.length); i++) add(i, 100);
   add(Math.min(decl, lines.length - 1), 100);
-  for (let i = 0; i < lines.length; i++) if (weight[i]) for (let k = i - CONTEXT; k <= i + CONTEXT; k++) add(k, weight[i] * 10 - Math.abs(k - i));
+  /* A comment line that holds the question's words comes with its whole
+   * sentence - back to where the sentence before it ended, on to where it
+   * ends, SENTENCE_MAX lines at most - ranked as one by all the words in it.
+   * Line by line, topics.js's header gave "a thought's domain follows from
+   * its kind and outcome, which keeps" and could cut the promise that
+   * follows - an answered question stops being one - which is where its bug
+   * shows. Code lines keep a little context each, as before. */
+  const text = (i) => String(lines[i] || '').replace(/^\s*(?:\/\*+|\*+\/?|\/\/+|#+)\s?/, '').trim();
+  const isComment = (i) => i >= 0 && i < lines.length && COMMENT.test(lines[i]);
+  const ends = (i) => !text(i) || /[.?!:]["')\]]?$/.test(text(i));
+  for (let i = 0; i < lines.length; i++) {
+    if (!weight[i]) continue;
+    if (!isComment(i)) { for (let k = i - CONTEXT; k <= i + CONTEXT; k++) add(k, weight[i] * 10 - Math.abs(k - i)); continue; }
+    let s = i, e = i;
+    while (s > 0 && isComment(s - 1) && !ends(s - 1) && e - s < SENTENCE_MAX - 1) s--;
+    while (e < lines.length - 1 && isComment(e + 1) && !ends(e) && e - s < SENTENCE_MAX - 1) e++;
+    let sum = 0;
+    for (let k = s; k <= e; k++) sum += weight[k];
+    for (let k = s; k <= e; k++) add(k, sum * 10);
+  }
   if (keep.size <= 3) for (let i = decl; i < Math.min(lines.length, decl + 16); i++) add(i, 1);
   const idx = [...keep].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, LINES_KEEP).map(([i]) => i).sort((a, b) => a - b);
   const out = [];
