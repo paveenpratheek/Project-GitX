@@ -673,7 +673,8 @@ function wordsOfCore(cx, coreRegions, asked) {
       const names = (l.replace(/(['"`])(?:\\.|(?!\1).)*\1/g, ' ').match(/[A-Za-z_$][\w$]*/g) || []).filter((n) => /[a-z][A-Z]|_/.test(n));
       return (c ? c[1] : '') + ' ' + names.join(' ');
     }).join(' ');
-    for (const raw of said.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/_/g, ' ').match(/[A-Za-z][A-Za-z0-9]{3,}/g) || []) {
+    /* toISOString is "to ISO String", not "isostring". */
+    for (const raw of said.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2').replace(/_/g, ' ').match(/[A-Za-z][A-Za-z0-9]{3,}/g) || []) {
       const lower = raw.toLowerCase();
       const w = stem(lower);
       if (NOT_WORDS.has(lower) || MONTHS.test(lower) || /\d/.test(raw) || asked.has(w) || !cx.df.has(w)) continue;

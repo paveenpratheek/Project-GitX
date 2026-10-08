@@ -172,7 +172,7 @@ export class PathRecorder {
     const words = [args.query, ...[].concat(args.add || []).map((w) => '+' + w), ...[].concat(args.drop || []).map((w) => '-' + w)].filter(Boolean).join(' ');
     this.walk(rec, {
       kind: 'refine', tool: 'gitx_related', asked: words || undefined, what: body.why,
-      got: 'round ' + body.round + ': ' + (m.new || []).length + ' new, ' + (m.back || []).length + ' back, ' + (m.hidden || []).length + ' hidden, ' + (m.kept || 0) + ' kept'
+      got: 'round ' + body.round + ': ' + (m.new || []).length + ' new, ' + (m.back || []).length + ' back, ' + (m.hidden || []).length + ' hidden, ' + (m.kept || 0) + ' kept' + (monitor.phases && monitor.phases.question && monitor.phases.question.prefetched ? ' - worked out before it was asked' : '')
     });
     this.send({ type: 'GITX_MONITOR', event: 'ask', repo: rec.repo, record: rec });
   }

@@ -64,7 +64,7 @@ function followUp(cx, query, pool) {
 }
 
 const freshPool = (first) => ({
-  first, anchor: new Set([...termsOf(first)]), round: 0, weights: new Map(), avoid: new Set(), spell: new Map(),
+  id: ++poolIds, first, anchor: new Set([...termsOf(first)]), round: 0, weights: new Map(), avoid: new Set(), spell: new Map(),
   sent: new Map(),           // id -> round it was first given (trees, thoughts, commits, context, docs)
   sentLines: new Map(),      // function ref -> Set of line numbers given
   sentTerms: new Set(),      // every word given, for telling a follow-up
@@ -142,6 +142,55 @@ function changesOf(pool, full) {
   };
 }
 
+/* The pool's words after a call, without touching the pool: a question in
+ * the chain ages the older words - the first question's never below the
+ * anchor - and comes in at full weight; an add or a drop only adjusts. */
+function nextWeights(pool, q, add, drop) {
+  const weights = new Map(pool.weights), avoid = new Set(pool.avoid);
+  if (pool.round > 0 && q) {
+    for (const [w, m] of weights) {
+      const n = pool.anchor.has(w) ? Math.max(ANCHOR, m * OLDER) : m * OLDER;
+      if (n < FADED) weights.delete(w); else weights.set(w, n);
+    }
+  }
+  for (const w of [...termsOf(q), ...termsOfList(add)]) { weights.set(w, 1); avoid.delete(w); }
+  for (const w of termsOfList(drop)) { weights.delete(w); avoid.add(w); }
+  return { weights, avoid };
+}
+
+/* Searching the suggested words before the agent picks one (step 5 of
+ * t-4c167bea08). After an answer, the follow-up for each of the first
+ * AHEAD_WORDS suggested words is worked out in the background, one per turn
+ * of the event loop so a real call is never kept waiting behind all of
+ * them. Kept per pool and round, and used only if the code index is still
+ * the same object - a commit or a thought written meanwhile makes it stale. */
+const AHEAD_WORDS = 3;
+const ahead = new Map();          // pool id:round:word:paths -> { stamp, cf }
+let poolIds = 0;
+const aheadKey = (pool, q, paths) => pool.id + ':' + pool.round + ':' + String(q || '').trim().toLowerCase() + ':' + JSON.stringify(paths || []);
+
+export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null } = {}) {
+  const s = sessions.get(repoDir);
+  const pool = s && s.pool;
+  if (!pool || !pool.suggested || !pool.suggested.length) return;
+  const round = pool.round;
+  const todo = pool.suggested.slice(0, words);
+  const t0 = Date.now();
+  let done = 0;
+  const next = () => {
+    if (s.pool !== pool || pool.round !== round || !todo.length) { if (onDone) onDone({ done, ms: Date.now() - t0 }); return; }
+    const word = todo.shift();
+    try {
+      const cx = buildCodeIndex(repoDir);
+      const { weights, avoid } = nextWeights(pool, word, null, null);
+      ahead.set(aheadKey(pool, word, pool.paths), { stamp: cx, cf: codeFirst(repoDir, { query: word, weights, avoid, paths: pool.paths }) });
+      done++;
+    } catch (_) { /* worked out when asked instead */ }
+    setImmediate(next);
+  };
+  setImmediate(next);
+}
+
 /* One gitx_related call through the session's pool. */
 export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [] } = {}) {
   const cx = buildCodeIndex(repoDir);
@@ -166,21 +215,17 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
     pool = freshPool(q || termsOfList(add).join(' '));
     s.pool = pool;
   }
-  /* A new question in the chain ages the older words; an add or a drop only
-   * adjusts and leaves the rest as they were. */
-  if (pool.round > 0 && q) {
-    for (const [w, m] of pool.weights) {
-      const n = pool.anchor.has(w) ? Math.max(ANCHOR, m * OLDER) : m * OLDER;
-      if (n < FADED) pool.weights.delete(w); else pool.weights.set(w, n);
-    }
-  }
   spellings(q, pool.spell);
   for (const a of [].concat(add || [])) spellings(a, pool.spell);
-  for (const w of [...termsOf(q), ...termsOfList(add)]) { pool.weights.set(w, 1); pool.avoid.delete(w); }
-  for (const w of termsOfList(drop)) { pool.weights.delete(w); pool.avoid.add(w); }
+  /* Worked out ahead when the agent asks one of the words GitX suggested
+   * (t-2c70a44885) - the same weights, the same code index - else now. */
+  const key = aheadKey(pool, q, paths);
+  const ready = !add && !drop && kind === 'follow-up' ? ahead.get(key) : null;
+  Object.assign(pool, nextWeights(pool, q, add, drop));
   pool.round++;
-
-  const cf = codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths });
+  const cf = ready && ready.stamp === cx ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths });
+  const prefetched = !!(ready && ready.stamp === cx);
+  for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
   let body;
   if (pool.round === 1) {
     body = cf.answer;
@@ -189,7 +234,9 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])
     .map(([w, m]) => (pool.spell.get(w) || w) + (m < 1 ? ' (' + m + ')' : ''));
-  cf.monitor.phases.question = { kind, why, round: pool.round };
+  cf.monitor.phases.question = { kind, why, round: pool.round, prefetched: prefetched || undefined };
+  pool.suggested = (body.map && body.map.words) || body.next_words || [];
+  pool.paths = paths;
   return {
     answer: {
       asked: q || undefined,

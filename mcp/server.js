@@ -19,7 +19,7 @@ import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
 import { expandRegion, warm } from './tools/code-find.js';
-import { newSessions, askPooled } from './tools/session-pool.js';
+import { newSessions, askPooled, prefetch } from './tools/session-pool.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -1201,6 +1201,8 @@ async function handleToolCall(name, args) {
       if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
         const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths });
         lastMonitor = r.monitor;
+        /* The suggested words' follow-ups, worked out while the agent reads. */
+        prefetch(sessions, target.dir);
         return reply({ repo: target.dir, ...r.answer, how_to_use: CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
