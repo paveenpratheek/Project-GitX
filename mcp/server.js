@@ -171,17 +171,17 @@ const AGENT_MODEL = process.env.GITX_AGENT_MODEL || 'Antigravity/Claude';
 let brokerWs = null;
 let brokerReady = false;
 
-/* GitX Monitor and its logs live in the broker, and they have to work
- * whenever GitX does, not only when someone remembered `npm run broker`
- * (the owner, 7 October). So this server starts one when it finds none - and
- * when one it was talking to goes away - detached, so it outlives this agent
- * and serves the next. Only at the default address unless asked: a test that
- * points GITX_BROKER_URL at a spare or dead port starts nothing, except with
- * GITX_BROKER_AUTOSTART=1, when the broker is started on that URL's port.
- * GITX_BROKER_AUTOSTART=0 turns it off. At most once a minute; a broker that
- * loses the port to another leaves on its own (broker.js). Its output goes
- * to broker.log in the data folder, as there is no terminal to show it. */
-const BROKER_AUTOSTART = process.env.GITX_BROKER_AUTOSTART === '1' || (!process.env.GITX_BROKER_URL && process.env.GITX_BROKER_AUTOSTART !== '0');
+/* Who starts the broker. It was this server, whenever it found none (the
+ * owner, 7 October), so GitX Monitor worked without anyone typing
+ * `npm run broker` - but then a broker stopped on purpose came back seconds
+ * later, started by whichever agent's server noticed first. ter-manager now
+ * looks after it (8 October): it is hosted as a Local Host kept running,
+ * started and stopped there, and restarted there when it stops any other
+ * way. So this server starts one only when asked, with
+ * GITX_BROKER_AUTOSTART=1 - a test on a spare port, or GitX without
+ * ter-manager - and then at most once a minute, detached, its output in
+ * broker.log; a broker that loses the port to another leaves on its own. */
+const BROKER_AUTOSTART = process.env.GITX_BROKER_AUTOSTART === '1';
 let brokerStartedAt = 0;
 function startBroker() {
   if (!BROKER_AUTOSTART || Date.now() - brokerStartedAt < 60000) return;
