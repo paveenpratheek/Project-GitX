@@ -18,7 +18,7 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
-import { codeFirst } from './tools/code-find.js';
+import { codeFirst, expandRegion, warm } from './tools/code-find.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -437,13 +437,14 @@ const TOOLS = [
    * everything GitX holds, where the tools above each search one part. */
   {
     name: 'gitx_related',
-    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down: the code at HEAD your question is about, as the lines worth reading - no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered.',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down, map first: the feature\'s core (the code that implements it), wiring (where it is connected) and surface (where it is shown) as functions with line ranges, and its own words; then its best functions as trees - the lines worth reading, no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. Open any map entry with expand. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Your words: a question, what you are about to do, or a draft thought. Matched by meaning-bearing words across every commit and thought.' },
         ids: { type: 'array', items: { type: 'string' }, description: 'Thought ids (t-...) or commit hashes you are on or about to link to - what is linked to them ranks higher.' },
         paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
+        expand: { type: 'string', description: 'A function from the map - its name as the map wrote it ("learnKeys", "learn.js · learnKeys") or a ref "file:line" - to get it as a tree: its code, the commits that wrote it and why, the thoughts they settled, what is still open. No query needed.' },
         topic: { type: 'string', description: 'A topic id (tp-...) the work belongs to.' },
         layers: { type: 'array', items: { type: 'string', enum: ['commit', 'thought', 'context'] }, description: 'Only these: commit, thought (settled), context (waiting). Default all three.' },
         outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only thoughts with these outcomes - "rejected" for ideas turned down, "open" for questions nobody has settled.' },
@@ -552,7 +553,16 @@ const sentOnce = { howTo: new Set(), summaries: new Map() };
 
 /* The last question per repository, for the next one to carry (t-71baf0316b). */
 const lastAsked = new Map();
-const CODE_FIRST_HOW = 'Read top down. code is where the answer lives today: each region with the lines worth reading - its comment, its declaration and the lines holding your words - and line numbers at HEAD. commits are the ones git blame names for those lines: why holds the reason the code is as it is. thoughts are what those commits settled - read the status first - and docs the question landed in, as thinking. summaries says what the topic does today. context sits beside the stack: waiting thinking - open questions, proposals, decided but not built, rules - for when you work on it. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question. Open a commit with gitx_graph_commit, a thought with gitx_thought.';
+
+/* The code and thought indexes are kept in memory (t-2c70a44885); when a
+ * commit moves HEAD they are rebuilt here, between calls, so the agent's
+ * next question does not wait for it. One git call per repository asked
+ * about, every WARM_EVERY. */
+const WARM_EVERY = 15000;
+setInterval(() => {
+  for (const dir of lastAsked.keys()) { try { warm(dir); } catch (_) { /* answered at the next call instead */ } }
+}, WARM_EVERY).unref();
+const CODE_FIRST_HOW = 'Read the map first: core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read: it narrows this answer. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
 function lean(tool, result) {
   const first = result && Array.isArray(result.content) ? result.content[0] : null;
   if (!first || first.type !== 'text') return result;
@@ -1172,11 +1182,17 @@ async function handleToolCall(name, args) {
        * rare words ride along until the subject changes (t-71baf0316b). A
        * listing - by layer, outcome or kind, by ids with no words, the edge -
        * is still the stack's to answer. */
+      /* A name from the map opened as a tree (t-da800103d5), with the last
+       * question's words choosing its lines and thoughts. */
+      if (args.expand) {
+        const prev = lastAsked.get(target.dir) || {};
+        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: [prev.query || '', ...(prev.carry || [])].join(' ') }) });
+      }
       const words = String(args.query || '').trim();
       if (words && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
         const prev = lastAsked.get(target.dir) || { carry: [], landed: [] };
         const cf = codeFirst(target.dir, { query: words, carry: prev.carry, previous: prev.landed, paths: args.paths });
-        lastAsked.set(target.dir, { carry: cf.carry, landed: cf.landed });
+        lastAsked.set(target.dir, { query: words, carry: cf.carry, landed: cf.landed });
         lastMonitor = cf.monitor;
         return reply({ repo: target.dir, ...cf.answer, how_to_use: CODE_FIRST_HOW });
       }

@@ -141,7 +141,9 @@ export class PathRecorder {
   onCall(tool, args, repoDir, result, error, monitor) {
     try {
       const body = error ? null : parse(result);
-      if (tool === 'gitx_related') {
+      /* A question starts a path; opening a map entry (expand) is a step on
+       * it, down to that function in the code layer. */
+      if (tool === 'gitx_related' && !(args && args.expand)) {
         if (body && !body.error && monitor) this.ask(repoDir, args || {}, monitor);
         return;
       }
@@ -285,6 +287,11 @@ function stepOf(tool, args, body, error) {
         return { kind: 'open', tool, node: { id: 'code:' + region, layer: 'code', text: region, commit: String(body.short || args.hash) } };
       }
       return { kind: 'open', tool, node: { id: String(args.hash), layer: 'commit', text: body && body.subject ? String(body.subject).slice(0, 160) : undefined } };
+    /* A function opened from the map: the code node the map drew for it. */
+    case 'gitx_related': {
+      const t = body && body.expanded && body.expanded[0];
+      return t ? { kind: 'open', tool, node: { id: 'code:' + t.ref, layer: 'code', text: t.function } } : null;
+    }
     case 'gitx_graph_area':
     case 'gitx_graph_map':
       return { kind: 'overview', tool, what: args.name || 'map' };

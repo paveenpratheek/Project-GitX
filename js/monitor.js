@@ -247,7 +247,7 @@
       ['prompt', 'Prompt', '“' + esc(ask(rec)) + '”', esc(((rec.agent && rec.agent.name) || 'agent') + ' · ' + time(rec.at))],
       ['proc', 'Processing', (p.regions || 0) + ' code regions at HEAD', esc((p.commits || 0) + ' commits · ' + (p.settled || 0) + ' settled · ' + (p.waiting || 0) + ' waiting · ' + (p.ms || 0) + ' ms')],
       ['search', 'Search', esc((s.words || []).join(' ') || '(no words)'), esc(s.carried ? 'carried from the last question: ' + s.carried.join(' ') : 'nothing carried')],
-      ['results', 'Code', s.no_code ? 'no code about this' : (r.code || 0) + ' region' + (r.code === 1 ? '' : 's') + (r.docs ? ' · ' + r.docs + ' doc section' + (r.docs === 1 ? '' : 's') : ''),
+      ['results', 'The map', s.no_code ? 'no code about this' : 'core ' + (r.code || 0) + ' · wiring ' + (r.wiring || 0) + ' · surface ' + (r.surface || 0) + (r.docs ? ' · ' + r.docs + ' doc section' + (r.docs === 1 ? '' : 's') : ''),
         esc(s.no_code ? 'the closest region holds ' + (s.best || 0) + '% of the question - answered from the plans' : 'the best holds ' + (s.best || 0) + '% of the question')],
       ['filter', 'The chain', (r.commits || 0) + ' commits wrote it · ' + (r.thoughts || 0) + ' thoughts settled', esc((r.context || 0) + ' waiting beside · ' + (r.ms || 0) + ' ms')]
     ];
