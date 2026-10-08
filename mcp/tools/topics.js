@@ -62,8 +62,17 @@ export function domainByKind(t) {
   if (t.kind === 'finding') return 'information';
   return 'discussion';
 }
-export function domainOf(t) {
-  return t.domain && isDomain(t.domain) ? t.domain : domainByKind(t);
+/* `later` is what became of the thought, from the rule every reader shares
+ * (laterOf in thoughts.js): superseded, or refined by a thought a commit
+ * settled. Without it the promise above was not kept (t-4b3d8c6970): the
+ * outcome stays "open" on disk, so an answered question - or a bug placed in
+ * Bugs & open questions by hand and since fixed - stayed there for good.
+ * With it, such a thought leaves the domain and takes the one its kind
+ * gives, as if it were no longer open. */
+export function domainOf(t, later = null) {
+  const done = !!later && (t.outcome === 'open' || t.domain === 'questions');
+  if (t.domain && isDomain(t.domain) && !(done && t.domain === 'questions')) return t.domain;
+  return domainByKind(done && t.outcome === 'open' ? { ...t, outcome: 'accepted' } : t);
 }
 
 export function mapPaths(repoDir) {
@@ -225,12 +234,13 @@ export function suggestTopics(goalText, thoughts, topics, { now = Date.now() } =
 }
 
 /* The map in one piece, for the page and, later, for what agents read.
- * `thoughts` are the context graph's, as loadThoughts returns them. */
-export function contextMap(repoDir, thoughts) {
+ * `thoughts` are the context graph's, as loadThoughts returns them;
+ * `laterFor(id)` says what became of one (domainOf). */
+export function contextMap(repoDir, thoughts, laterFor = null) {
   const { topics, unreadable, newest: tNewest } = loadTopics(repoDir);
   const { goal, newest: gNewest } = loadGoal(repoDir);
   const known = new Set(topics.map((t) => t.id));
-  const placed = thoughts.map((t) => ({ id: t.id, topic: known.has(t.topic) ? t.topic : null, domain: domainOf(t) }));
+  const placed = thoughts.map((t) => ({ id: t.id, topic: known.has(t.topic) ? t.topic : null, domain: domainOf(t, laterFor ? laterFor(t.id) : null) }));
   return {
     domains: DOMAINS,
     topics: topics.map((t) => ({

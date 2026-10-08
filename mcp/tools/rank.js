@@ -109,12 +109,21 @@ export function buildRankIndex(repoDir, { commitIndex } = {}) {
         /* A settled thought borrows the code its commit touched (t-dca06fa7aa);
          * a waiting one has none yet. */
         regions: commit && commitOf.has(commit) ? commitOf.get(commit).regions : {},
-        topic: t.topic || null, domain: domainOf(t), commit: commit || null
+        topic: t.topic || null, domain: domainOf(t), placedIn: t.domain || null, commit: commit || null
       });
       for (const l of t.links || []) link(t.id, l.to, l.type);
       for (const f of t.forces || []) for (const id of f.cites || []) link(t.id, id, 'cites');
       if (commit) link(t.id, commit, 'settled-by');
     }
+  }
+
+  /* A thought's domain takes what became of it (t-4b3d8c6970), which is known
+   * only once every link is in: an answered question is no longer in Bugs &
+   * open questions. */
+  for (const n of nodes.values()) {
+    if (n.layer === 'commit') continue;
+    const incoming = (adj.get(n.id) || []).filter((e) => e.type.startsWith('by:')).map((e) => ({ type: e.type.slice(3), from: e.to }));
+    n.domain = domainOf({ outcome: n.outcome, kind: n.kind, domain: n.placedIn }, laterOf(incoming, (id) => (nodes.get(id) || {}).commit || null));
   }
 
   /* Postings over own and rest words together; which of the two a word is in

@@ -277,8 +277,17 @@ export function thoughtsPayload(repoDir) {
     context: (() => {
       const c = loadThoughts(repoDir, { store: 'context' });
       /* Each waiting thought carries its topic and domain, and the map
-       * carries the topics and the goal (tools/topics.js). */
-      const map = contextMap(repoDir, c.thoughts);
+       * carries the topics and the goal (tools/topics.js). A domain takes
+       * what became of the thought from the shared rule below - links into
+       * it from both graphs, and the commit each settled thought is in - so
+       * an answered question leaves Bugs & open questions (t-4b3d8c6970). */
+      const incoming = new Map();
+      for (const t of [...thoughts, ...c.thoughts]) for (const l of t.links || []) {
+        if (!incoming.has(l.to)) incoming.set(l.to, []);
+        incoming.get(l.to).push({ type: l.type, from: t.id });
+      }
+      const settled = new Map(thoughts.map((t) => [t.id, (t.resulted_in && t.resulted_in.commit) || null]));
+      const map = contextMap(repoDir, c.thoughts, (id) => laterOf(incoming.get(id) || [], (x) => settled.get(x) || null));
       const where = new Map(map.placed.map((p) => [p.id, p]));
       const { placed, newest, ...rest } = map;
       return {
