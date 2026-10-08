@@ -193,6 +193,7 @@ export function loadStashes(repoDir, { store = 'thought' } = {}) {
 export function commitCount(repoDir) {
   try {
     return Number(execFileSync('git', ['rev-list', '--count', 'HEAD'], {
+      windowsHide: true,
       cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
     }).trim()) || 0;
   } catch (_) { return 0; }
@@ -202,6 +203,7 @@ export function gitTopology(repoDir) {
   let raw = '';
   try {
     raw = execFileSync('git', ['log', '-n', String(MAX_COMMITS), '--format=%H%x1f%P%x1f%aI%x1f%s%x1e'], {
+      windowsHide: true,
       cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore']
     });
   } catch (_) { return []; }

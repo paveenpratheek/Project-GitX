@@ -39,7 +39,7 @@ const LINE_CAP = 400;
  *             is never cut)
  */
 export function commitCode(repoDir, hash, { region = null, today = false, maxLines = LINE_CAP } = {}) {
-  const git = (args) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+  const git = (args) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
 
   let parents;
   try { parents = git(['rev-list', '--parents', '-n', '1', hash]).trim().split(/\s+/).slice(1); } catch (_) {

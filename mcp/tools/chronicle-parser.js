@@ -91,6 +91,7 @@ export function scanGitHistory(repoDir, limit = 50) {
       `-n`, String(limit),
       `--pretty=format:%H%x1f%an%x1f%ae%x1f%aI%x1f%s%x1f%B%x1e`
     ], {
+      windowsHide: true,
       cwd: repoDir,
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024

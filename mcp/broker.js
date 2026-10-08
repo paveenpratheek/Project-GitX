@@ -94,6 +94,7 @@ function thoughtStatsOf(dir) {
 function getBranch(dir) {
   try {
     return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      windowsHide: true,
       cwd: dir,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore']
@@ -105,7 +106,7 @@ function getBranch(dir) {
 
 function getHead(dir) {
   try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch (_) {
     return null;
   }
@@ -136,8 +137,8 @@ function watchHead(dir) {
   headWatchedDir = dir;
   let gitDir, common;
   try {
-    gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-    common = path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
+    gitDir = execFileSync('git', ['rev-parse', '--absolute-git-dir'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    common = path.resolve(dir, execFileSync('git', ['rev-parse', '--git-common-dir'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim());
   } catch (_) { return; }   // not a repository: nothing to watch
   const moved = () => {
     clearTimeout(headTimer);

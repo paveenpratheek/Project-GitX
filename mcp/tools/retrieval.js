@@ -50,7 +50,7 @@ const BLEND = 0.5;   // regions vs words - see the note in findRelated
 export function stagedRegions(repoDir) {
   try {
     const out = execFileSync('git', ['diff', '--cached', '-U0', '--no-renames', '--no-color'],
-      { cwd: repoDir, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
+      { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
     const { regions } = parseHunks(out);
     return toShares(regions);
   } catch (_) {

@@ -60,6 +60,7 @@ const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 
 function repoKey(repoDir) {
   try {
     const root = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
+      windowsHide: true,
       cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore']
     }).trim().split('\n').pop();
     if (root) return root.slice(0, 16);

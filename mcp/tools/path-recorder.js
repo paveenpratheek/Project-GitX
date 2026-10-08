@@ -39,7 +39,7 @@ export function repoKey(dir) {
   if (keys.has(dir)) return keys.get(dir);
   let k = null;
   try {
-    k = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    k = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { windowsHide: true, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .trim().split('\n').pop().slice(0, 16) || null;
   } catch (_) { /* not a repository, or no commits */ }
   if (!k) k = crypto.createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16);

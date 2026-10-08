@@ -248,6 +248,7 @@ function commitsTouching(repoDir, paths) {
   let raw = '';
   try {
     raw = execFileSync('git', ['log', '-n', '600', '--no-renames', '--name-only', '--format=%x1e%H'], {
+      windowsHide: true,
       cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore']
     });
   } catch (_) { return new Set(); }
@@ -528,8 +529,8 @@ function contextSummary(repoDir, headHash, ctx) {
 function headUnsettled(repoDir, headHash) {
   let body, parent;
   try {
-    body = execFileSync('git', ['log', '-1', '--format=%B', headHash], { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
-    parent = execFileSync('git', ['rev-parse', headHash + '^'], { cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    body = execFileSync('git', ['log', '-1', '--format=%B', headHash], { windowsHide: true, cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    parent = execFileSync('git', ['rev-parse', headHash + '^'], { windowsHide: true, cwd: repoDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch (_) { return undefined; }
   if (parseMessage('', body).thoughts.length) return undefined;
   const before = loadThoughts(repoDir, { store: 'context' }).thoughts.filter((t) => t.anchor && t.anchor.commit === parent);

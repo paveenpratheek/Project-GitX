@@ -34,6 +34,7 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
     let branchExists = false;
     try {
       execFileSync('git', ['rev-parse', '--verify', branch], {
+        windowsHide: true,
         cwd: repoRoot,
         stdio: 'ignore'
       });
@@ -45,12 +46,14 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
     if (branchExists) {
       // Branch exists: attach worktree to existing branch
       execFileSync('git', ['worktree', 'add', targetWorktreePath, branch], {
+        windowsHide: true,
         cwd: repoRoot,
         encoding: 'utf8'
       });
     } else {
       // Branch does not exist: create branch from sourceBranch and mount worktree
       execFileSync('git', ['worktree', 'add', '-b', branch, targetWorktreePath, sourceBranch], {
+        windowsHide: true,
         cwd: repoRoot,
         encoding: 'utf8'
       });
@@ -79,6 +82,7 @@ export function ensureWorktree(repoRoot, branch, sourceBranch = 'main') {
 export function listWorktrees(repoRoot) {
   try {
     const raw = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+      windowsHide: true,
       cwd: repoRoot,
       encoding: 'utf8'
     });
@@ -117,6 +121,7 @@ export function listWorktrees(repoRoot) {
 export function removeWorktree(repoRoot, worktreePath) {
   try {
     execFileSync('git', ['worktree', 'remove', worktreePath, '--force'], {
+      windowsHide: true,
       cwd: repoRoot,
       stdio: 'ignore'
     });

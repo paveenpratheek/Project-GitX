@@ -73,7 +73,7 @@ export function scanContent(content, fileName = 'unspecified') {
  */
 export function scanStaged(repoDir) {
   const git = (args) => execFileSync('git', args,
-    { cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+    { windowsHide: true, cwd: repoDir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
   let files;
   try {

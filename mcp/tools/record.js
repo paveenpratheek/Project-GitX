@@ -55,7 +55,7 @@ const MAX_TEXT = 600;
  * or a run of calls reads as a thread. It starts empty with each server. */
 const lastRecorded = new Map();
 
-const git = (repoDir, args, input) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
+const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] }).trim();
 const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
 const idFor = (repoDir, anchor, text) => 't-' + crypto.createHash('sha1').update(path.basename(repoDir) + ':' + String(anchor).slice(0, 12) + ':' + norm(text).toLowerCase()).digest('hex').slice(0, 10);
 

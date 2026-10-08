@@ -43,7 +43,7 @@ const MIN_WHY_WORDS = 3;
 const __filename = fileURLToPath(import.meta.url);
 function getRepoRoot() {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    return execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
   } catch (_) {
     return process.cwd();
   }
@@ -767,7 +767,7 @@ async function handleToolCall(name, args) {
         return reply({ ok: false, committed: false, error: 'No such folder: ' + target.requested + ' - nothing was committed.' });
       }
       const dir = target.dir;
-      const git = (...a) => execFileSync('git', a, { cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+      const git = (...a) => execFileSync('git', a, { windowsHide: true, cwd: dir, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
       const gitOk = (...a) => { try { git(...a); return true; } catch (_) { return false; } };
       if (!gitOk('rev-parse', '--is-inside-work-tree')) {
         return reply({ ok: false, committed: false, error: dir + ' is not inside a git repository - nothing was committed.' });
@@ -933,7 +933,7 @@ async function handleToolCall(name, args) {
       const readBack = parseMessage(header, message);
       let gitRead = [];
       try {
-        gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
+        gitRead = execFileSync('git', ['interpret-trailers', '--parse'], { windowsHide: true, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })
           .split('\n').filter((l) => /^GitX-/i.test(l));
       } catch (_) {}
       if (readBack.trailers.length !== buildsOn.length + relatesTo.length || (readBack.root || '') !== root || readBack.thoughts.length !== thoughtIds.length || gitRead.length !== trailers.length) {
@@ -948,7 +948,7 @@ async function handleToolCall(name, args) {
       }
 
       try {
-        execFileSync('git', ['commit', '--cleanup=whitespace', '-F', '-'], { cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
+        execFileSync('git', ['commit', '--cleanup=whitespace', '-F', '-'], { windowsHide: true, cwd: dir, input: message, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 });
       } catch (err) {
         return reply({ ok: false, committed: false, error: 'git commit failed: ' + String(err.stderr || err.stdout || err.message).trim(), message });
       }

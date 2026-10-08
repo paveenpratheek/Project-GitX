@@ -48,7 +48,7 @@ const WEIGHED_AGAINST_IT = ['lost-to', 'cost-of', 'supports'];
 const ITS_OWN_HISTORY = ['supersedes', 'refines', 'derived-from'];
 const REC = '\x1e', FLD = '\x1f';
 
-const git = (repoDir, args, input) => execFileSync('git', args, { cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
+const git = (repoDir, args, input) => execFileSync('git', args, { windowsHide: true, cwd: repoDir, encoding: 'utf8', input, maxBuffer: 64 * 1024 * 1024, stdio: ['pipe', 'pipe', 'ignore'] });
 const leads = (t) => t.outcome === 'accepted' && (t.kind === 'decision' || t.kind === 'cost');
 
 /* The recent commits that name thoughts, newest first. */
