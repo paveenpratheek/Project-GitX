@@ -263,6 +263,11 @@
       const c = (step.cited_in_stack || []).length;
       return '<li class="mon-l mon-l-step mon-l-declare" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · Declared</span><span class="mon-l-main">recorded ' + esc((step.recorded || []).map(label).join(', ')) + '</span><span class="mon-l-sub">cites ' + c + ' node' + (c === 1 ? '' : 's') + ' from the stack</span></li>';
     }
+    /* A follow-up on the same question: the words it brought, why GitX took
+     * it as one, and what it changed. */
+    if (step.kind === 'refine') {
+      return '<li class="mon-l mon-l-step mon-l-other" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · Follow-up</span><span class="mon-l-main">' + esc(step.asked ? '“' + step.asked + '”' : '') + '</span><span class="mon-l-sub">' + esc([step.got, step.what].filter(Boolean).join(' · ')) + '</span></li>';
+    }
     if (!step.node) {
       return '<li class="mon-l mon-l-step mon-l-other" style="--i:' + i + '"><span class="mon-l-h">' + n + ' · ' + esc(tool(step.tool)) + '</span><span class="mon-l-main">' + esc(step.asked ? '“' + step.asked + '”' : step.what || step.kind) + '</span><span class="mon-l-sub">' + esc(got(step) || step.what || '') + '</span></li>';
     }

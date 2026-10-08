@@ -144,6 +144,10 @@ export class PathRecorder {
       /* A question starts a path; opening a map entry (expand) is a step on
        * it, down to that function in the code layer. */
       if (tool === 'gitx_related' && !(args && args.expand)) {
+        /* A follow-up keeps its path (t-2c70a44885): a refine step, and what
+         * it brought joins the path's stack, so opening it next is on it. */
+        const cur = this.current.get(repoDir);
+        if (body && body.question === 'follow-up' && cur && !cur.ended_at && monitor) { this.refine(cur, args || {}, body, monitor); return; }
         if (body && !body.error && monitor) this.ask(repoDir, args || {}, monitor);
         return;
       }
@@ -154,6 +158,23 @@ export class PathRecorder {
       if (!rec || rec.ended_at) rec = this.open(repoDir, tool, step.asked);
       this.walk(rec, step);
     } catch (err) { this.warn(err); }
+  }
+
+  /* A follow-up on the path being walked: its words and what changed as a
+   * step, and its nodes and links merged into the path's stack. The page is
+   * sent the whole record again, so it redraws the stack with them. */
+  refine(rec, args, body, monitor) {
+    const have = new Set(rec.stack.nodes.map((n) => n.id));
+    for (const n of (monitor.stack && monitor.stack.nodes) || []) if (!have.has(n.id)) { rec.stack.nodes.push(n); have.add(n.id); }
+    const linked = new Set(rec.stack.links.map((l) => l.join(' ')));
+    for (const l of (monitor.stack && monitor.stack.links) || []) if (!linked.has(l.join(' '))) rec.stack.links.push(l);
+    const m = body.map || {};
+    const words = [args.query, ...[].concat(args.add || []).map((w) => '+' + w), ...[].concat(args.drop || []).map((w) => '-' + w)].filter(Boolean).join(' ');
+    this.walk(rec, {
+      kind: 'refine', tool: 'gitx_related', asked: words || undefined, what: body.why,
+      got: 'round ' + body.round + ': ' + (m.new || []).length + ' new, ' + (m.back || []).length + ' back, ' + (m.hidden || []).length + ' hidden, ' + (m.kept || 0) + ' kept'
+    });
+    this.send({ type: 'GITX_MONITOR', event: 'ask', repo: rec.repo, record: rec });
   }
 
   /* A path started by a call rather than a question: no stack to walk. */

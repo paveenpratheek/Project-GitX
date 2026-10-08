@@ -18,7 +18,8 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
-import { codeFirst, expandRegion, warm } from './tools/code-find.js';
+import { expandRegion, warm } from './tools/code-find.js';
+import { newSessions, askPooled } from './tools/session-pool.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -445,6 +446,9 @@ const TOOLS = [
         ids: { type: 'array', items: { type: 'string' }, description: 'Thought ids (t-...) or commit hashes you are on or about to link to - what is linked to them ranks higher.' },
         paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
         expand: { type: 'string', description: 'A function from the map - its name as the map wrote it ("learnKeys", "learn.js · learnKeys") or a ref "file:line" - to get it as a tree: its code, the commits that wrote it and why, the thoughts they settled, what is still open. No query needed.' },
+        add: { type: 'array', items: { type: 'string' }, description: 'Words to add to the current question without asking a new one - GitX answers with what changed.' },
+        drop: { type: 'array', items: { type: 'string' }, description: 'Words that took the answer the wrong way: removed, and what holds them sinks - GitX answers with what changed.' },
+        new: { type: 'boolean', description: 'Treat query as a new question even if it shares words with the current one. Without it GitX decides, and says which and why.' },
         topic: { type: 'string', description: 'A topic id (tp-...) the work belongs to.' },
         layers: { type: 'array', items: { type: 'string', enum: ['commit', 'thought', 'context'] }, description: 'Only these: commit, thought (settled), context (waiting). Default all three.' },
         outcome: { type: 'array', items: { type: 'string', enum: ['accepted', 'rejected', 'stashed', 'open'] }, description: 'Only thoughts with these outcomes - "rejected" for ideas turned down, "open" for questions nobody has settled.' },
@@ -551,8 +555,8 @@ const TOOLS = [
  * description still says how to use it. */
 const sentOnce = { howTo: new Set(), summaries: new Map() };
 
-/* The last question per repository, for the next one to carry (t-71baf0316b). */
-const lastAsked = new Map();
+/* Each repository's question pool for this session (session-pool.js). */
+const sessions = newSessions();
 
 /* The code and thought indexes are kept in memory (t-2c70a44885); when a
  * commit moves HEAD they are rebuilt here, between calls, so the agent's
@@ -560,9 +564,9 @@ const lastAsked = new Map();
  * about, every WARM_EVERY. */
 const WARM_EVERY = 15000;
 setInterval(() => {
-  for (const dir of lastAsked.keys()) { try { warm(dir); } catch (_) { /* answered at the next call instead */ } }
+  for (const dir of sessions.keys()) { try { warm(dir); } catch (_) { /* answered at the next call instead */ } }
 }, WARM_EVERY).unref();
-const CODE_FIRST_HOW = 'Read the map first: core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read: it narrows this answer. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
+const CODE_FIRST_HOW = 'Read the map first: core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read, or add / drop words: question says whether GitX took it as new or a follow-up, and why, and a follow-up gives only what changed - map entries new, back or hidden, new lines and thoughts of functions already given (given_in) - nothing twice. words are the pool\'s words with their weights. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
 function lean(tool, result) {
   const first = result && Array.isArray(result.content) ? result.content[0] : null;
   if (!first || first.type !== 'text') return result;
@@ -1185,16 +1189,19 @@ async function handleToolCall(name, args) {
       /* A name from the map opened as a tree (t-da800103d5), with the last
        * question's words choosing its lines and thoughts. */
       if (args.expand) {
-        const prev = lastAsked.get(target.dir) || {};
-        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: [prev.query || '', ...(prev.carry || [])].join(' ') }) });
+        const pool = (sessions.get(target.dir) || {}).pool;
+        const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
+        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
       }
+      /* Through the session's pool (t-2c70a44885): a question new or a
+       * follow-up, decided and said; a follow-up, add or drop answered with
+       * what changed. */
       const words = String(args.query || '').trim();
-      if (words && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
-        const prev = lastAsked.get(target.dir) || { carry: [], landed: [] };
-        const cf = codeFirst(target.dir, { query: words, carry: prev.carry, previous: prev.landed, paths: args.paths });
-        lastAsked.set(target.dir, { query: words, carry: cf.carry, landed: cf.landed });
-        lastMonitor = cf.monitor;
-        return reply({ repo: target.dir, ...cf.answer, how_to_use: CODE_FIRST_HOW });
+      const refine = (Array.isArray(args.add) ? args.add.length : args.add) || (Array.isArray(args.drop) ? args.drop.length : args.drop);
+      if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
+        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths });
+        lastMonitor = r.monitor;
+        return reply({ repo: target.dir, ...r.answer, how_to_use: CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */

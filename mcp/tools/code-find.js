@@ -334,18 +334,28 @@ export function buildCodeIndex(repoDir) {
   return m.cx;
 }
 
-const idfOf = (ix, w) => Math.log((ix.regions.length + 1) / ((ix.df.get(w) || 0) + 0.5));
+export const idfOf = (ix, w) => Math.log((ix.regions.length + 1) / ((ix.df.get(w) || 0) + 0.5));
 
 /* The regions a question is about, best first: the share of the question's
  * weight a region holds, a word in its own text counting fully and one only
  * in what made it counting half. `carry` is the previous question's rare
  * words (t-71baf0316b), at half weight. */
-export function findCode(ix, text, { carry = [], limit = 6, near = 0.5 } = {}) {
-  const asked = [...termsOf(text)].filter((w) => ix.df.has(w) || !w.includes('_'));
-  const q = new Map(asked.map((w) => [w, idfOf(ix, w)]));
-  for (const w of carry) if (!q.has(w) && ix.df.has(w)) q.set(w, idfOf(ix, w) * 0.5);
+/* `weights` (term -> multiplier) gives every word its own weight instead -
+ * a session's pool (t-2c70a44885): the newest words at 1, older ones halving
+ * each round. `avoid` are words the agent dropped: a region holding one
+ * loses AVOID_WEIGHT of that word's weight, so what took the answer the
+ * wrong way sinks instead of only no longer helping. */
+const AVOID_WEIGHT = 0.5;
+export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights = null, avoid = null } = {}) {
+  const q = new Map();
+  if (weights) { for (const [w, m] of weights) if (m > 0 && (ix.df.has(w) || !w.includes('_'))) q.set(w, idfOf(ix, w) * m); }
+  else {
+    for (const w of termsOf(text)) if (ix.df.has(w) || !w.includes('_')) q.set(w, idfOf(ix, w));
+    for (const w of carry) if (!q.has(w) && ix.df.has(w)) q.set(w, idfOf(ix, w) * 0.5);
+  }
   const total = [...q.values()].reduce((s, x) => s + x, 0);
   if (!total) return { terms: [], found: [] };
+  const sink = [...(avoid || [])].filter((w) => ix.df.has(w)).map((w) => [w, idfOf(ix, w) * AVOID_WEIGHT]);
   const scored = [];
   for (const r of ix.regions) {
     let s = 0;
@@ -353,6 +363,7 @@ export function findCode(ix, text, { carry = [], limit = 6, near = 0.5 } = {}) {
     for (const [w, weight] of q) {
       if (r.own.has(w)) { s += weight; hit.push(w); } else if (r.why.has(w)) { s += weight * WHY_WEIGHT; hit.push(w + '*'); }
     }
+    for (const [w, weight] of sink) if (r.own.has(w)) s -= weight;
     if (s > 0) scored.push({ r, score: s / total, hit });
   }
   scored.sort((a, b) => b.score - a.score || (a.r.to - a.r.from) - (b.r.to - b.r.from));
@@ -427,7 +438,7 @@ const cap = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return 
  * against error at 10% and agent at 71% when measured); what is carried is
  * at most CARRY_SHARE. Counted over own and why words, so the words of
  * commit messages and thoughts make a word common too. */
-const RARE_SHARE = 0.07;
+export const RARE_SHARE = 0.07;
 const CARRY_SHARE = 0.15;
 const CARRY_MAX = 8;
 
@@ -836,29 +847,31 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
  * ride along at half weight unless this question is on a new subject
  * (newSubject). `paths` keeps the code to those files when any holds some
  * of the question. */
-export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], expand = null } = {}) {
+export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null } = {}) {
   const t0 = Date.now();
   const cx = buildCodeIndex(repoDir);
   const rx = rankIndexFor(repoDir);
   const within = (paths || []).map((p) => String(p).split('::')[0].replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean);
   const search = (opts) => {
-    const res = findCode(cx, query, { ...opts, limit: 400, near: 0 });
+    const res = findCode(cx, query, { ...opts, weights, avoid, limit: 400, near: 0 });
     if (!within.length) return res;
     const inside = res.found.filter(({ r }) => within.some((p) => r.file === p || r.file.startsWith(p.replace(/\/?$/, '/'))));
     return { terms: res.terms, found: inside.length ? inside : res.found };
   };
-  /* A follow-up or a new subject (t-71baf0316b). */
-  const carried = carry.length && !newSubject(cx, query, previous, carry) ? carry : [];
+  /* A follow-up or a new subject (t-71baf0316b) - decided by the session's
+   * pool when it passes weights (session-pool.js). */
+  const carried = !weights && carry.length && !newSubject(cx, query, previous, carry) ? carry : [];
   const { terms, found } = search({ carry: carried });
   const tSearch = Date.now() - t0;
   const best = found.length ? found[0].score : 0;
   const noCode = best < NO_CODE;
-  const words = carried.length ? query + ' ' + carried.join(' ') : query;
+  const words = weights ? [...weights].filter(([w, m]) => m >= 0.5 && !w.includes('_')).map(([w]) => w).join(' ')
+    : carried.length ? query + ' ' + carried.join(' ') : query;
   const order = new Map(rank(rx, { text: words, layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   const context = rank(rx, { text: words, layers: ['context'], limit: 20 }).results;
 
-  const map = noCode ? null : buildMap(repoDir, cx, query, terms, found.filter((x) => x.score >= best * 0.3));
+  const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3));
   const docs = noCode ? [] : spread(found.filter(({ r }) => r.kind === 'doc'), DOCS_SHOWN).filter((x) => x.score >= best * 0.5);
   const seen = { commits: new Map(), thoughts: new Map() };
   /* Trees from different files and different commits: two written by one
@@ -873,10 +886,36 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen));
   const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
 
+  /* No code holds the question's words - but a commit's message may say it
+   * in them, and the code that commit wrote may still stand under other
+   * words (t-54404c22ee: "the sidebar changes its size" found no code, while
+   * 5d27166's message says the sidebar kept "one height" and 23 of its lines
+   * stand). Those commits come with the code they still own, and their
+   * words are offered for the next question. */
+  const byMessage = noCode ? rank(rx, { text: words, layers: ['commit'], limit: 3 }).results.map((x) => {
+    const cm = [...cx.commits.values()].find((c) => c.hash.startsWith(String(x.id).slice(0, 7)));
+    if (!cm) return null;
+    const c12 = cm.hash.slice(0, 12);
+    const owns = cx.regions.filter((r) => (r.commits[c12] || 0) >= WHY_LINES).sort((a, b) => b.commits[c12] - a.commits[c12]);
+    return { commit: cm.hash.slice(0, 7), date: cm.date, subject: cap(cm.subject, 110), why: cm.body ? cap(cm.body, 260) : undefined, still_in: owns.length ? owns.slice(0, 4).map((r) => entry(r) + ' (' + r.commits[c12] + ' lines)') : undefined, _cm: cm };
+  }).filter((x) => x && x.still_in) : [];
+  const messageWords = byMessage.length ? (() => {
+    const asked = new Set(terms), seenW = new Set(), out = [];
+    for (const m of byMessage) for (const raw of (m._cm.subject + ' ' + m._cm.body).match(/[A-Za-z][A-Za-z]{3,}/g) || []) {
+      const lower = raw.toLowerCase(), w = stem(lower);
+      if (asked.has(w) || seenW.has(w) || NOT_WORDS.has(lower) || !cx.df.has(w) || cx.df.get(w) > cx.regions.length * CARRY_SHARE) continue;
+      seenW.add(w); out.push(lower);
+    }
+    return out.slice(0, WORDS);
+  })() : [];
+  for (const m of byMessage) delete m._cm;
+
   const out = {
     asked: query,
     carried: carried.length ? carried : undefined,
-    no_code: noCode ? 'No code at HEAD is about this' + (best ? ' (the closest region holds ' + Math.round(best * 100) + '% of the question)' : '') + ' - it is not built yet, or not in these words. What is decided or discussed is in context below: plans, not code.' : undefined,
+    no_code: noCode ? 'No code at HEAD is about this' + (best ? ' (the closest region holds ' + Math.round(best * 100) + '% of the question)' : '') + (byMessage.length ? ' in these words. Commits whose messages match are below with the code they still own - expand one, or ask again with one of their words.' : ' - it is not built yet, or not in these words. What is decided or discussed is in context below: plans, not code.') : undefined,
+    commits_by_message: byMessage.length ? byMessage : undefined,
+    next_words: messageWords.length ? messageWords : undefined,
     map: map ? {
       feature: map.topicTitle || undefined,
       core: map.core.map((x) => entry(x.r) + (treeRegions.includes(x.r) ? ' (tree below)' : '')),
