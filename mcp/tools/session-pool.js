@@ -125,7 +125,11 @@ function changesOf(pool, full) {
   const thinking = (full.thinking || []).filter((d) => seen('doc:' + d.doc) === null);
   for (const k of now.keys()) pool.shown.set(k, r);
   pool.visible = new Set(now.keys());
+  /* In the order the full answer chose: context first when it leads (code-find.js). */
+  const contextOut = { context: context.length ? context : undefined, context_kept: contextKept || undefined };
   return {
+    lead: full.lead,
+    ...(full.lead ? contextOut : {}),
     no_code: full.no_code,
     map: full.map ? {
       feature: full.map.feature,
@@ -138,8 +142,7 @@ function changesOf(pool, full) {
     trees: trees.length ? trees : undefined,
     thinking: thinking.length ? thinking : undefined,
     summaries: full.summaries,
-    context: context.length ? context : undefined,
-    context_kept: contextKept || undefined
+    ...(full.lead ? {} : contextOut)
   };
 }
 

@@ -538,6 +538,8 @@ const CORE_FUNCTIONS = 8;
 const WIRING_SHOWN = 10;
 const SURFACE_SHOWN = 4;
 const TREES = 2;
+const LEAD_MARGIN = 0.1;      // a waiting thought holding this much more of the question than the code leads, and one tree follows
+const LEAD_CLOSE = 0.2;      // ... within this much less, it only comes first, and both trees stay
 const WORDS = 8;
 
 /* The name of a region in a word or two: learnKeys, PathRecorder.walk. */
@@ -962,22 +964,25 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const found20 = rank(rx, { text: words, layers: ['context'], limit: 20 }).results;
   const context = use ? found20.map((x, i) => { const v = use.get(x.id); return { x, k: i + (v ? (0.5 - v.mean) * 2 * CONTEXT_SHIFT : 0) }; }).sort((a, b) => a.k - b.k).map((y) => y.x) : found20;
 
-  const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3), use);
-  const docs = noCode ? [] : spread(found.filter(({ r }) => r.kind === 'doc'), DOCS_SHOWN).filter((x) => x.score >= best * 0.5);
-  const seen = { commits: new Map(), thoughts: new Map() };
-  /* Trees from different files and different commits: two written by one
-   * commit share their reasons, and the second said only "see the first". */
-  const treeRegions = [];
-  const topCommit = (r) => (Object.entries(r.commits).sort((a, b) => b[1] - a[1])[0] || [''])[0];
-  for (const r0 of map ? map.treeOrder : []) {
-    if (treeRegions.length >= TREES) break;
-    if (treeRegions.some((r) => r.file === r0.file || topCommit(r) === topCommit(r0))) continue;
-    treeRegions.push(r0);
-  }
-  const about = aboutTest(rx, words, order);
-  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen, { about }));
-  const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
-
+  /* Which layer leads (t-69b4d53d80). Code first is right when the answer is
+   * in code; but asked "what did we decide", 11 of the owner's 18 questions
+   * were answered only by a waiting thought, and that came last, under 2-3k
+   * tokens of trees that did not answer it. So each waiting thought is scored
+   * as a region is - the share of the question's weight its words hold, its
+   * text in full and its reasons at WHY_WEIGHT - and when the best holds
+   * LEAD_MARGIN more of the question than the best code, the context comes
+   * first and one tree, not TREES, follows it: the code it would touch. */
+  const qw = new Map(terms.filter((w) => !w.includes('_')).map((w) => [w, idfOf(cx, w) * (weights ? (weights.get(w) || 0) : carried.includes(w) ? 0.5 : 1)]));
+  const qTotal = [...qw.values()].reduce((s, x) => s + x, 0);
+  const shareOf = (t) => {
+    if (!qTotal) return 0;
+    const node = rx.nodes.get(t.id) || t;
+    const own = termsOf(t.text || '');
+    const why = termsOf((node.forces || []).map((f) => f.text || '').join(' '));
+    let s = 0;
+    for (const [w, x] of qw) s += own.has(w) ? x : why.has(w) ? x * WHY_WEIGHT : 0;
+    return s / qTotal;
+  };
   /* No code holds the question's words - but a commit's message may say it
    * in them, and the code that commit wrote may still stand under other
    * words (t-54404c22ee: "the sidebar changes its size" found no code, while
@@ -1000,11 +1005,45 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     }
     return out.slice(0, WORDS);
   })() : [];
+
+  const contextBest = context.length ? Math.max(...context.slice(0, CONTEXT_SHOWN).map(shareOf)) : 0;
+  /* With no code, the commits whose messages say it are what the code side
+   * has - c-sidebar's answer is one, and the context led over it on the
+   * code score alone. */
+  const messageBest = byMessage.length ? Math.max(...byMessage.map((m) => shareOf({ text: m._cm.subject + ' ' + m._cm.body }))) : 0;
+  const contextLeads = !byMessage.length && contextBest > Math.max(best, messageBest) + LEAD_MARGIN;
+  /* Close is enough to come first, not to cut: moving the context above the
+   * trees costs no tokens, while dropping a tree lost two of the 13 facts
+   * on the bench. The few commits found by message, with no code, stay first. */
+  const contextFirst = contextLeads || (!byMessage.length && contextBest >= Math.max(best, messageBest) - LEAD_CLOSE);
   for (const m of byMessage) delete m._cm;
 
+  const map = noCode ? null : buildMap(repoDir, cx, words || query, terms, found.filter((x) => x.score >= best * 0.3), use);
+  const docs = noCode ? [] : spread(found.filter(({ r }) => r.kind === 'doc'), DOCS_SHOWN).filter((x) => x.score >= best * 0.5);
+  const seen = { commits: new Map(), thoughts: new Map() };
+  /* Trees from different files and different commits: two written by one
+   * commit share their reasons, and the second said only "see the first". */
+  const treeRegions = [];
+  const topCommit = (r) => (Object.entries(r.commits).sort((a, b) => b[1] - a[1])[0] || [''])[0];
+  for (const r0 of map ? map.treeOrder : []) {
+    if (treeRegions.length >= (contextLeads ? 1 : TREES)) break;
+    if (treeRegions.some((r) => r.file === r0.file || topCommit(r) === topCommit(r0))) continue;
+    treeRegions.push(r0);
+  }
+  const about = aboutTest(rx, words, order);
+  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen, { about }));
+  const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
+
+
+  const contextOut = {
+    context: context.slice(0, CONTEXT_SHOWN).map((r) => ({ id: r.id, status: statusFor(r.id), text: r.text, topic: r.topic ? (rx.topics.get(r.topic) || {}).title : undefined })),
+    more_context: context.length > CONTEXT_SHOWN ? context.length - CONTEXT_SHOWN + ' more waiting thoughts hold these words - gitx_thought outcome or topic lists them' : undefined
+  };
   const out = {
     asked: query,
     carried: carried.length ? carried : undefined,
+    lead: contextFirst ? 'context - a waiting thought holds ' + Math.round(contextBest * 100) + '% of the question, the closest code ' + Math.round(best * 100) + '%: what is decided or discussed comes first, the code it would touch after it' : undefined,
+    ...(contextFirst ? contextOut : {}),
     no_code: noCode ? 'No code at HEAD is about this' + (best ? ' (the closest region holds ' + Math.round(best * 100) + '% of the question)' : '') + (byMessage.length ? ' in these words. Commits whose messages match are below with the code they still own - expand one, or ask again with one of their words.' : ' - it is not built yet, or not in these words. What is decided or discussed is in context below: plans, not code.') : undefined,
     commits_by_message: byMessage.length ? byMessage : undefined,
     next_words: messageWords.length ? messageWords : undefined,
@@ -1019,8 +1058,7 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     trees: trees.length ? trees : undefined,
     thinking: docs.length ? docs.map(({ r, score }) => ({ doc: r.file + ' :: ' + cap(r.name, 70), lines: r.from + '-' + r.to, matched: Math.round(score * 100) + '%', text: linesFor(r, terms) })) : undefined,
     summaries: summary ? [summary] : undefined,
-    context: context.slice(0, CONTEXT_SHOWN).map((r) => ({ id: r.id, status: statusFor(r.id), text: r.text, topic: r.topic ? (rx.topics.get(r.topic) || {}).title : undefined })),
-    more_context: context.length > CONTEXT_SHOWN ? context.length - CONTEXT_SHOWN + ' more waiting thoughts hold these words - gitx_thought outcome or topic lists them' : undefined
+    ...(contextFirst ? {} : contextOut)
   };
 
   /* For GitX Monitor and the path recorder (t-6a7335ce0a): the core and the

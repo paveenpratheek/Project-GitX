@@ -301,7 +301,7 @@ function main() {
         const a = results[v].summary, b = prev.variants && prev.variants[v] && prev.variants[v].summary;
         if (!b) continue;
         const d = (k) => { const x = a[k] - b[k]; return x === 0 || Number.isNaN(x) ? '=' : (x > 0 ? '+' : '') + Math.round(x * 100) / 100; };
-        console.log(`  ${pad(v, 12)} hit ${d('hit')}  reach ${d('reach')}  recall ${d('recall')}  tokens ${d('tokens_mean')}  facts ${a.facts} (was ${b.facts})`);
+        console.log(`  ${pad(v, 12)} hit ${d('hit')}  reach ${d('reach')}  recall ${d('recall')}  depth ${d('depth_median')}  tokens ${d('tokens_mean')}  facts ${a.facts} (was ${b.facts})`);
       }
     }
 
