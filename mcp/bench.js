@@ -3,10 +3,11 @@
  * receives in one call, judged on fixed questions against a frozen copy of the
  * repository, every run compared with the last.
  *
- *   node mcp/bench.js [repo] [--at <commit>] [--variants full,stack,no-thoughts]
- *                     [--only id,id] [--verbose] [--no-save]
+ *   node mcp/bench.js [repo] [--set cases|heldout] [--at <commit>]
+ *                     [--variants full,stack,no-thoughts] [--only id,id] [--verbose] [--no-save]
  *
- * Cases live in <repo>/.gitx/bench/cases.json - private, like the thoughts
+ * Cases live in <repo>/.gitx/bench/<set>.json - cases.json unless --set names
+ * another - private, like the thoughts
  * they name - as { schema: "gitx.bench/0", at, include, cases, facts }:
  *
  *   at       the commit to freeze at, unless --at says otherwise
@@ -46,7 +47,13 @@
  *   ms      the first case of a variant is the cold one - it builds the index
  *
  * A case whose expected thoughts did not exist yet at `at` is reported, and
- * left out of every count rather than counted as a miss.
+ * left out of every count rather than counted as a miss. So is a case whose
+ * question a commit message or a kept thought quotes: the record would then
+ * answer it by its own words, which is what 7e59c97 did.
+ *
+ * heldout.json is the check on tuning: the owner's own questions, never used
+ * to choose a threshold. A change tuned on cases.json that does not hold on
+ * heldout.json has been fitted to those questions, not improved.
  *
  * Writes only inside a temporary folder and <repo>/.gitx/bench/runs/; the
  * repository, its graph and the walk folder are only read.
@@ -66,7 +73,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes('--' + name);
 const opt = (name) => { const i = argv.indexOf('--' + name); return i >= 0 ? argv[i + 1] : null; };
-const TAKES_VALUE = ['--at', '--variants', '--only'];
+const TAKES_VALUE = ['--at', '--variants', '--only', '--set'];
+const SET = opt('set') || 'cases';
 const positional = argv.filter((a, i) => !a.startsWith('--') && !TAKES_VALUE.includes(argv[i - 1]));
 const REPO = path.resolve(positional[0] || path.join(HERE, '..'));
 const BENCH = path.join(REPO, '.gitx', 'bench');
@@ -81,7 +89,7 @@ const hashOf = (x) => (typeof x === 'string' ? x : x && x.commit) || null;
 /* ---------------------------------------------------------------- cases */
 
 function loadCases() {
-  const file = path.join(BENCH, 'cases.json');
+  const file = path.join(BENCH, SET + '.json');
   if (!fs.existsSync(file)) throw new Error('No cases at ' + file);
   const spec = readJson(file);
   const cases = [...(spec.cases || [])];
@@ -230,12 +238,12 @@ function summarise(rows, facts, cases) {
 
 /* ------------------------------------------------------------------ run */
 
-function lastRun(at) {
+function lastRun(at, set) {
   const dir = path.join(BENCH, 'runs');
   if (!fs.existsSync(dir)) return null;
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json')).sort();
   for (const f of files.reverse()) {
-    try { const r = readJson(path.join(dir, f)); if (r.at === at) return { file: f, ...r }; } catch (_) {}
+    try { const r = readJson(path.join(dir, f)); if (r.at === at && (r.set || 'cases') === set) return { file: f, ...r }; } catch (_) {}
   }
   return null;
 }
@@ -253,13 +261,25 @@ function main() {
     const tdir = path.join(frozenFull.dir, '.gitx', 'thoughts');
     if (fs.existsSync(tdir)) for (const f of fs.readdirSync(tdir)) { try { const t = readJson(path.join(tdir, f)); if (hashOf(t.resulted_in)) settledBy.set(t.id, hashOf(t.resulted_in)); } catch (_) {} }
 
-    const valid = cases.filter((c) => (c.expect.thoughts || []).every((t) => frozenFull.known.has(t)));
-    const absent = cases.filter((c) => !valid.includes(c));
+    /* A question the record quotes: its words in a commit message or a kept
+     * thought, with case and punctuation ironed out. */
+    const flat = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const record = [flat(git(['log', '--format=%B'], frozenFull.dir))];
+    for (const sub of ['thoughts', path.join('context', 'thoughts')]) {
+      const d = path.join(frozenFull.dir, '.gitx', sub);
+      if (fs.existsSync(d)) for (const f of fs.readdirSync(d)) record.push(flat(fs.readFileSync(path.join(d, f), 'utf8')));
+    }
+    const quotes = (q) => { const w = flat(q); return w.length >= 20 && record.some((r) => r.includes(w)); };
+    const known = cases.filter((c) => (c.expect.thoughts || []).every((t) => frozenFull.known.has(t)));
+    const absent = cases.filter((c) => !known.includes(c));
+    const quoted = known.filter((c) => quotes(c.q));
+    const valid = known.filter((c) => !quoted.includes(c));
     const s = frozenFull.stats;
     console.log(`Frozen at ${frozenFull.head.slice(0, 8)} (${frozenFull.when}) - ${s.thoughts} settled and ${s.context} waiting thoughts kept; ` +
       `${s.after} recorded later and ${s.unsettled} settled later left out; ${s.rewound} of ${s.topics} topic summaries rewound.`);
     if (absent.length) console.log(`Not yet recorded at this commit, so left out: ${absent.map((c) => c.id).join(', ')}`);
-    console.log(`${valid.length} cases, variants: ${VARIANTS.join(', ')}\n`);
+    if (quoted.length) console.log(`Quoted by the record itself, so left out: ${quoted.map((c) => c.id).join(', ')}`);
+    console.log(`${valid.length} cases from ${SET}.json, variants: ${VARIANTS.join(', ')}\n`);
 
     const results = {};
     for (const v of VARIANTS) {
@@ -294,7 +314,7 @@ function main() {
     line('facts', (x) => x.facts || '-');
     line('errors', (x) => x.errors);
 
-    const prev = lastRun(at);
+    const prev = lastRun(at, SET);
     if (prev) {
       console.log(`\nAgainst the last run at this commit (${prev.file}):`);
       for (const v of cols) {
@@ -312,7 +332,7 @@ function main() {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       let code = null; try { code = git(['rev-parse', '--short', 'HEAD']).trim() + (git(['status', '--porcelain', '--', 'mcp']).trim() ? '+changes' : ''); } catch (_) {}
       const file = path.join(runs, stamp + '.json');
-      fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-run/0', when: new Date().toISOString(), at, frozen: { head: frozenFull.head, when: frozenFull.when, ...frozenFull.stats }, code, left_out: absent.map((c) => c.id), variants: results }, null, 2) + '\n');
+      fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-run/0', when: new Date().toISOString(), set: SET, at, frozen: { head: frozenFull.head, when: frozenFull.when, ...frozenFull.stats }, code, left_out: absent.map((c) => c.id), quoted: quoted.map((c) => c.id), variants: results }, null, 2) + '\n');
       console.log('\nSaved ' + path.relative(REPO, file));
     }
   } finally {
