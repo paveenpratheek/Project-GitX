@@ -20,13 +20,25 @@
  * (a + 1) / (a + b + 2) orders; nothing is hidden by it.
  *
  * Read from the path files on every call, kept until one of them changes.
+ *
+ * Two things the first learning rounds missed (t-6d46b4df16), both here:
+ *   chains    an agent that asks, rewords and then opens the answer did all
+ *             of it for its first question - the opens were filed under the
+ *             rewording, and the next agent asking in the first words matched
+ *             a walk with nothing used in it. One agent's walks within
+ *             CHAIN_GAP of each other now share what was used, and the earlier
+ *             ones learn the later questions' words as words added.
+ *   reads     what the agent read with its own tools, from hook.js: a thought
+ *             file is that thought, a range of a code file the functions it
+ *             covers - counted like an open for the walk it happened in.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { readPaths, pathsHome } from './path-recorder.js';
 import { keyOf, ASKING } from './learn.js';
-import { termsOf } from './code-find.js';
+import { termsOf, questionTerms, buildCodeIndex, shortName } from './code-find.js';
+import { repoKey } from './path-recorder.js';
 
 const DECAY = 0.98;          // per day of a path's age
 const USED = 1;              // opened or expanded
@@ -35,6 +47,10 @@ const LEFT = 0.25;           // shown in the answer and not opened
 const LEARN_MIN = 1.5;       // a word is learned once paths worth this much added it (two recent)
 const KEY_OVERLAP = 0.5;     // keys match when they share this share of the larger one
 const PATHS_READ = 5000;
+const READ = 1;              // read with the agent's own tools, through hook.js
+const CHAIN_GAP = 10 * 60 * 1000;   // one agent's walks closer than this are one search
+const READ_AFTER = 10 * 60 * 1000;  // reads this long after an agent's last walk still belong to it
+const WHOLE_FILE = 3;       // a read with no range counts for a file of at most this many functions
 
 /* A code node's name that survives line shifts: the file and the function. */
 export function codeKey(id, text) {
@@ -54,7 +70,7 @@ function folderSig(dir) {
 /* Every recorded walk that began with a question, reduced to what it teaches. */
 function walks(repoDir, dataDir, rx) {
   const dir = pathsHome(repoDir, dataDir);
-  const sig = folderSig(dir);
+  const sig = folderSig(dir) + '|' + folderSig(path.join(dataDir || '', 'reads'));
   const hit = cache.get(dir);
   if (hit && hit.sig === sig) return hit.walks;
   const now = Date.now();
@@ -78,10 +94,72 @@ function walks(repoDir, dataDir, rx) {
     }
     const shown = new Map();
     for (const n of (p.stack && p.stack.nodes) || []) if (n.role === 'result') { const k = nodeKey(n); if (k) { shown.set(k, 1); if (!names.has(k)) names.set(k, n.text || n.id); } }
-    out.push({ id: p.id, at: p.at, key, weight, added: [...added], used, shown, names });
+    out.push({ id: p.id, at: p.at, key, weight, added: [...added], used, shown, names, agent: (p.agent && p.agent.id) || null, repo: p.repo || null, asked });
   }
+  creditReads(repoDir, dataDir, out);
+  chain(out);
   cache.set(dir, { sig, walks: out });
   return out;
+}
+
+/* One agent's walks, in order: each is credited with what the later ones in
+ * its chain used, and learns their questions' words as its own added words. */
+function chain(out) {
+  const byAgent = new Map();
+  for (const w of out) if (w.agent) { if (!byAgent.has(w.agent)) byAgent.set(w.agent, []); byAgent.get(w.agent).push(w); }
+  for (const ws of byAgent.values()) {
+    ws.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    const own = ws.map((w) => ({ used: new Map(w.used), words: [...questionTerms([...w.asked].join(' '))].filter((t) => !t.includes('_')) }));
+    for (let i = 0; i < ws.length; i++) {
+      for (let j = i + 1; j < ws.length && Date.parse(ws[j].at) - Date.parse(ws[j - 1].at) <= CHAIN_GAP; j++) {
+        for (const [k, v] of own[j].used) ws[i].used.set(k, Math.max(ws[i].used.get(k) || 0, v));
+        for (const [k, n] of ws[j].names) if (!ws[i].names.has(k)) ws[i].names.set(k, n);
+        for (const t of [...own[j].words, ...ws[j].added]) if (!ws[i].asked.has(t) && !ASKING.has(t) && !ws[i].added.includes(t)) ws[i].added.push(t);
+      }
+    }
+  }
+}
+
+/* hook.js's lines for this repository, read once per change of the file. */
+const readsCache = new Map();
+function readsOf(repoDir, dataDir) {
+  const file = path.join(dataDir || '', 'reads', repoKey(repoDir) + '.jsonl');
+  let st; try { st = fs.statSync(file); } catch (_) { return []; }
+  const hit = readsCache.get(file);
+  if (hit && hit.m === st.mtimeMs) return hit.reads;
+  const reads = [];
+  for (const l of fs.readFileSync(file, 'utf8').split('\n')) { try { if (l.trim()) reads.push(JSON.parse(l)); } catch (_) {} }
+  readsCache.set(file, { m: st.mtimeMs, reads });
+  return reads;
+}
+
+/* Each read goes to the walk it happened in: same repository folder, after
+ * the walk began and before that agent's next one - or within READ_AFTER of
+ * its last. A thought file is the thought; a code range, the functions it
+ * covers at HEAD. */
+function creditReads(repoDir, dataDir, out) {
+  const reads = readsOf(repoDir, dataDir);
+  if (!reads.length) return;
+  let regions = null;
+  const keysOf = (r) => {
+    if (r.thought) return [r.thought];
+    if (!regions) { try { regions = buildCodeIndex(repoDir).regions; } catch (_) { regions = []; } }
+    const inFile = regions.filter((x) => x.file === r.file && x.kind !== 'doc');
+    const hit = r.from ? inFile.filter((x) => x.to >= r.from && x.from <= (r.to || r.from + 200)) : inFile.length <= WHOLE_FILE ? inFile : [];
+    return hit.map((x) => x.file + '::' + shortName(x));
+  };
+  const same = (a, b) => !!a && !!b && path.resolve(String(a)).toLowerCase() === path.resolve(String(b)).toLowerCase();
+  const sorted = out.slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  for (const w of sorted) {
+    const t0 = Date.parse(w.at);
+    const next = sorted.find((x) => x !== w && x.agent === w.agent && Date.parse(x.at) > t0);
+    const t1 = next ? Date.parse(next.at) : t0 + READ_AFTER;
+    for (const r of reads) {
+      const t = Date.parse(r.at);
+      if (t < t0 || t >= t1 || !same(r.repo, w.repo)) continue;
+      for (const k of keysOf(r)) { w.used.set(k, Math.max(w.used.get(k) || 0, READ)); if (!w.names.has(k)) w.names.set(k, k); }
+    }
+  }
 }
 
 const overlap = (a, b) => { const B = new Set(b); const n = a.filter((w) => B.has(w)).length; return n / Math.max(a.length, b.length); };

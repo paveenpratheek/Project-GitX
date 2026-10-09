@@ -941,7 +941,12 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
  * the search even when the question's words miss it, ranks higher in the
  * map, and their thoughts come first in their commits - a hint that widens
  * what is found and orders it, never what is hidden (t-11190c437f). */
-const USED_MEAN = 0.6, USED_A = 1;
+/* USED_A was 1, and a use fades by DECAY per day from the moment it is
+ * recorded, so one agent's use was worth 0.99998 seconds later and never
+ * counted - every node needed two agents, and the learning rounds on the
+ * held-out set learned almost nothing. At 0.9 one recent use counts, and
+ * after about five days it needs a second agent to stay. */
+const USED_MEAN = 0.6, USED_A = 0.9;
 const learnedUse = (v) => v && v.a >= USED_A && v.mean >= USED_MEAN;
 export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null, use = null } = {}) {
   const t0 = Date.now();

@@ -80,6 +80,14 @@ function runOne(c, arm, at) {
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
+  /* Learning on: hook.js tells the walk folder what the agent read with its
+   * own tools - most answers are found by Read, which GitX cannot see. A
+   * project hook, in this run's own copy, so nothing of the owner's is set. */
+  if (arm === 'gitx' && WALKS) {
+    const fwd = (p) => p.replace(/\\/g, '/');
+    fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }] }] } }, null, 2));
+  }
   const args = ['-p', PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     '--strict-mcp-config', '--mcp-config', mcpFile,
