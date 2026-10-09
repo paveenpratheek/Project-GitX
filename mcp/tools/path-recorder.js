@@ -57,12 +57,64 @@ export function pathsHome(repoDir, dataDir) {
   return path.join(dataDir || localAppData(), 'paths', repoKey(repoDir));
 }
 
+/* A walk is written to <id>.json.tmp-<pid> and renamed over <id>.json, so a
+ * reader never sees half a file. Two ways that lost walks - 8 of 26 by
+ * 8 October, each left behind as a .tmp:
+ *   - the process is ended mid-save. Closing an agent session ends its MCP
+ *     server without warning, so this is ordinary, not a crash;
+ *   - Windows refuses the rename (EPERM, EACCES, EBUSY) while something else
+ *     holds the file - a virus scanner on a file just written is the usual one.
+ * So a refused rename is retried, then written in place rather than given up:
+ * a whole walk saved non-atomically beats a walk the learner never sees. */
+const RENAME_TRIES = 5;
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function writeWalk(file, rec) {
+  const text = JSON.stringify(rec, null, 2) + '\n';
+  const tmp = file + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, text);
+  for (let i = 1; ; i++) {
+    try { fs.renameSync(tmp, file); return; } catch (err) {
+      if (i < RENAME_TRIES && /^(EPERM|EACCES|EBUSY)$/.test(err.code)) { pause(20 * i); continue; }
+      fs.writeFileSync(file, text);
+      try { fs.unlinkSync(tmp); } catch (_) {}
+      return;
+    }
+  }
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; } };
+
+/* What an ended process left behind: a .tmp whose writer is gone is the
+ * newest whole copy of its walk when it parses, and nothing when it does not
+ * (ended between opening the file and writing it). Adopted or removed here,
+ * on the way to reading, so both GitX Monitor and the learner get it back. */
+function adoptStranded(dir, names) {
+  for (const f of names) {
+    const m = /^(.+\.json)\.tmp-(\d+)$/.exec(f);
+    if (!m || alive(Number(m[2]))) continue;
+    const tmp = path.join(dir, f), file = path.join(dir, m[1]);
+    try {
+      const rec = JSON.parse(fs.readFileSync(tmp, 'utf8'));
+      let have = null;
+      try { have = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (_) {}
+      const newer = !have || (rec.path || []).length >= (have.path || []).length;
+      if (rec && rec.schema === SCHEMA && newer) { fs.renameSync(tmp, file); continue; }
+    } catch (_) { /* empty or torn: there is nothing in it to keep */ }
+    try { fs.unlinkSync(tmp); } catch (_) {}
+  }
+}
+
 /* The newest first, for GitX Monitor's history. A file that is not a path is
  * skipped; it never stops the rest from being read. */
 export function readPaths(repoDir, dataDir, limit = 50) {
   const dir = pathsHome(repoDir, dataDir);
   let names = [];
-  try { names = fs.readdirSync(dir).filter((f) => f.endsWith('.json')); } catch (_) { return []; }
+  try {
+    const all = fs.readdirSync(dir);
+    if (all.some((f) => f.includes('.json.tmp-'))) adoptStranded(dir, all);
+    names = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch (_) { return []; }
   const out = [];
   for (const f of names) {
     try { const p = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')); if (p && p.schema === SCHEMA) out.push(p); } catch (_) { /* half-written or foreign */ }
@@ -81,9 +133,7 @@ export function markLeft(repoDir, dataDir, id) {
   if (!rec || rec.status !== 'walking') return false;
   rec.status = rec.started_by ? 'ended' : 'left';
   rec.ended_at = new Date().toISOString();
-  const tmp = file + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(rec, null, 2) + '\n');
-  fs.renameSync(tmp, file);
+  writeWalk(file, rec);
   return rec.status;
 }
 
@@ -258,10 +308,7 @@ export class PathRecorder {
     try {
       const dir = pathsHome(rec.repo, this.base);
       fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, rec.id + '.json');
-      const tmp = file + '.tmp-' + process.pid;
-      fs.writeFileSync(tmp, JSON.stringify(rec, null, 2) + '\n');
-      fs.renameSync(tmp, file);
+      writeWalk(path.join(dir, rec.id + '.json'), rec);
     } catch (err) { this.warn(err); }
   }
 
