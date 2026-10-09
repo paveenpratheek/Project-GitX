@@ -98,7 +98,7 @@ const hashOf = (x) => (typeof x === 'string' ? x : x && x.commit) || null;
 
 /* ---------------------------------------------------------------- cases */
 
-function loadCases() {
+export function loadCases() {
   const file = path.join(BENCH, SET + '.json');
   if (!fs.existsSync(file)) throw new Error('No cases at ' + file);
   const spec = readJson(file);
@@ -120,7 +120,7 @@ function loadCases() {
 
 /* --------------------------------------------------------------- freeze */
 
-function freeze(at, { thinking = true } = {}) {
+export function freeze(at, { thinking = true } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-bench-'));
   git(['clone', '-q', '--no-hardlinks', '--no-checkout', REPO, dir]);
   git(['checkout', '-q', '--detach', at], dir);
@@ -199,7 +199,7 @@ function whereIn(answer, needle) {
   return 'elsewhere';
 }
 
-function score(c, answer, settledBy) {
+export function score(c, answer, settledBy) {
   const text = JSON.stringify(answer);
   const ids = [...(c.expect.thoughts || []), ...(c.expect.commits || []).map((h) => h.slice(0, 7)), ...(c.expect.code || [])];
   const found = ids.filter((e) => text.includes(e));
@@ -378,4 +378,5 @@ function main() {
   }
 }
 
-main();
+/* Run when called as a script; bench-agent.js imports freeze and score. */
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

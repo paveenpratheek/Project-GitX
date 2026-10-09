@@ -105,6 +105,11 @@ const nameOf = (line) => line.trim().replace(/\s*\{\s*$/, '').slice(0, 90);
 const WRAPPER = /^\s*(?:;?\s*\(\s*(?:async\s*)?(?:function\b[^(]*\([^)]*\)|\([^)]*\)\s*=>)\s*\{|(?:export\s+default\s+)?\{\s*$)/;
 const CLASS = /^\s*(?:export\s+)?(?:default\s+)?class\s+[\w$]+/;
 const METHOD = /^\s*(?:static\s+|async\s+|get\s+|set\s+)*(?!(?:if|for|while|switch|catch|return|function)\b)[\w$]+\s*\([^)]*\)\s*\{\s*$/;
+/* A regular expression literal, where one can begin: after an operator, a
+ * bracket, a comma or return. Blanked like a string - STARTS.code holds \{
+ * and \[, and counted as braces they opened a block that never closed, so
+ * everything in code-find.js after it was one region named STARTS. */
+const REGEX_LIT = /(^|[=(,:[!&|?{};]|\breturn)\s*\/(?![*/])(?:\\.|\[(?:\\.|[^\]\\])*\]|[^/\n\\[])+\/[dgimsuy]*/g;
 function braceStarts(lines, kind) {
   const starts = new Set();
   const stack = [];                       // 'wrap' | 'class' | 'block' per open brace
@@ -116,7 +121,7 @@ function braceStarts(lines, kind) {
     const raw = lines[i];
     if (kind === 'css') { if (top() && STARTS.css.test(raw)) starts.add(i); }
     else if ((top() && STARTS.code.test(raw) && !/^\s{0,6}case\s/.test(raw)) || (stack.length && stack[stack.length - 1] === 'class' && stack.slice(0, -1).every((k) => k === 'wrap') && METHOD.test(raw))) starts.add(i);
-    const clean = l.replace(/\/\*.*?\*\//g, '').replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""').replace(/\/\/.*$/, '');
+    const clean = l.replace(REGEX_LIT, '$1""').replace(/\/\*.*?\*\//g, '').replace(/(['"`])(?:\\.|(?!\1).)*\1/g, '""').replace(/\/\/.*$/, '');
     const open = clean.indexOf('/*');
     const code = open >= 0 ? clean.slice(0, open) : clean;
     if (open >= 0) inBlockComment = true;
@@ -1134,6 +1139,43 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     carry: rareTerms(cx, query, carried),
     landed: map ? map.core.map((x) => x.r.file + ':' + x.r.from) : [],
     ms: Date.now() - t0
+  };
+}
+
+/* An exact lookup - "which tools are there", "what is the default" - answered
+ * with where, not with an essay. Asked in words, both of those missed on the
+ * held-out set and one grep each answered them in about 200 tokens; the agent
+ * can now ask GitX the same way and get each line with the function it sits
+ * in, and the thoughts that say it, by id. `text` is matched as written,
+ * ignoring case, or as a regular expression when given as /…/flags. */
+const FIND_LINES = 25, FIND_THOUGHTS = 8;
+export function findText(repoDir, text, { paths = [] } = {}) {
+  const cx = buildCodeIndex(repoDir);
+  const re = (() => {
+    const m = /^\/(.+)\/([a-z]*)$/.exec(String(text));
+    if (m) { try { return new RegExp(m[1], m[2].replace('g', '')); } catch (_) {} }
+    return new RegExp(String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  })();
+  const within = (paths || []).map((p) => String(p).split('::')[0].replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean);
+  const inside = (f) => !within.length || within.some((p) => f === p || f.startsWith(p.replace(/\/?$/, '/')));
+  const lines = [];
+  let total = 0;
+  for (const r of cx.regions) {
+    if (!inside(r.file)) continue;
+    r.text.split('\n').forEach((l, i) => {
+      if (!re.test(l)) return;
+      total++;
+      if (lines.length < FIND_LINES) lines.push({ at: r.file + ':' + (r.from + i), in: shortName(r), line: l.trim().slice(0, 160) });
+    });
+  }
+  const thoughts = [...cx.settled, ...cx.waiting].filter((t) => re.test(t.text || ''));
+  return {
+    find: String(text),
+    lines,
+    more_lines: total > lines.length ? (total - lines.length) + ' more lines match - narrow it, or give paths' : undefined,
+    thoughts: thoughts.length ? thoughts.slice(0, FIND_THOUGHTS).map((t) => ({ id: t.id, text: cap(t.text, 160) })) : undefined,
+    more_thoughts: thoughts.length > FIND_THOUGHTS ? thoughts.length - FIND_THOUGHTS + ' more thoughts say it' : undefined,
+    next: lines.length ? 'expand a function from in, or Read the file at the line' : 'nothing at HEAD says this - ask in words with query'
   };
 }
 

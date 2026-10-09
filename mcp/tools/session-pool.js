@@ -26,6 +26,7 @@
  */
 
 import { buildCodeIndex, termsOf, questionTerms, idfOf, RARE_SHARE, codeFirst, rankIndexFor } from './code-find.js';
+import { shapeAnswer } from './shape.js';
 import { learnFor } from './walk-learn.js';
 import { stem } from './rank.js';
 
@@ -200,7 +201,7 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
 /* One gitx_related call through the session's pool. */
 const LEARNED = 0.5;         // a learned word's weight: it widens the search, never decides it
 
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null } = {}) {
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0 } = {}) {
   const cx = buildCodeIndex(repoDir);
   const s = sessions.get(repoDir) || { pool: null, kept: [] };
   sessions.set(repoDir, s);
@@ -241,11 +242,10 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   const cf = ready && ready.stamp === cx ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths, use: pool.learned ? pool.learned.use : null });
   const prefetched = !!(ready && ready.stamp === cx);
   for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
-  let body;
-  if (pool.round === 1) {
-    body = cf.answer;
-    for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
-  } else body = changesOf(pool, cf.answer);
+  /* Cut to the agent's focus and budget (shape.js) before anything is
+   * marked given: what was cut was never sent, so a later round may send it. */
+  const body = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
+  if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])
     .map(([w, m]) => (pool.spell.get(w) || w) + (m < 1 ? ' (' + m + ')' : ''));

@@ -1,0 +1,176 @@
+/*
+ * The agent half of the bench: a fresh Claude Code agent answers each
+ * question, with no memory of this project, in one of two arms -
+ *
+ *   hand   files and git only: Read, Grep, Glob, git log, git show
+ *   gitx   the same, plus GitX's MCP tools
+ *
+ *   node mcp/bench-agent.js [repo] [--set heldout] [--only id,id]
+ *        [--arms=hand,gitx] [--model=sonnet] [--parallel=3] [--minutes=12]
+ *
+ * This is System 2 against System 1 + System 2: what an agent spends
+ * finding the answer itself, against what it spends when GitX hands it one.
+ * bench.js measures GitX's answer alone; this measures the agent that uses
+ * it, so the same questions are scored the same way - an expected id, hash
+ * or function name in the agent's final answer is a hit.
+ *
+ * Each run is isolated, so no run teaches another and nothing touches the
+ * owner's own setup:
+ *   - its own frozen copy of the repository (bench.js freeze), at the set's
+ *     commit, holding only the thinking that existed then - and never the
+ *     question sets, which live in .gitx/bench and are not copied;
+ *   - no user settings, skills or session saved (--setting-sources
+ *     project,local, --disable-slash-commands, --no-session-persistence),
+ *     and a fresh folder, so no auto-memory;
+ *   - no MCP server but the arm's own (--strict-mcp-config): none for hand,
+ *     and for gitx a GitX server on its own empty data folder, with its
+ *     broker address pointed nowhere, so its walks reach neither the owner's
+ *     walk folder nor GitX Monitor, nor the next run's learning;
+ *   - tools allowed by name; anything else is refused, as headless asks are.
+ * Every tool call is kept, and a read outside the run's copy is flagged.
+ *
+ * Writes only temporary folders and <repo>/.gitx/bench/runs/agent-*.json.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { freeze, score, loadCases } from './bench.js';
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const argv = process.argv.slice(2);
+const eq = (name, dflt) => { const a = argv.find((x) => x.startsWith('--' + name + '=')); return a ? a.slice(name.length + 3) : dflt; };
+const ARMS = eq('arms', 'hand,gitx').split(',');
+const MODEL = eq('model', 'sonnet');
+const PARALLEL = Number(eq('parallel', '3'));
+const MINUTES = Number(eq('minutes', '12'));
+const REPO = path.resolve(argv.find((a, i) => !a.startsWith('--') && !['--set', '--only', '--at'].includes(argv[i - 1])) || path.join(HERE, '..'));
+const SERVER = path.join(HERE, 'server.js');
+
+const PROMPT = (q, arm) => [
+  'Answer this question about the project in the current folder:',
+  '',
+  '"' + q + '"',
+  '',
+  'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
+  '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
+  'per thought; .gitx is git-ignored, so give it as a path when you search it.',
+  ...(arm === 'gitx' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  '',
+  'Answer in a few sentences, and cite your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
+].join('\n');
+
+const TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)'];
+const DENY = ['Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task', 'Agent'];
+
+function runOne(c, arm, at) {
+  const frozen = freeze(at);
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-agent-data-'));
+  const mcp = arm === 'gitx'
+    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: data, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id } } } }
+    : { mcpServers: {} };
+  const mcpFile = path.join(data, 'mcp.json');
+  fs.writeFileSync(mcpFile, JSON.stringify(mcp));
+  const args = ['-p', PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
+    '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
+    '--strict-mcp-config', '--mcp-config', mcpFile,
+    '--allowedTools', ...TOOLS, ...(arm === 'gitx' ? ['mcp__gitx'] : []),
+    '--disallowedTools', ...DENY];
+  return new Promise((resolve) => {
+    const t0 = Date.now();
+    const child = spawn('claude', args, { cwd: frozen.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let buf = '', err = '', result = null, model = null;
+    const calls = [];
+    child.stdout.on('data', (d) => {
+      buf += d;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let m; try { m = JSON.parse(line); } catch (_) { continue; }
+        if (m.type === 'system' && m.subtype === 'init') model = m.model;
+        if (m.type === 'assistant') for (const b of (m.message && m.message.content) || []) if (b.type === 'tool_use') calls.push({ tool: b.name, input: b.input });
+        if (m.type === 'result') result = m;
+      }
+    });
+    child.stderr.on('data', (d) => { err += d; });
+    const timer = setTimeout(() => child.kill(), MINUTES * 60 * 1000);
+    child.on('close', () => {
+      clearTimeout(timer);
+      const text = result ? String(result.result || '') : '';
+      const u = (result && result.usage) || {};
+      const tokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
+      /* A read outside the run's own copy would be the agent finding something
+       * this test did not give it - the labels, the live repository. An agent
+       * using Git Bash writes C:\ as /c/, which is read here as the same place. */
+      const win = (p) => String(p).replace(/^\/([a-z])\//i, (_, d) => d + ':/');
+      const inside = (p) => !p || !path.isAbsolute(win(p)) || path.resolve(win(p)).toLowerCase().startsWith(frozen.dir.toLowerCase());
+      const outside = calls.filter((x) => !inside(x.input && (x.input.file_path || x.input.path)));
+      const settledBy = new Map();
+      const tdir = path.join(frozen.dir, '.gitx', 'thoughts');
+      for (const f of fs.existsSync(tdir) ? fs.readdirSync(tdir) : []) {
+        try { const t = JSON.parse(fs.readFileSync(path.join(tdir, f), 'utf8')); const h = t.resulted_in && (t.resulted_in.commit || t.resulted_in); if (h) settledBy.set(t.id, h); } catch (_) {}
+      }
+      const s = score(c, { final: text }, settledBy);
+      resolve({
+        id: c.id, arm, model, hit: s.hit, reach: s.reach, recall: s.recall,
+        seconds: Math.round((Date.now() - t0) / 1000), tokens, output_tokens: u.output_tokens || 0,
+        cost_usd: result ? result.total_cost_usd : null, turns: result ? result.num_turns : null,
+        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length,
+        error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
+        outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
+        answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
+      });
+      for (const d of [frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
+    });
+  });
+}
+
+async function main() {
+  const { cases, at } = loadCases();
+  const jobs = [];
+  for (const c of cases) for (const arm of ARMS) jobs.push({ c, arm });
+  console.log(`${cases.length} questions x ${ARMS.join(', ')} = ${jobs.length} fresh agents, ${MODEL}, ${PARALLEL} at a time, frozen at ${at}\n`);
+  const rows = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const { c, arm } = jobs[next++];
+      const r = await runOne(c, arm, at);
+      rows.push(r);
+      console.log(`${c.id.padEnd(20)} ${arm.padEnd(5)} ${r.error ? 'ERR ' + r.error : r.hit ? 'HIT' : r.reach ? 'via' : ' - '}  ${String(r.seconds).padStart(4)}s  ${String(r.tokens).padStart(8)} tok  ${String(r.tool_calls).padStart(3)} calls${r.gitx_calls ? ' (' + r.gitx_calls + ' gitx)' : ''}${r.outside ? '  OUTSIDE: ' + r.outside.join('; ') : ''}`);
+    }
+  };
+  await Promise.all(Array.from({ length: PARALLEL }, worker));
+
+  console.log('\n' + ''.padEnd(22) + ARMS.map((a) => a.padEnd(26)).join(''));
+  const sum = (arm) => {
+    const r = rows.filter((x) => x.arm === arm && !x.error);
+    const med = (xs) => { const s = xs.slice().sort((a, b) => a - b); return s.length ? s[Math.floor(s.length / 2)] : null; };
+    return {
+      runs: r.length, hit: r.filter((x) => x.hit).length, reach: r.filter((x) => x.reach).length,
+      seconds_median: med(r.map((x) => x.seconds)), tokens_median: med(r.map((x) => x.tokens)), tokens_total: r.reduce((s, x) => s + x.tokens, 0),
+      calls_median: med(r.map((x) => x.tool_calls)), cost_usd: Math.round(r.reduce((s, x) => s + (x.cost_usd || 0), 0) * 100) / 100,
+      errors: rows.filter((x) => x.arm === arm && x.error).length
+    };
+  };
+  const S = Object.fromEntries(ARMS.map((a) => [a, sum(a)]));
+  const line = (label, f) => console.log(label.padEnd(22) + ARMS.map((a) => String(f(S[a])).padEnd(26)).join(''));
+  line('answer found', (x) => `${x.hit}/${x.runs}`);
+  line('found, or its commit', (x) => `${x.reach}/${x.runs}`);
+  line('time, median', (x) => x.seconds_median + ' s');
+  line('tokens, median', (x) => x.tokens_median);
+  line('tokens, all runs', (x) => x.tokens_total);
+  line('tool calls, median', (x) => x.calls_median);
+  line('cost (as reported)', (x) => '$' + x.cost_usd);
+  line('errors', (x) => x.errors);
+
+  const runs = path.join(REPO, '.gitx', 'bench', 'runs');
+  fs.mkdirSync(runs, { recursive: true });
+  const file = path.join(runs, 'agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, summary: S, runs: rows }, null, 2) + '\n');
+  console.log('\nSaved ' + path.relative(REPO, file));
+}
+
+main();

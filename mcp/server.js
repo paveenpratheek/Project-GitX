@@ -19,7 +19,7 @@ import { loadThoughts } from './tools/thoughts.js';
 import { promote, describe as describePromotion } from './tools/promote.js';
 import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
-import { expandRegion, warm } from './tools/code-find.js';
+import { expandRegion, findText, warm } from './tools/code-find.js';
 import { newSessions, askPooled, prefetch } from './tools/session-pool.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
@@ -440,7 +440,7 @@ const TOOLS = [
    * everything GitX holds, where the tools above each search one part. */
   {
     name: 'gitx_related',
-    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down, map first: the feature\'s core (the code that implements it), wiring (where it is connected) and surface (where it is shown) as functions with line ranges, and its own words; then its best functions as trees - the lines worth reading, no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. Open any map entry with expand. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered.',
+    description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down, map first: the feature\'s core (the code that implements it), wiring (where it is connected) and surface (where it is shown) as functions with line ranges, and its own words; then its best functions as trees - the lines worth reading, no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. Open any map entry with expand. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered. Ask for what you need, not everything: focus "thinking" for why and what was decided (small, no code), focus "code" for the code, a budget in tokens for a quick check, or find for an exact name, value or list - each lowers what you have to read.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -448,6 +448,9 @@ const TOOLS = [
         ids: { type: 'array', items: { type: 'string' }, description: 'Thought ids (t-...) or commit hashes you are on or about to link to - what is linked to them ranks higher.' },
         paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
         expand: { type: 'string', description: 'A function from the map - its name as the map wrote it ("learnKeys", "learn.js · learnKeys") or a ref "file:line" - to get it as a tree: its code, the commits that wrote it and why, the thoughts they settled, what is still open. No query needed.' },
+        focus: { type: 'string', enum: ['thinking', 'code', 'both'], description: 'What you need back. "thinking": what was decided, discussed or is still open, and what each piece of code\'s commits settled - no code lines, so it is small; best for why / what did we decide / is it built. "code": the map and the code with the commits that wrote it, the thinking only counted. "both" (default): everything.' },
+        budget: { type: 'number', description: 'Most tokens to send back, e.g. 800 for a quick check. The answer is cut best-first to fit, and cut says what went and how to get it - nothing is lost, only left for a later call.' },
+        find: { type: 'string', description: 'Exact lookup instead of a question: text as written (case ignored) or /regex/ - for names, values, a list such as every tool or every default. Returns each matching line as file:line with the function it is in, and the thoughts that say it, by id. Pairs with paths.' },
         add: { type: 'array', items: { type: 'string' }, description: 'Words to add to the current question without asking a new one - GitX answers with what changed.' },
         drop: { type: 'array', items: { type: 'string' }, description: 'Words that took the answer the wrong way: removed, and what holds them sinks - GitX answers with what changed.' },
         new: { type: 'boolean', description: 'Treat query as a new question even if it shares words with the current one. Without it GitX decides, and says which and why.' },
@@ -568,7 +571,7 @@ const WARM_EVERY = 15000;
 setInterval(() => {
   for (const dir of sessions.keys()) { try { warm(dir); } catch (_) { /* answered at the next call instead */ } }
 }, WARM_EVERY).unref();
-const CODE_FIRST_HOW = 'Read the map first: core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read, or add / drop words: question says whether GitX took it as new or a follow-up, and why, and a follow-up gives only what changed - map entries new, back or hidden, new lines and thoughts of functions already given (given_in) - nothing twice. words are the pool\'s words with their weights. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
+const CODE_FIRST_HOW = 'Read the map first: (Ask for less when you need less: focus "thinking" for decisions and why, focus "code" for code, budget for a cap in tokens, find for an exact name or value.) core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read, or add / drop words: question says whether GitX took it as new or a follow-up, and why, and a follow-up gives only what changed - map entries new, back or hidden, new lines and thoughts of functions already given (given_in) - nothing twice. words are the pool\'s words with their weights. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
 function lean(tool, result) {
   const first = result && Array.isArray(result.content) ? result.content[0] : null;
   if (!first || first.type !== 'text') return result;
@@ -1190,6 +1193,8 @@ async function handleToolCall(name, args) {
        * is still the stack's to answer. */
       /* A name from the map opened as a tree (t-da800103d5), with the last
        * question's words choosing its lines and thoughts. */
+      /* An exact lookup: where, not an essay (code-find.js findText). */
+      if (args.find) return reply({ repo: target.dir, ...findText(target.dir, String(args.find), { paths: args.paths }) });
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
@@ -1201,7 +1206,7 @@ async function handleToolCall(name, args) {
       const words = String(args.query || '').trim();
       const refine = (Array.isArray(args.add) ? args.add.length : args.add) || (Array.isArray(args.drop) ? args.drop.length : args.drop);
       if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
-        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir() });
+        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir(), focus: args.focus, budget: Number(args.budget) || 0 });
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
