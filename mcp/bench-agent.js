@@ -46,6 +46,12 @@ const ARMS = eq('arms', 'hand,gitx').split(',');
 const MODEL = eq('model', 'sonnet');
 const PARALLEL = Number(eq('parallel', '3'));
 const MINUTES = Number(eq('minutes', '12'));
+/* Learning on: one walk folder kept across every GitX agent and round, so
+ * each agent's walks teach the ones after it - the loop GitX is built for.
+ * Rounds run one after another; within a round, agents still run side by
+ * side. Without --walks every agent has its own empty folder: learning off. */
+const WALKS = eq('walks', null) ? path.resolve(eq('walks', null)) : null;
+const ROUNDS = Number(eq('rounds', '1'));
 const REPO = path.resolve(argv.find((a, i) => !a.startsWith('--') && !['--set', '--only', '--at'].includes(argv[i - 1])) || path.join(HERE, '..'));
 const SERVER = path.join(HERE, 'server.js');
 
@@ -68,8 +74,9 @@ const DENY = ['Edit', 'Write', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task', 
 function runOne(c, arm, at) {
   const frozen = freeze(at);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-agent-data-'));
+  const walkDir = WALKS || data;
   const mcp = arm === 'gitx'
-    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: data, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id } } } }
+    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id } } } }
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
@@ -81,8 +88,8 @@ function runOne(c, arm, at) {
   return new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn('claude', args, { cwd: frozen.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let buf = '', err = '', result = null, model = null;
-    const calls = [];
+    let buf = '', err = '', result = null, model = null, learned = 0;
+    const calls = [], related = new Set();
     child.stdout.on('data', (d) => {
       buf += d;
       let i;
@@ -90,7 +97,16 @@ function runOne(c, arm, at) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
         let m; try { m = JSON.parse(line); } catch (_) { continue; }
         if (m.type === 'system' && m.subtype === 'init') model = m.model;
-        if (m.type === 'assistant') for (const b of (m.message && m.message.content) || []) if (b.type === 'tool_use') calls.push({ tool: b.name, input: b.input });
+        if (m.type === 'assistant') for (const b of (m.message && m.message.content) || []) if (b.type === 'tool_use') {
+          calls.push({ tool: b.name, input: b.input });
+          if (b.name === 'mcp__gitx__gitx_related') related.add(b.id);
+        }
+        /* An answer that carries "learned" is one earlier walks shaped. */
+        if (m.type === 'user') for (const b of (m.message && m.message.content) || []) {
+          if (b.type !== 'tool_result' || !related.has(b.tool_use_id)) continue;
+          const t = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '');
+          if (/\\?"learned\\?":\s*\{\s*\\?"from/.test(t)) learned++;
+        }
         if (m.type === 'result') result = m;
       }
     });
@@ -117,7 +133,7 @@ function runOne(c, arm, at) {
         id: c.id, arm, model, hit: s.hit, reach: s.reach, recall: s.recall,
         seconds: Math.round((Date.now() - t0) / 1000), tokens, output_tokens: u.output_tokens || 0,
         cost_usd: result ? result.total_cost_usd : null, turns: result ? result.num_turns : null,
-        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length,
+        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length, learned_answers: learned,
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
         outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
         answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
@@ -127,11 +143,10 @@ function runOne(c, arm, at) {
   });
 }
 
-async function main() {
-  const { cases, at } = loadCases();
+async function runRound(k, cases, at) {
   const jobs = [];
   for (const c of cases) for (const arm of ARMS) jobs.push({ c, arm });
-  console.log(`${cases.length} questions x ${ARMS.join(', ')} = ${jobs.length} fresh agents, ${MODEL}, ${PARALLEL} at a time, frozen at ${at}\n`);
+  console.log(`${ROUNDS > 1 ? 'Round ' + k + ' of ' + ROUNDS + ': ' : ''}${cases.length} questions x ${ARMS.join(', ')} = ${jobs.length} fresh agents, ${MODEL}, ${PARALLEL} at a time, frozen at ${at}${WALKS ? ', learning on: ' + walkCount() + ' walks so far' : ''}\n`);
   const rows = [];
   let next = 0;
   const worker = async () => {
@@ -151,6 +166,7 @@ async function main() {
     return {
       runs: r.length, hit: r.filter((x) => x.hit).length, reach: r.filter((x) => x.reach).length,
       seconds_median: med(r.map((x) => x.seconds)), tokens_median: med(r.map((x) => x.tokens)), tokens_total: r.reduce((s, x) => s + x.tokens, 0),
+      learned: r.filter((x) => x.learned_answers > 0).length,
       calls_median: med(r.map((x) => x.tool_calls)), cost_usd: Math.round(r.reduce((s, x) => s + (x.cost_usd || 0), 0) * 100) / 100,
       errors: rows.filter((x) => x.arm === arm && x.error).length
     };
@@ -164,13 +180,32 @@ async function main() {
   line('tokens, all runs', (x) => x.tokens_total);
   line('tool calls, median', (x) => x.calls_median);
   line('cost (as reported)', (x) => '$' + x.cost_usd);
+  if (WALKS) line('answers learning shaped', (x) => `${x.learned}/${x.runs}`);
   line('errors', (x) => x.errors);
 
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, summary: S, runs: rows }, null, 2) + '\n');
-  console.log('\nSaved ' + path.relative(REPO, file));
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, round: k, rounds: ROUNDS, walks: WALKS, walks_after: WALKS ? walkCount() : undefined, summary: S, runs: rows }, null, 2) + '\n');
+  console.log('\nSaved ' + path.relative(REPO, file) + '\n');
+  return S;
+}
+
+/* Walks recorded so far in the kept folder, every repository key. */
+function walkCount() {
+  const p = path.join(WALKS, 'paths');
+  try { return fs.readdirSync(p).reduce((n, d) => n + fs.readdirSync(path.join(p, d)).filter((x) => x.endsWith('.json')).length, 0); } catch (_) { return 0; }
+}
+
+async function main() {
+  const { cases, at } = loadCases();
+  if (WALKS) fs.mkdirSync(WALKS, { recursive: true });
+  const all = [];
+  for (let k = 1; k <= ROUNDS; k++) all.push(await runRound(k, cases, at));
+  if (ROUNDS > 1) {
+    console.log('Across rounds' + (WALKS ? ', learning carried in ' + WALKS : '') + ':');
+    for (const arm of ARMS) all.forEach((S, i) => { const x = S[arm]; console.log(`  round ${i + 1} ${arm.padEnd(5)} found ${x.hit}/${x.runs} (reach ${x.reach})  ${x.seconds_median} s  ${x.calls_median} calls  ${x.tokens_median} tok  ${x.cost_usd}${WALKS ? `  learned ${x.learned}/${x.runs}` : ''}`); });
+  }
 }
 
 main();
