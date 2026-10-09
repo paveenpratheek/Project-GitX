@@ -64,6 +64,25 @@ export function termsOf(text) {
   return out;
 }
 
+/* The words of a question worth searching code for. Code is weighed by how
+ * rare a word is in code, and the words people talk in are rare there: "yes",
+ * "doing" and "should have" weighed more than "flag" or "question", and "it
+ * gets the rules... buried deep" landed on a wallpaper function by "get",
+ * "top" and "deep" (the owner's own questions, tune2 on the bench). So the
+ * asking words the learner already drops (ASKING) and the words of talk below
+ * go, and so does every pair holding one - "should_have" said nothing either. */
+const TALK = new Set(('yes no ok okay right sure so but if then than now also any all some have has had having being been be ' +
+  'doing done get gets got getting make makes made making take takes took actually really like lets let say says said ' +
+  'maybe whether based again come comes coming go goes going went put see look looks kind lot able possible ' +
+  'i im we you they he she my our your their me us them its it s t d ll ve re nt dont didnt doesnt isnt wont cant ' +
+  'and or of to in on at by for with from as into the a an just even ever already').split(' ').map(stem));
+export function questionTerms(text) {
+  const drop = (w) => ASKING.has(w) || TALK.has(w);
+  const out = new Set();
+  for (const w of termsOf(text)) if (!w.split('_').some(drop)) out.add(w);
+  return out;
+}
+
 /* Where a region starts, per kind of file. Indented up to a few spaces, so
  * functions inside a module wrapper (monitor.js is one IIFE) are regions of
  * their own; a tool handler's case is one too. */
@@ -353,7 +372,7 @@ export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights 
   const q = new Map();
   if (weights) { for (const [w, m] of weights) if (m > 0 && (ix.df.has(w) || !w.includes('_'))) q.set(w, idfOf(ix, w) * m); }
   else {
-    for (const w of termsOf(text)) if (ix.df.has(w) || !w.includes('_')) q.set(w, idfOf(ix, w));
+    for (const w of questionTerms(text)) if (ix.df.has(w) || !w.includes('_')) q.set(w, idfOf(ix, w));
     for (const w of carry) if (!q.has(w) && ix.df.has(w)) q.set(w, idfOf(ix, w) * 0.5);
   }
   const total = [...q.values()].reduce((s, x) => s + x, 0);
@@ -469,7 +488,7 @@ const CARRY_MAX = 8;
  * last question landed on or among the words it carried. One with no rare
  * word narrows the last question. */
 function newSubject(ix, text, previous, carry) {
-  const rare = [...termsOf(text)].filter((w) => !w.includes('_') && (ix.df.get(w) || 0) <= ix.regions.length * RARE_SHARE);
+  const rare = [...questionTerms(text)].filter((w) => !w.includes('_') && (ix.df.get(w) || 0) <= ix.regions.length * RARE_SHARE);
   if (!rare.length) return false;
   const keys = new Set(previous);
   const before = ix.regions.filter((r) => keys.has(r.file + ':' + r.from));
@@ -494,7 +513,7 @@ function spread(found, n) {
  * pairs the code holds, rarest first, then what it was itself carrying -
  * so a chain of questions keeps the subject it has been narrowing. */
 export function rareTerms(ix, text, carried = []) {
-  const own = [...termsOf(text)].filter((w) => ix.df.has(w) && (w.includes('_') || ix.df.get(w) <= ix.regions.length * CARRY_SHARE))
+  const own = [...questionTerms(text)].filter((w) => ix.df.has(w) && (w.includes('_') || ix.df.get(w) <= ix.regions.length * CARRY_SHARE))
     .sort((a, b) => idfOf(ix, b) - idfOf(ix, a));
   return [...new Set([...own, ...carried])].slice(0, CARRY_MAX);
 }
@@ -538,6 +557,9 @@ const CORE_FUNCTIONS = 8;
 const WIRING_SHOWN = 10;
 const SURFACE_SHOWN = 4;
 const TREES = 2;
+const DECIDED_LOOK = 5;      // settled thoughts weighed against the code: the best this many by rank
+const DECIDED_FLOOR = 0.3;   // ... that hold at least this share of the question
+const DECIDED_SHOWN = 3;
 const LEAD_MARGIN = 0.1;      // a waiting thought holding this much more of the question than the code leads, and one tree follows
 const LEAD_CLOSE = 0.2;      // ... within this much less, it only comes first, and both trees stay
 const WORDS = 8;
@@ -644,7 +666,7 @@ function usesIn(info, names, importLine) {
  * ("path knowledge"), else the one the best regions' commits settled most
  * thoughts in. */
 function topicOf(cx, query, scored) {
-  const q = termsOf(query);
+  const q = questionTerms(query);
   for (const [id, title] of cx.topics) {
     const tt = [...termsOf(title)].filter((w) => !w.includes('_'));
     if (tt.length && tt.every((w) => q.has(w))) return id;
@@ -951,7 +973,8 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const noCode = best < NO_CODE;
   const words = weights ? [...weights].filter(([w, m]) => m >= 0.5 && !w.includes('_')).map(([w]) => w).join(' ')
     : carried.length ? query + ' ' + carried.join(' ') : query;
-  const order = new Map(rank(rx, { text: words, layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
+  const settledRanked = rank(rx, { text: words, layers: ['thought'], limit: 200 }).results;
+  const order = new Map(settledRanked.map((r, i) => [r.id, i]));
   for (const [k, v] of use || []) if (k.startsWith('t-') && learnedUse(v)) order.set(k, -1 - v.a);
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   /* The context layer is found by words alone; what agents asking questions
@@ -1006,7 +1029,13 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     return out.slice(0, WORDS);
   })() : [];
 
-  const contextBest = context.length ? Math.max(...context.slice(0, CONTEXT_SHOWN).map(shareOf)) : 0;
+  /* Settled thoughts compete for the top too. They used to reach an answer
+   * only inside a tree, under the code that settled them - so when the code
+   * search went wrong, the thought ranked first for the question was never
+   * shown ("so it get the rules... buried in deep", tune2). The best of the
+   * settled and the waiting is what the code is weighed against. */
+  const decidedCandidates = settledRanked.slice(0, DECIDED_LOOK).map((t) => ({ t, share: shareOf(t) })).filter((x) => x.share >= DECIDED_FLOOR);
+  const contextBest = Math.max(0, ...context.slice(0, CONTEXT_SHOWN).map(shareOf), ...decidedCandidates.map((x) => x.share));
   /* With no code, the commits whose messages say it are what the code side
    * has - c-sidebar's answer is one, and the context led over it on the
    * code score alone. */
@@ -1035,14 +1064,17 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
 
 
+  /* What is decided about it and not already in a tree, best share first. */
+  const decided = decidedCandidates.filter((x) => !seen.thoughts.has(x.t.id)).sort((a, b) => b.share - a.share).slice(0, DECIDED_SHOWN).map((x) => x.t);
   const contextOut = {
+    decided: decided.length ? decided.map((t) => ({ id: t.id, status: statusFor(t.id), text: t.text })) : undefined,
     context: context.slice(0, CONTEXT_SHOWN).map((r) => ({ id: r.id, status: statusFor(r.id), text: r.text, topic: r.topic ? (rx.topics.get(r.topic) || {}).title : undefined })),
     more_context: context.length > CONTEXT_SHOWN ? context.length - CONTEXT_SHOWN + ' more waiting thoughts hold these words - gitx_thought outcome or topic lists them' : undefined
   };
   const out = {
     asked: query,
     carried: carried.length ? carried : undefined,
-    lead: contextFirst ? 'context - a waiting thought holds ' + Math.round(contextBest * 100) + '% of the question, the closest code ' + Math.round(best * 100) + '%: what is decided or discussed comes first, the code it would touch after it' : undefined,
+    lead: contextFirst ? 'thinking - a thought holds ' + Math.round(contextBest * 100) + '% of the question, the closest code ' + Math.round(best * 100) + '%: what is decided or discussed comes first, the code it would touch after it' : undefined,
     ...(contextFirst ? contextOut : {}),
     no_code: noCode ? 'No code at HEAD is about this' + (best ? ' (the closest region holds ' + Math.round(best * 100) + '% of the question)' : '') + (byMessage.length ? ' in these words. Commits whose messages match are below with the code they still own - expand one, or ask again with one of their words.' : ' - it is not built yet, or not in these words. What is decided or discussed is in context below: plans, not code.') : undefined,
     commits_by_message: byMessage.length ? byMessage : undefined,
@@ -1083,6 +1115,7 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     }
   }
   docs.forEach(({ r }, i) => nodes.push({ id: codeId(r), layer: 'thought', role: 'result', rank: i + 1, kind: 'doc', status: 'DOC', text: cap(r.name, 120) }));
+  decided.forEach((t, i) => nodes.push({ id: t.id, layer: 'thought', role: 'result', rank: i + 1, status: statusFor(t.id), text: cap(t.text, 160) }));
   context.slice(0, CONTEXT_SHOWN).forEach((r, i) => nodes.push({ id: r.id, layer: 'context', role: 'result', rank: i + 1, kind: r.kind, status: statusFor(r.id), text: cap(r.text, 160) }));
   const monitor = {
     phases: {

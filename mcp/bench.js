@@ -193,7 +193,7 @@ function liveRepo() {
 
 /* ---------------------------------------------------------------- score */
 
-const SECTIONS = ['trees', 'map', 'commits_by_message', 'thinking', 'context', 'more_context', 'summaries', 'results'];
+const SECTIONS = ['trees', 'map', 'commits_by_message', 'thinking', 'decided', 'context', 'more_context', 'summaries', 'results'];
 function whereIn(answer, needle) {
   for (const s of SECTIONS) if (answer[s] !== undefined && JSON.stringify(answer[s]).includes(needle)) return s;
   return 'elsewhere';

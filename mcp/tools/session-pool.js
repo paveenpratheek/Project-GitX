@@ -25,7 +25,7 @@
  * In memory, per server process - one agent session. Nothing here is written.
  */
 
-import { buildCodeIndex, termsOf, idfOf, RARE_SHARE, codeFirst, rankIndexFor } from './code-find.js';
+import { buildCodeIndex, termsOf, questionTerms, idfOf, RARE_SHARE, codeFirst, rankIndexFor } from './code-find.js';
 import { learnFor } from './walk-learn.js';
 import { stem } from './rank.js';
 
@@ -51,7 +51,7 @@ const termsOfList = (list) => [...new Set((Array.isArray(list) ? list : list ? [
  * words the pool holds - not merely by having no rare word of its own. */
 function followUp(cx, query, pool) {
   const spell = spellings(query);
-  const terms = [...termsOf(query)].filter((w) => !w.includes('_'));
+  const terms = [...questionTerms(query)].filter((w) => !w.includes('_'));
   const rare = terms.filter((w) => (cx.df.get(w) || 0) <= cx.regions.length * RARE_SHARE);
   const say = (ws) => ws.map((w) => '"' + (spell.get(w) || w) + '"').join(', ');
   if (!rare.length) return { follow: true, shared: false, why: 'no rare word of its own: it narrows "' + pool.first + '"' };
@@ -65,7 +65,7 @@ function followUp(cx, query, pool) {
 }
 
 const freshPool = (first) => ({
-  id: ++poolIds, first, anchor: new Set([...termsOf(first)]), round: 0, weights: new Map(), avoid: new Set(), spell: new Map(),
+  id: ++poolIds, first, anchor: new Set([...questionTerms(first)]), round: 0, weights: new Map(), avoid: new Set(), spell: new Map(),
   sent: new Map(),           // id -> round it was first given (trees, thoughts, commits, context, docs)
   sentLines: new Map(),      // function ref -> Set of line numbers given
   sentTerms: new Set(),      // every word given, for telling a follow-up
@@ -91,6 +91,7 @@ function remember(pool, answer) {
   }
   for (const d of answer.thinking || []) give('doc:' + d.doc);
   for (const c of answer.context || []) give(c.id);
+  for (const c of answer.decided || []) give(c.id);
   for (const w of termsOf(JSON.stringify(answer))) pool.sentTerms.add(w);
 }
 
@@ -121,12 +122,13 @@ function changesOf(pool, full) {
     return { function: t.function, ref: t.ref, new_lines: fresh.length ? fresh.join('\n') : undefined, written_by: written.length ? written : undefined, open: open.length ? open : undefined, given_in: 'round ' + seen('tree:' + t.ref) + ', new parts only' };
   });
   const context = (full.context || []).filter((c) => seen(c.id) === null);
+  const decided = (full.decided || []).filter((c) => seen(c.id) === null);
   const contextKept = (full.context || []).length - context.length;
   const thinking = (full.thinking || []).filter((d) => seen('doc:' + d.doc) === null);
   for (const k of now.keys()) pool.shown.set(k, r);
   pool.visible = new Set(now.keys());
   /* In the order the full answer chose: context first when it leads (code-find.js). */
-  const contextOut = { context: context.length ? context : undefined, context_kept: contextKept || undefined };
+  const contextOut = { decided: decided.length ? decided : undefined, context: context.length ? context : undefined, context_kept: contextKept || undefined };
   return {
     lead: full.lead,
     ...(full.lead ? contextOut : {}),
@@ -157,7 +159,7 @@ function nextWeights(pool, q, add, drop) {
       if (n < FADED) weights.delete(w); else weights.set(w, n);
     }
   }
-  for (const w of [...termsOf(q), ...termsOfList(add)]) { weights.set(w, 1); avoid.delete(w); }
+  for (const w of [...questionTerms(q), ...termsOfList(add)]) { weights.set(w, 1); avoid.delete(w); }
   for (const w of termsOfList(drop)) { weights.delete(w); avoid.add(w); }
   return { weights, avoid };
 }
