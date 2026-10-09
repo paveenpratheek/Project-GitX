@@ -5,6 +5,14 @@
  *
  *   node mcp/bench.js [repo] [--set cases|heldout] [--at <commit>]
  *                     [--variants full,stack,no-thoughts] [--only id,id] [--verbose] [--no-save]
+ *   node mcp/bench.js [repo] --live [--data <walk folder>] ...
+ *
+ * --live asks the repository itself, at HEAD, with everything GitX manages
+ * in place - no clone, nothing left out by date - and --data gives the
+ * folder of recorded walks so learning takes part. Live answers can be
+ * helped by thinking recorded after a question was first asked, so a
+ * live run is how GitX answers today, not a clean measure; runs are
+ * compared only with other live runs.
  *
  * Cases live in <repo>/.gitx/bench/<set>.json - cases.json unless --set names
  * another - private, like the thoughts
@@ -73,7 +81,9 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes('--' + name);
 const opt = (name) => { const i = argv.indexOf('--' + name); return i >= 0 ? argv[i + 1] : null; };
-const TAKES_VALUE = ['--at', '--variants', '--only', '--set'];
+const TAKES_VALUE = ['--at', '--variants', '--only', '--set', '--data'];
+const LIVE = flag('live');
+const DATA = opt('data') ? path.resolve(opt('data')) : null;
 const SET = opt('set') || 'cases';
 const positional = argv.filter((a, i) => !a.startsWith('--') && !TAKES_VALUE.includes(argv[i - 1]));
 const REPO = path.resolve(positional[0] || path.join(HERE, '..'));
@@ -153,8 +163,32 @@ function freeze(at, { thinking = true } = {}) {
     for (const f of ['context/topics-manifest.json', 'context/goal.json']) {
       if (fs.existsSync(path.join(src, f))) fs.copyFileSync(path.join(src, f), path.join(dst, f));
     }
+    /* Stashes are read beside the thoughts; a stash set aside after `at` was
+     * not there yet. */
+    const stash = path.join(src, 'context', 'stash');
+    if (fs.existsSync(stash)) {
+      fs.mkdirSync(path.join(dst, 'context', 'stash'), { recursive: true });
+      stats.stashes = 0;
+      for (const f of fs.readdirSync(stash)) {
+        let t; try { t = readJson(path.join(stash, f)); } catch (_) { continue; }
+        if (before(t.created)) { fs.copyFileSync(path.join(stash, f), path.join(dst, 'context', 'stash', f)); stats.stashes++; }
+      }
+    }
   }
   return { dir, when, head: history[0], stats, known };
+}
+
+/* The repository itself, for --live: only read, and never removed. */
+function liveRepo() {
+  const head = git(['rev-parse', 'HEAD']).trim();
+  const stats = { thoughts: 0, context: 0, stashes: 0 };
+  const known = new Set();
+  for (const [sub, count] of [['thoughts', 'thoughts'], [path.join('context', 'thoughts'), 'context'], [path.join('context', 'stash'), 'stashes']]) {
+    const d = path.join(REPO, '.gitx', sub);
+    if (!fs.existsSync(d)) continue;
+    for (const f of fs.readdirSync(d)) { if (!f.endsWith('.json')) continue; stats[count]++; try { known.add(readJson(path.join(d, f)).id); } catch (_) {} }
+  }
+  return { dir: REPO, when: new Date().toISOString(), head, stats, known, live: true };
 }
 
 /* ---------------------------------------------------------------- score */
@@ -201,7 +235,7 @@ const ASK = {
 ASK['no-thoughts'] = ASK.full;
 
 function runVariant(name, frozen, cases, settledBy) {
-  const dataDir = emptyDataDir();
+  const dataDir = DATA || emptyDataDir();
   const rows = [];
   try {
     for (const c of cases) {
@@ -211,7 +245,7 @@ function runVariant(name, frozen, cases, settledBy) {
       const ms = Math.round(performance.now() - t0);
       rows.push({ id: c.id, ms, error, ...score(c, answer, settledBy), text: JSON.stringify(answer) });
     }
-  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+  } finally { if (!DATA) fs.rmSync(dataDir, { recursive: true, force: true }); }
   return rows;
 }
 
@@ -252,9 +286,11 @@ const pad = (s, n) => String(s).padEnd(n);
 const lpad = (s, n) => String(s).padStart(n);
 
 function main() {
-  const { at, cases, facts } = loadCases();
-  const frozenFull = freeze(at);
-  const frozenBare = VARIANTS.includes('no-thoughts') ? freeze(at, { thinking: false }) : null;
+  const loaded = loadCases();
+  const { cases, facts } = loaded;
+  const at = LIVE ? 'live' : loaded.at;
+  const frozenFull = LIVE ? liveRepo() : freeze(at);
+  const frozenBare = VARIANTS.includes('no-thoughts') ? freeze(LIVE ? frozenFull.head : at, { thinking: false }) : null;
   try {
     /* What settled each thought, for reach - read from the frozen copy. */
     const settledBy = new Map();
@@ -275,7 +311,9 @@ function main() {
     const quoted = known.filter((c) => quotes(c.q));
     const valid = known.filter((c) => !quoted.includes(c));
     const s = frozenFull.stats;
-    console.log(`Frozen at ${frozenFull.head.slice(0, 8)} (${frozenFull.when}) - ${s.thoughts} settled and ${s.context} waiting thoughts kept; ` +
+    if (frozenFull.live) console.log(`LIVE at ${frozenFull.head.slice(0, 8)} - the repository itself: ${s.thoughts} settled and ${s.context} waiting thoughts, ${s.stashes} stashes; ` +
+      (DATA ? `walks from ${DATA}.` : 'no walk folder, so nothing learned.'));
+    else console.log(`Frozen at ${frozenFull.head.slice(0, 8)} (${frozenFull.when}) - ${s.thoughts} settled and ${s.context} waiting thoughts kept, ${s.stashes || 0} stashes; ` +
       `${s.after} recorded later and ${s.unsettled} settled later left out; ${s.rewound} of ${s.topics} topic summaries rewound.`);
     if (absent.length) console.log(`Not yet recorded at this commit, so left out: ${absent.map((c) => c.id).join(', ')}`);
     if (quoted.length) console.log(`Quoted by the record itself, so left out: ${quoted.map((c) => c.id).join(', ')}`);
@@ -336,7 +374,7 @@ function main() {
       console.log('\nSaved ' + path.relative(REPO, file));
     }
   } finally {
-    for (const f of [frozenFull, frozenBare]) if (f) fs.rmSync(f.dir, { recursive: true, force: true });
+    for (const f of [frozenFull, frozenBare]) if (f && !f.live && f.dir !== REPO) fs.rmSync(f.dir, { recursive: true, force: true });
   }
 }
 
