@@ -151,6 +151,12 @@ function runOne(c, arm, at) {
   });
 }
 
+/* An agent refused for a usage limit answers in seconds with no tokens: the
+ * whole first learning rerun went on asking 120 of them after the limit hit,
+ * and saved rounds of nothing. The first refusal stops the run. */
+let refused = null;
+const isRefusal = (r) => !r.tokens && /limit|resets/i.test(r.answer || '');
+
 async function runRound(k, cases, at) {
   const jobs = [];
   for (const c of cases) for (const arm of ARMS) jobs.push({ c, arm });
@@ -158,9 +164,10 @@ async function runRound(k, cases, at) {
   const rows = [];
   let next = 0;
   const worker = async () => {
-    while (next < jobs.length) {
+    while (next < jobs.length && !refused) {
       const { c, arm } = jobs[next++];
       const r = await runOne(c, arm, at);
+      if (isRefusal(r)) { refused = r.answer; console.log(`STOPPED: ${c.id} was refused - ${r.answer}`); continue; }
       rows.push(r);
       console.log(`${c.id.padEnd(20)} ${arm.padEnd(5)} ${r.error ? 'ERR ' + r.error : r.hit ? 'HIT' : r.reach ? 'via' : ' - '}  ${String(r.seconds).padStart(4)}s  ${String(r.tokens).padStart(8)} tok  ${String(r.tool_calls).padStart(3)} calls${r.gitx_calls ? ' (' + r.gitx_calls + ' gitx)' : ''}${r.outside ? '  OUTSIDE: ' + r.outside.join('; ') : ''}`);
     }
@@ -194,7 +201,7 @@ async function runRound(k, cases, at) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, round: k, rounds: ROUNDS, walks: WALKS, walks_after: WALKS ? walkCount() : undefined, summary: S, runs: rows }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, round: k, rounds: ROUNDS, walks: WALKS, walks_after: WALKS ? walkCount() : undefined, summary: S, aborted: refused || undefined, runs: rows }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file) + '\n');
   return S;
 }
@@ -209,7 +216,8 @@ async function main() {
   const { cases, at } = loadCases();
   if (WALKS) fs.mkdirSync(WALKS, { recursive: true });
   const all = [];
-  for (let k = 1; k <= ROUNDS; k++) all.push(await runRound(k, cases, at));
+  for (let k = 1; k <= ROUNDS && !refused; k++) all.push(await runRound(k, cases, at));
+  if (refused) console.log('\nRun stopped early, not a result: ' + refused);
   if (ROUNDS > 1) {
     console.log('Across rounds' + (WALKS ? ', learning carried in ' + WALKS : '') + ':');
     for (const arm of ARMS) all.forEach((S, i) => { const x = S[arm]; console.log(`  round ${i + 1} ${arm.padEnd(5)} found ${x.hit}/${x.runs} (reach ${x.reach})  ${x.seconds_median} s  ${x.calls_median} calls  ${x.tokens_median} tok  ${x.cost_usd}${WALKS ? `  learned ${x.learned}/${x.runs}` : ''}`); });
