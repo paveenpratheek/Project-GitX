@@ -27,6 +27,7 @@
 
 import { buildCodeIndex, termsOf, questionTerms, idfOf, RARE_SHARE, codeFirst, rankIndexFor } from './code-find.js';
 import { shapeAnswer } from './shape.js';
+import { thermalFor, thermalAsk } from '../thermal/thermal.js';
 import { learnFor } from './walk-learn.js';
 import { stem } from './rank.js';
 
@@ -201,7 +202,8 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
 /* One gitx_related call through the session's pool. */
 const LEARNED = 0.5;         // a learned word's weight: it widens the search, never decides it
 
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0 } = {}) {
+/* Thermal vision (4th Dimension v2) is on with GITX_THERMAL=1, or `thermal`. */
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1' } = {}) {
   const cx = buildCodeIndex(repoDir);
   const s = sessions.get(repoDir) || { pool: null, kept: [] };
   sessions.set(repoDir, s);
@@ -238,8 +240,23 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
     try { pool.learned = learnFor(repoDir, dataDir, rankIndexFor(repoDir), q); } catch (_) { pool.learned = null; }
     for (const w of (pool.learned && pool.learned.words) || []) if (!pool.weights.has(w)) pool.weights.set(w, LEARNED);
   }
+  /* Thermal: the nodes the question's words are attached to join learned use,
+   * and the words attached beside them widen the search at their weight. */
+  let th = null;
+  if (thermal && dataDir) {
+    try {
+      const model = thermalFor(repoDir, dataDir);
+      const asked = thermalAsk(model, [...pool.weights.keys()]);
+      if (asked) {
+        /* Linked words widen the code search as a bonus (findCode extra), not as question words. */
+        const use = new Map(pool.learned ? pool.learned.use : []);
+        for (const [k, v] of asked.use) { const u = use.get(k); if (!u || v.a > u.a) use.set(k, v); }
+        th = { model, words: new Set(pool.weights.keys()), expand: asked.expand, use, via: asked.via };
+      }
+    } catch (_) { th = null; }
+  }
   pool.round++;
-  const cf = ready && ready.stamp === cx ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths, use: pool.learned ? pool.learned.use : null });
+  const cf = ready && ready.stamp === cx && !th ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths, use: th ? th.use : pool.learned ? pool.learned.use : null, thermal: th });
   const prefetched = !!(ready && ready.stamp === cx);
   for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
   /* Cut to the agent's focus and budget (shape.js) before anything is
@@ -262,6 +279,11 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
       dropped: pool.avoid.size ? [...pool.avoid].map((w) => pool.spell.get(w) || w) : undefined,
       ...body,
       asked_first: pool.round > 1 ? pool.first : undefined,
+      thermal: th && th.via.length ? {
+        reached: th.via.slice(0, 5).map((x) => x.node + ' (by ' + x.words.join(', ') + ')'),
+        linked_words: th.expand.size ? [...th.expand.keys()] : undefined,
+        note: 'where earlier agents\' words led - code they read, cited or changed; a hint, searched fresh'
+      } : undefined,
       learned: pool.round === 1 && pool.learned ? {
         from: pool.learned.paths + ' earlier walk' + (pool.learned.paths === 1 ? '' : 's') + ' of questions like this, the newest ' + String(pool.learned.newest).slice(0, 10),
         words_added: pool.learned.words.length ? pool.learned.words : undefined,

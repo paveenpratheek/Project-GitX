@@ -63,7 +63,7 @@ const PROMPT = (q, arm) => [
   'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
   '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
   'per thought; .gitx is git-ignored, so give it as a path when you search it.',
-  ...(arm === 'gitx' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
   '',
   'Answer in a few sentences, and cite your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
 ].join('\n');
@@ -75,18 +75,22 @@ function runOne(c, arm, at) {
   const frozen = freeze(at);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-agent-data-'));
   const walkDir = WALKS || data;
-  const mcp = arm === 'gitx'
-    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id } } } }
+  /* thermal: the same GitX with thermal vision on (4th Dimension v2). */
+  const mcp = arm !== 'hand'
+    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' ? { GITX_THERMAL: '1' } : {}) } } } }
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
   /* Learning on: hook.js tells the walk folder what the agent read with its
    * own tools - most answers are found by Read, which GitX cannot see. A
    * project hook, in this run's own copy, so nothing of the owner's is set. */
-  if (arm === 'gitx' && WALKS) {
+  if (arm !== 'hand' && WALKS) {
     const fwd = (p) => p.replace(/\\/g, '/');
     fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }] }] } }, null, 2));
+    /* Reads, edits and the final answer's citations - the same hooks for every
+     * GitX arm, so they differ only in what GitX does with them. */
+    const hook = [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }];
+    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read|Edit|Write|MultiEdit', hooks: hook }], Stop: [{ hooks: hook }] } }, null, 2));
   }
   const args = ['-p', PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
@@ -113,7 +117,7 @@ function runOne(c, arm, at) {
         if (m.type === 'user') for (const b of (m.message && m.message.content) || []) {
           if (b.type !== 'tool_result' || !related.has(b.tool_use_id)) continue;
           const t = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '');
-          if (/\\?"learned\\?":\s*\{\s*\\?"from/.test(t)) learned++;
+          if (/\\?"(learned|thermal)\\?":\s*\{\s*\\?"(from|reached)/.test(t)) learned++;
         }
         if (m.type === 'result') result = m;
       }
@@ -165,7 +169,9 @@ async function runRound(k, cases, at) {
   let next = 0;
   const worker = async () => {
     while (next < jobs.length && !refused) {
-      const { c, arm } = jobs[next++];
+      const { c: c0, arm } = jobs[next++];
+      /* Round k asks the kth wording when a case has several (qs). */
+      const c = c0.qs ? { ...c0, q: c0.qs[(k - 1) % c0.qs.length] } : c0;
       const r = await runOne(c, arm, at);
       if (isRefusal(r)) { refused = r.answer; console.log(`STOPPED: ${c.id} was refused - ${r.answer}`); continue; }
       rows.push(r);

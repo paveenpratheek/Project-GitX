@@ -28,6 +28,8 @@
  *   full         gitx_related through the session pool, as the MCP server
  *                answers a new question - with no walks to learn from
  *   stack        the 4-hop stack it replaced (rank.js) - the baseline
+ *   thermal      full with thermal vision on (4th Dimension v2): learning
+ *                from what agents did to code, read from --data
  *   no-thoughts  full, on a copy with no recorded thinking: code and commits
  *                only, which is what any repository without GitX has
  *
@@ -81,7 +83,10 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const flag = (name) => argv.includes('--' + name);
 const opt = (name) => { const i = argv.indexOf('--' + name); return i >= 0 ? argv[i + 1] : null; };
-const TAKES_VALUE = ['--at', '--variants', '--only', '--set', '--data'];
+const TAKES_VALUE = ['--at', '--variants', '--only', '--set', '--data', '--wording'];
+/* A case may carry several wordings of one question (qs): --wording N asks
+ * the Nth, so learning can be judged on words it has not seen. */
+const WORDING = Number(opt('wording') || 1);
 const LIVE = flag('live');
 const DATA = opt('data') ? path.resolve(opt('data')) : null;
 const SET = opt('set') || 'cases';
@@ -102,7 +107,7 @@ export function loadCases() {
   const file = path.join(BENCH, SET + '.json');
   if (!fs.existsSync(file)) throw new Error('No cases at ' + file);
   const spec = readJson(file);
-  const cases = [...(spec.cases || [])];
+  const cases = (spec.cases || []).map((c) => (c.qs ? { ...c, q: c.qs[Math.min(WORDING, c.qs.length) - 1] } : c));
   for (const inc of spec.include || []) {
     const other = path.join(REPO, '.gitx', inc);
     if (!fs.existsSync(other)) continue;
@@ -233,6 +238,10 @@ const ASK = {
   }
 };
 ASK['no-thoughts'] = ASK.full;
+ASK.thermal = (dir, q, dataDir) => {
+  const r = askPooled(newSessions(), dir, { query: q, fresh: true, dataDir, thermal: true });
+  return { repo: dir, ...r.answer };
+};
 
 function runVariant(name, frozen, cases, settledBy) {
   const dataDir = DATA || emptyDataDir();

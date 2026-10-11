@@ -35,8 +35,11 @@ import { ASKING } from './learn.js';
 import { stem, buildRankIndex, rank, statusOf, summaryOf } from './rank.js';
 import { loadThoughts } from './thoughts.js';
 import { loadTopics } from './topics.js';
+import { hotCode, rejectedIndex, historyOf, attachedWords } from '../thermal/thermal.js';
 
-const SCHEMA = 2;
+/* 3: regions split after the regex-literal fix (bd2133f) - a cache from
+ * before it kept serving code-find.js as one region named STARTS. */
+const SCHEMA = 3;
 const CODE_EXT = /\.(m?js|cjs|jsx|tsx?|py|go|rs|java|rb|php|cs|css|scss|html?|vue|svelte)$/i;
 const DOC_EXT = /\.(md|markdown)$/i;
 const SKIP = /(^|\/)(node_modules|vendor|dist|build|\.gitx)\//;
@@ -75,6 +78,7 @@ const TALK = new Set(('yes no ok okay right sure so but if then than now also an
   'doing done get gets got getting make makes made making take takes took actually really like lets let say says said ' +
   'maybe whether based again come comes coming go goes going went put see look looks kind lot able possible ' +
   'i im we you they he she my our your their me us them its it s t d ll ve re nt dont didnt doesnt isnt wont cant ' +
+  'didn doesn isn wasn aren weren hasn haven couldn wouldn shouldn won ' +
   'and or of to in on at by for with from as into the a an just even ever already').split(' ').map(stem));
 export function questionTerms(text) {
   const drop = (w) => ASKING.has(w) || TALK.has(w);
@@ -373,7 +377,11 @@ export const idfOf = (ix, w) => Math.log((ix.regions.length + 1) / ((ix.df.get(w
  * loses AVOID_WEIGHT of that word's weight, so what took the answer the
  * wrong way sinks instead of only no longer helping. */
 const AVOID_WEIGHT = 0.5;
-export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights = null, avoid = null } = {}) {
+/* `extra` (thermal, 4th Dimension v2): words linked to the question through
+ * code earlier agents used. They add to a region that holds them and are not
+ * part of the total: added as question words they diluted it, and a question
+ * with code about it came back as having none. */
+export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights = null, avoid = null, extra = null } = {}) {
   const q = new Map();
   if (weights) { for (const [w, m] of weights) if (m > 0 && (ix.df.has(w) || !w.includes('_'))) q.set(w, idfOf(ix, w) * m); }
   else {
@@ -391,6 +399,7 @@ export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights 
       if (r.own.has(w)) { s += weight; hit.push(w); } else if (r.why.has(w)) { s += weight * WHY_WEIGHT; hit.push(w + '*'); }
     }
     for (const [w, weight] of sink) if (r.own.has(w)) s -= weight;
+    for (const [w, m] of extra || []) if (!q.has(w) && ix.df.has(w)) { if (r.own.has(w)) { s += idfOf(ix, w) * m; hit.push(w + '~'); } else if (r.why.has(w)) { s += idfOf(ix, w) * m * WHY_WEIGHT; hit.push(w + '~*'); } }
     if (s > 0) scored.push({ r, score: s / total, hit });
   }
   scored.sort((a, b) => b.score - a.score || (a.r.to - a.r.from) - (b.r.to - b.r.from));
@@ -868,7 +877,12 @@ function aboutTest(rx, query, order) {
   return (t) => (order && order.get(t.id) < 0) || tokenize(t.text).map(stem).some((w) => distinct.has(w));
 }
 
-function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, about = null } = {}) {
+/* `thermal` (4th Dimension v2, thermal/thermal.js): the heat model, the
+ * words asked and the words linked to them. With it a tree shows its
+ * hottest lines, tells a feature commit from one passing through, names
+ * the ideas that lost to what each commit settled, and adds the older
+ * commits on those lines. */
+function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, about = null, thermal = null } = {}) {
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   const n = r.to - r.from + 1;
   /* Which commits: the one that wrote most of it, and then those whose
@@ -900,11 +914,16 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
     if (!ts.length) { const best = cm.thoughts.slice().sort(byOrder)[0]; if (best && order.has(best.id) && order.get(best.id) < ABOUT_RANK) ts = [best]; }
     const elsewhere = cm.thoughts.length - ts.length;
     return {
-      commit: short, date: cm.date, wrote: k + ' of ' + n + ' lines', subject: cap(cm.subject, 110), why: cm.body ? cap(cm.body, 260) : undefined,
+      commit: short, date: cm.date, wrote: k + ' of ' + n + ' lines', subject: cap(cm.subject, 110),
+      /* A commit that wrote little of this code was made for something else: named,
+       * its reasons left to that feature - the same rule that decides why words. */
+      role: thermal ? (k >= WHY_LINES || k / n >= WHY_SHARE ? 'feature' : 'passing') : undefined,
+      why: cm.body && !(thermal && k < WHY_LINES && k / n < WHY_SHARE) ? cap(cm.body, 260) : undefined,
       settled: ts.length ? ts.slice(0, thoughtsShown).map((t) => {
         if (seen.thoughts.has(t.id)) return { id: t.id, see: seen.thoughts.get(t.id) };
         seen.thoughts.set(t.id, shortName(r));
-        return { id: t.id, status: statusFor(t.id), text: t.text };
+        const lost = thermal ? (thermal.rejected.get(t.id) || []).slice(0, 2) : [];
+        return { id: t.id, status: statusFor(t.id), text: t.text, rejected: lost.length ? lost : undefined };
       }) : undefined,
       more_settled: ts.length > thoughtsShown ? ts.slice(thoughtsShown).map((t) => t.id).join(', ') : undefined,
       on_other_things: elsewhere ? elsewhere + ' more thought' + (elsewhere === 1 ? '' : 's') + ' it settled, not about this question' : undefined
@@ -917,7 +936,15 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
   const open = cx.waiting.filter((t) => (t.links || []).some((l) => settledIds.has(l.to)) || (t.forces || []).some((f) => (f.cites || []).some((x) => settledIds.has(x))))
     .sort((a, b) => (order.has(a.id) ? order.get(a.id) : 999) - (order.has(b.id) ? order.get(b.id) : 999))
     .slice(0, 3).map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, 200) }));
-  return { function: entry(r), ref: r.file + ':' + r.from, code: linesFor(r, terms), written_by: written, open: open.length ? open : undefined };
+  const hot = thermal ? hotCode(thermal.model, r, thermal.words, thermal.expand) : null;
+  /* Older commits on these lines - where superseded and rejected ideas attached
+   * to earlier versions are. Only when agents have been here: it costs a git log -L. */
+  const history = hot ? historyOf(cx.repoDir, r.file, r.from, r.to, new Set(Object.keys(r.commits))).map((h) => {
+    const cm = [...cx.commits.values()].find((c) => c.hash.startsWith(h.commit));
+    const ts = cm ? cm.thoughts.filter((t) => !thermal.about || thermal.about(t)).slice(0, 2) : [];
+    return { ...h, settled: ts.length ? ts.map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, 160), rejected: (thermal.rejected.get(t.id) || []).slice(0, 1).length ? (thermal.rejected.get(t.id) || []).slice(0, 1) : undefined })) : undefined };
+  }) : [];
+  return { function: entry(r), ref: r.file + ':' + r.from, heat: hot ? hot.heat : undefined, code: hot ? hot.code : linesFor(r, terms), written_by: written, open: open.length ? open : undefined, history: history.length ? history : undefined };
 }
 
 /* A question answered from the code down, map first (t-da800103d5):
@@ -948,13 +975,13 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
  * after about five days it needs a second agent to stay. */
 const USED_MEAN = 0.6, USED_A = 0.9;
 const learnedUse = (v) => v && v.a >= USED_A && v.mean >= USED_MEAN;
-export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null, use = null } = {}) {
+export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [], weights = null, avoid = null, use = null, thermal = null } = {}) {
   const t0 = Date.now();
   const cx = buildCodeIndex(repoDir);
   const rx = rankIndexFor(repoDir);
   const within = (paths || []).map((p) => String(p).split('::')[0].replace(/\\/g, '/').replace(/^\.\//, '')).filter(Boolean);
   const search = (opts) => {
-    const res = findCode(cx, query, { ...opts, weights, avoid, limit: 400, near: 0 });
+    const res = findCode(cx, query, { ...opts, weights, avoid, limit: 400, near: 0, extra: thermal ? thermal.expand : null });
     if (!within.length) return res;
     const inside = res.found.filter(({ r }) => within.some((p) => r.file === p || r.file.startsWith(p.replace(/\/?$/, '/'))));
     return { terms: res.terms, found: inside.length ? inside : res.found };
@@ -1011,6 +1038,8 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     if (!qTotal) return 0;
     const node = rx.nodes.get(t.id) || t;
     const own = termsOf(t.text || '');
+    /* Thermal: the words that led agents to this thought are its words too. */
+    if (thermal) for (const w of attachedWords(thermal.model, t.id)) own.add(w);
     const why = termsOf((node.forces || []).map((f) => f.text || '').join(' '));
     let s = 0;
     for (const [w, x] of qw) s += own.has(w) ? x : why.has(w) ? x * WHY_WEIGHT : 0;
@@ -1045,6 +1074,18 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
    * shown ("so it get the rules... buried in deep", tune2). The best of the
    * settled and the waiting is what the code is weighed against. */
   const decidedCandidates = settledRanked.slice(0, DECIDED_LOOK).map((t) => ({ t, share: shareOf(t) })).filter((x) => x.share >= DECIDED_FLOOR);
+  /* Thermal (4th Dimension v2): a thought earlier agents' words are attached
+   * to joins the answer itself, not only its order. Asked in other words the
+   * search can miss it, and naming an id the agent must open again is a turn
+   * the agent pays for. */
+  if (thermal) for (const [k, v] of [...(use || [])].sort((a, b) => a[1].a - b[1].a)) {
+    if (!k.startsWith('t-') || !learnedUse(v)) continue;
+    const n = rx.nodes.get(k);
+    if (!n) continue;
+    /* Already listed below the cut, or not at all: either way, to the front. */
+    if (n.layer === 'context') { const i = context.findIndex((x) => x.id === k); const it = i >= 0 ? context.splice(i, 1)[0] : { id: k, text: n.text, topic: n.topic }; context.unshift(it); }
+    else if (!decidedCandidates.some((x) => x.t.id === k)) decidedCandidates.push({ t: { id: k, text: n.text }, share: Math.max(DECIDED_FLOOR, shareOf({ id: k, text: n.text })) });
+  }
   const contextBest = Math.max(0, ...context.slice(0, CONTEXT_SHOWN).map(shareOf), ...decidedCandidates.map((x) => x.share));
   /* With no code, the commits whose messages say it are what the code side
    * has - c-sidebar's answer is one, and the context led over it on the
@@ -1070,7 +1111,8 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     treeRegions.push(r0);
   }
   const about = aboutTest(rx, words, order);
-  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen, { about }));
+  const th = thermal ? { ...thermal, about, rejected: rejectedIndex(cx) } : null;
+  const trees = treeRegions.map((r) => treeOf(cx, rx, r, terms, order, seen, { about, thermal: th }));
   const summary = map && map.topic ? summaryOf(rx, map.topic) : null;
 
 
