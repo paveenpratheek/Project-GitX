@@ -95,12 +95,12 @@ function runOne(c, arm, at) {
   const args = ['-p', PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     '--strict-mcp-config', '--mcp-config', mcpFile,
-    '--allowedTools', ...TOOLS, ...(arm === 'gitx' ? ['mcp__gitx'] : []),
+    '--allowedTools', ...TOOLS, ...(arm !== 'hand' ? ['mcp__gitx'] : []),
     '--disallowedTools', ...DENY];
   return new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn('claude', args, { cwd: frozen.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-    let buf = '', err = '', result = null, model = null, learned = 0;
+    let buf = '', err = '', result = null, model = null, learned = 0, denied = 0;
     const calls = [], related = new Set();
     child.stdout.on('data', (d) => {
       buf += d;
@@ -115,6 +115,9 @@ function runOne(c, arm, at) {
         }
         /* An answer that carries "learned" is one earlier walks shaped. */
         if (m.type === 'user') for (const b of (m.message && m.message.content) || []) {
+          /* A denied tool makes an arm a different test: the thermal arm once
+           * ran with GitX refused and read as thermal doing badly. */
+          if (b.type === 'tool_result' && b.is_error && /permission|haven't granted|not allowed/i.test(typeof b.content === 'string' ? b.content : JSON.stringify(b.content || ''))) denied++;
           if (b.type !== 'tool_result' || !related.has(b.tool_use_id)) continue;
           const t = typeof b.content === 'string' ? b.content : JSON.stringify(b.content || '');
           if (/\\?"(learned|thermal)\\?":\s*\{\s*\\?"(from|reached)/.test(t)) learned++;
@@ -145,7 +148,7 @@ function runOne(c, arm, at) {
         id: c.id, arm, model, hit: s.hit, reach: s.reach, recall: s.recall,
         seconds: Math.round((Date.now() - t0) / 1000), tokens, output_tokens: u.output_tokens || 0,
         cost_usd: result ? result.total_cost_usd : null, turns: result ? result.num_turns : null,
-        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length, learned_answers: learned,
+        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length, learned_answers: learned, denied,
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
         outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
         answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
@@ -189,7 +192,8 @@ async function runRound(k, cases, at) {
       seconds_median: med(r.map((x) => x.seconds)), tokens_median: med(r.map((x) => x.tokens)), tokens_total: r.reduce((s, x) => s + x.tokens, 0),
       learned: r.filter((x) => x.learned_answers > 0).length,
       calls_median: med(r.map((x) => x.tool_calls)), cost_usd: Math.round(r.reduce((s, x) => s + (x.cost_usd || 0), 0) * 100) / 100,
-      errors: rows.filter((x) => x.arm === arm && x.error).length
+      errors: rows.filter((x) => x.arm === arm && x.error).length,
+      denied: rows.filter((x) => x.arm === arm && x.denied).length
     };
   };
   const S = Object.fromEntries(ARMS.map((a) => [a, sum(a)]));
@@ -203,6 +207,7 @@ async function runRound(k, cases, at) {
   line('cost (as reported)', (x) => '$' + x.cost_usd);
   if (WALKS) line('answers learning shaped', (x) => `${x.learned}/${x.runs}`);
   line('errors', (x) => x.errors);
+  line('tool denied', (x) => x.denied);
 
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
