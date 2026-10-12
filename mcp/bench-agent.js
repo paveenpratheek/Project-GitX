@@ -241,8 +241,24 @@ const ONE_PROMPT = (cases, arm, k) => [
   'Reply with one section per question, each starting with its own line "### Q<number>", answered in a few sentences, citing your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
 ].join('\n');
 
+/* With --rounds, a new agent per arm each round, the next wording each
+ * time; a GitX arm keeps the same walk folder (--walks), so round 2's agent
+ * asks the same GitX round 1's agent taught. Rounds run one after another. */
 async function oneAgent(cases, at) {
-  const k = Number(eq('wording', '1'));
+  const first = Number(eq('wording', '1'));
+  const all = [];
+  for (let r = 0; r < ROUNDS && !refused; r++) {
+    const k = first + r;
+    console.log('\n=== Round ' + (r + 1) + ' of ' + ROUNDS + (WALKS ? ', walks so far: ' + walkCount() : ''));
+    all.push({ round: r + 1, wording: k, out: await oneRound(cases, at, k) });
+  }
+  if (ROUNDS > 1) {
+    console.log('\nAcross rounds' + (WALKS ? ', GitX learning carried in ' + WALKS : '') + ':');
+    for (const arm of ARMS) for (const x of all) { const o = x.out.find((y) => y.arm === arm); if (o) console.log('  round ' + x.round + ' (wording ' + x.wording + ') ' + arm.padEnd(8) + ' found ' + o.hit + '/' + cases.length + ' (reach ' + o.reach + ')  ' + o.seconds + ' s  ' + o.tool_calls + ' calls (' + o.gitx_calls + ' gitx)  ' + o.tokens + ' tok  $' + (o.cost_usd || 0).toFixed(2)); }
+  }
+}
+
+async function oneRound(cases, at, k) {
   console.log('One agent per arm answers all ' + cases.length + ' questions (wording ' + k + '), ' + MODEL + ', frozen at ' + at + ': ' + ARMS.join(', ') + '\n');
   const rows = await Promise.all(ARMS.map((arm) => runOne({ id: 'all-' + arm, q: '', prompt: ONE_PROMPT(cases, arm, k), expect: {} }, arm, at)));
   const out = [];
@@ -274,11 +290,12 @@ async function oneAgent(cases, at) {
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
   fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
+  return out;
 }
 
 async function main() {
   const { cases, at } = loadCases();
-  if (argv.includes('--one-agent')) return oneAgent(cases, at);
+  if (argv.includes('--one-agent')) { if (WALKS) fs.mkdirSync(WALKS, { recursive: true }); return oneAgent(cases, at); }
   if (WALKS) fs.mkdirSync(WALKS, { recursive: true });
   const all = [];
   for (let k = 1; k <= ROUNDS && !refused; k++) all.push(await runRound(k, cases, at));
