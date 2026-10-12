@@ -29,6 +29,7 @@ import { buildCodeIndex, termsOf, questionTerms, idfOf, RARE_SHARE, codeFirst, r
 import { shapeAnswer } from './shape.js';
 import { thermalFor, thermalAsk } from '../thermal/thermal.js';
 import { learnFor } from './walk-learn.js';
+import { lensModel, lensOf, subjectOf, weightsFor, overviewOf, timelineOf, reasonsOf, isBroad } from '../lens/lens.js';
 import { stem } from './rank.js';
 
 const POOLS_KEPT = 2;
@@ -92,6 +93,7 @@ function remember(pool, answer) {
     for (const o of t.open || []) give(o.id);
   }
   for (const d of answer.thinking || []) give('doc:' + d.doc);
+  for (const k of ['overview', 'timeline', 'reasons']) for (const id of JSON.stringify(answer[k] || '').match(/t-[0-9a-f]{10}/g) || []) give(id);
   for (const c of answer.context || []) give(c.id);
   for (const c of answer.decided || []) give(c.id);
   for (const w of termsOf(JSON.stringify(answer))) pool.sentTerms.add(w);
@@ -203,7 +205,9 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
 const LEARNED = 0.5;         // a learned word's weight: it widens the search, never decides it
 
 /* Thermal vision (4th Dimension v2) is on with GITX_THERMAL=1, or `thermal`. */
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1' } = {}) {
+/* The lens (4th Dimension v3) is on with GITX_LENS=1, or `lens`; `lensAs`
+ * is the shape the agent asked for by name, over the one its words imply. */
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1', lens = process.env.GITX_LENS === '1', lensAs = null } = {}) {
   const cx = buildCodeIndex(repoDir);
   const s = sessions.get(repoDir) || { pool: null, kept: [] };
   sessions.set(repoDir, s);
@@ -255,13 +259,33 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
       }
     } catch (_) { th = null; }
   }
+  /* The lens: what the question asks for, about which concept, under which
+   * names. The subject's other names widen the search; the context words
+   * count for less than the subject's (lens.js). */
+  let lx = null;
+  if ((lens || lensAs) && q) {
+    try {
+      const model = lensModel(repoDir);
+      const found = subjectOf(model, q);
+      lx = { model, found, q, named: LENSES.includes(lensAs), as: LENSES.includes(lensAs) ? lensAs : lensOf(q) };
+      if (found) {
+        const ctx = new Set(found.context.flatMap((c) => c.phrase.split(' ').map(stem)));
+        const own = new Set(found.subject.phrase.split(' ').map(stem));
+        for (const [w, m] of weightsFor(found)) {
+          if (ctx.has(w) && !own.has(w) && pool.weights.get(w) === 1) pool.weights.set(w, m);
+          else if (!pool.weights.has(w)) pool.weights.set(w, m);
+        }
+      }
+    } catch (_) { lx = null; }
+  }
   pool.round++;
   const cf = ready && ready.stamp === cx && !th ? ready.cf : codeFirst(repoDir, { query: q || pool.first, weights: pool.weights, avoid: pool.avoid, paths, use: th ? th.use : pool.learned ? pool.learned.use : null, thermal: th });
   const prefetched = !!(ready && ready.stamp === cx);
   for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
   /* Cut to the agent's focus and budget (shape.js) before anything is
    * marked given: what was cut was never sent, so a later round may send it. */
-  const body = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
+  const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus: lx && lx.found && lx.as === 'why' && focus === 'both' ? 'thinking' : focus, budget });
+  const body = lx && lx.found ? lensShape(shaped, lx, { focus, budget }) : shaped;
   if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])
@@ -277,6 +301,7 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
       round: pool.round,
       words: words.length ? words : undefined,
       dropped: pool.avoid.size ? [...pool.avoid].map((w) => pool.spell.get(w) || w) : undefined,
+      lens: lx ? { asked: lx.as || 'none', subject: lx.found ? lx.found.subject.phrase : undefined, context: lx.found && lx.found.context.length ? lx.found.context.map((c) => c.phrase) : undefined, also_called: lx.found && lx.found.subject.names.size ? [...lx.found.subject.names.keys()] : undefined } : undefined,
       ...body,
       asked_first: pool.round > 1 ? pool.first : undefined,
       thermal: th && th.via.length ? {
@@ -295,4 +320,28 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
     kind,
     words: [...pool.weights.keys()]
   };
+}
+
+/* The answer in the shape the lens asks for, its own section first: what
+ * the parts; when the commits in order; why the decisions and what lost; how
+ * the code, with a line on what it is; where the places, without the code.
+ * Trees give way to their names only on the default shape - an agent that
+ * chose a focus or a budget keeps what it chose. */
+const LENSES = ['what', 'how', 'where', 'when', 'why'];
+function lensShape(body, { model, found, as, q, named }, { focus, budget }) {
+  /* Asked for by name, the overview is given; read from the words, only for a broad question. */
+  if (as === 'what' && !named && !isBroad(q, found)) as = 'how';
+  const a = { ...body };
+  const free = focus === 'both' && !budget;
+  const toNames = () => { if (free && a.trees && a.trees.length) { a.code_at = [...(a.code_at || []), ...a.trees.map((t) => t.function + (t.ref ? ' (' + t.ref + ')' : ''))]; delete a.trees; } };
+  let lead = null;
+  /* A subject spread over several parts gets the parts in place of code; one
+   * that is a single thing keeps its code too - the answer to "what is X" is
+   * often in it (held-out, two answers lost when it was cut). */
+  if (as === 'what') { const o = overviewOf(model, found); lead = { overview: o }; if (!o.summary) { toNames(); if (free && a.map) { delete a.map.wiring; delete a.map.surface; } } }
+  else if (as === 'when') { lead = { timeline: timelineOf(model, found) }; toNames(); }
+  else if (as === 'why') { lead = { reasons: reasonsOf(model, found) }; }
+  else if (as === 'where') { toNames(); if (free) { for (const k of ['decided', 'context', 'more_context', 'summaries', 'thinking']) delete a[k]; } }
+  else if (as === 'how') { const o = overviewOf(model, found, { parts: 1, keys: 0 }); lead = { about: { subject: o.subject, also_called: o.also_called, is: o.summary ? o.summary.split(/(?<=.)s/)[0] : o.parts && o.parts[0] ? o.parts[0].is : undefined } }; }
+  return lead ? { ...lead, ...a } : a;
 }

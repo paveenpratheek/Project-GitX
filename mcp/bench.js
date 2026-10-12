@@ -238,6 +238,10 @@ const ASK = {
   }
 };
 ASK['no-thoughts'] = ASK.full;
+ASK.lens = (dir, q, dataDir) => {
+  const r = askPooled(newSessions(), dir, { query: q, fresh: true, dataDir, thermal: true, lens: true });
+  return { repo: dir, ...r.answer };
+};
 ASK.thermal = (dir, q, dataDir) => {
   const r = askPooled(newSessions(), dir, { query: q, fresh: true, dataDir, thermal: true });
   return { repo: dir, ...r.answer };

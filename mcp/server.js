@@ -449,6 +449,7 @@ const TOOLS = [
         paths: { type: 'array', items: { type: 'string' }, description: 'Files, directories or "file::declaration" you work in - what touched that code ranks higher.' },
         expand: { type: 'string', description: 'A function from the map - its name as the map wrote it ("learnKeys", "learn.js · learnKeys") or a ref "file:line" - to get it as a tree: its code, the commits that wrote it and why, the thoughts they settled, what is still open. No query needed.' },
         focus: { type: 'string', enum: ['thinking', 'code', 'both'], description: 'What you need back. "thinking": what was decided, discussed or is still open, and what each piece of code\'s commits settled - no code lines, so it is small; best for why / what did we decide / is it built. "code": the map and the code with the commits that wrote it, the thinking only counted. "both" (default): everything.' },
+        lens: { type: 'string', enum: ['what', 'how', 'where', 'when', 'why'], description: 'The shape you want, when your words do not already say it: what - the parts of the subject, what each is and its key decisions (start here on an area you do not know); how - its code; where - its files and functions, no code lines; when - its commits in order, under every name it had; why - its decisions with their reasons, what was rejected, costs and open questions.' },
         budget: { type: 'number', description: 'Most tokens to send back, e.g. 800 for a quick check. The answer is cut best-first to fit, and cut says what went and how to get it - nothing is lost, only left for a later call.' },
         find: { type: 'string', description: 'Exact lookup instead of a question: text as written (case ignored) or /regex/ - for names, values, a list such as every tool or every default. Returns each matching line as file:line with the function it is in, and the thoughts that say it, by id. Pairs with paths.' },
         add: { type: 'array', items: { type: 'string' }, description: 'Words to add to the current question without asking a new one - GitX answers with what changed.' },
@@ -1206,7 +1207,7 @@ async function handleToolCall(name, args) {
       const words = String(args.query || '').trim();
       const refine = (Array.isArray(args.add) ? args.add.length : args.add) || (Array.isArray(args.drop) ? args.drop.length : args.drop);
       if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
-        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir(), focus: args.focus, budget: Number(args.budget) || 0 });
+        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir(), focus: args.focus, budget: Number(args.budget) || 0, lensAs: args.lens || null });
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
