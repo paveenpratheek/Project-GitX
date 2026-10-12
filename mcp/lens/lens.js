@@ -318,7 +318,7 @@ export function weightsFor(found, { alias = 0.6, context = 0.5 } = {}) {
 /* ------------------------------------------------------------ answers */
 
 const degree = (model, id) => (model.rx.adj.get(id) || []).length;
-const thoughtsIn = (rs) => rs.filter((r) => (r.layer === 'thought' || r.layer === 'context') && r.n);
+export const thoughtsIn = (rs) => rs.filter((r) => (r.layer === 'thought' || r.layer === 'context') && r.n);
 const tie = (model, rs, ctx) => (ctx && ctx.length ? rs.filter((r) => ctx.some((c) => c.records.some((x) => x.id === r.id))) : []);
 const firstSentence = (s, n) => cap(String(s || '').split(/(?<=[.!?])\s/)[0], n);
 
@@ -336,19 +336,19 @@ export function kindOf(n) {
 /* The thoughts an answer chooses from: the subject's own, and those the word
  * search ranked for this question (seed), which come first in their kind -
  * so the one thought a question is about is not lost to a better-linked one. */
-function poolOf(model, found, seed) {
+export function poolOf(model, found, seed) {
   const pool = new Map();
   for (const id of seed || []) { const r = model.byId.get(id); if (r && r.n && (r.layer === 'thought' || r.layer === 'context')) pool.set(id, r); }
   if (found) for (const r of thoughtsIn(found.subject.records)) if (!pool.has(r.id)) pool.set(r.id, r);
   return [...pool.values()];
 }
-function rankWith(model, seed, ctxIds = new Set()) {
+export function rankWith(model, seed, ctxIds = new Set()) {
   const at = new Map((seed || []).map((id, i) => [id, i]));
   const s = (r) => (at.has(r.id) ? at.get(r.id) : 1e6);
   return (a, b) => s(a) - s(b) || (ctxIds.has(b.id) - ctxIds.has(a.id)) || (b.n.decided_by === 'user') - (a.n.decided_by === 'user') ||
     degree(model, b.id) - degree(model, a.id) || String(b.created).localeCompare(String(a.created));
 }
-const item = (model, r, n = 140) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, n) });
+export const item = (model, r, n = 140) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, n) });
 
 /* The one line every lens may carry: what the subject is, and its other names. */
 export function briefOf(model, found) {
@@ -363,7 +363,7 @@ export function briefOf(model, found) {
 }
 
 /* Code a set of thoughts' commits wrote most of: names only, never lines. */
-function mainCode(model, rs, n = 3) {
+export function mainCode(model, rs, n = 3) {
   const commits = new Set(rs.map((r) => r.n.commit).filter(Boolean).map((h) => h.slice(0, 12)));
   if (!commits.size) return [];
   const scored = [];
@@ -374,7 +374,7 @@ function mainCode(model, rs, n = 3) {
 /* what: the parts, and in each one or two of every kind - decided, rejected,
  * a constraint, a rule, an open question - and its main code by name. No
  * code lines, no reasons, no dates: those are how, why and when. */
-export function overviewOf(model, found, { seed = [], parts = 8, code = [] } = {}) {
+export function overviewOf(model, found, { seed = [], parts = 8, code = [], caps = {} } = {}) {
   const S = found.subject;
   const pool = poolOf(model, found, seed);
   const order = rankWith(model, seed);
@@ -382,7 +382,8 @@ export function overviewOf(model, found, { seed = [], parts = 8, code = [] } = {
   for (const r of S.records) { const t = r.topic || ''; byTopic.set(t, (byTopic.get(t) || 0) + 1); }
   const top = [...byTopic].filter(([t]) => t).sort((a, b) => b[1] - a[1]);
   const focused = top.length && top[0][1] >= 0.6 * top.reduce((s, [, n]) => s + n, 0);
-  const want = { decided: 2, rejected: 1, constraint: 1, rule: 1, open: 1 };
+  const k1 = caps.each || 1;
+  const want = { decided: 2 * k1, rejected: k1, constraint: k1, rule: k1, open: k1 };
   const kinds = (rs) => {
     const out = {}, more = {};
     for (const k of Object.keys(want)) {
@@ -399,7 +400,7 @@ export function overviewOf(model, found, { seed = [], parts = 8, code = [] } = {
     return { part: t ? t.title : tid, topic: tid, is: t && t.digest ? firstSentence(t.digest.text, 160) : undefined, ...kinds(rs), main_code: code.length ? code : undefined };
   };
   const out = { subject: S.phrase };
-  out.parts = (focused ? top.slice(0, 3) : top.slice(0, parts)).map(([tid]) => partOf(tid));
+  out.parts = (focused ? top.slice(0, 3) : top.slice(0, caps.parts || parts)).map(([tid]) => partOf(tid));
   const loose = pool.filter((r) => !r.topic);
   if (loose.length) out.not_in_a_topic = kinds(loose);
   /* What the word search found for this very question - the code it landed
@@ -409,7 +410,7 @@ export function overviewOf(model, found, { seed = [], parts = 8, code = [] } = {
   const names = [...new Set((code || []).map((e) => String(e).replace(/ \(tree below\)$/, '').replace(/\s+\d+-\d+$/, '')))].slice(0, 6);
   if (names.length) out.main_code = names;
   const listed = new Set(JSON.stringify(out).match(/t-[0-9a-f]{10}/g) || []);
-  const closest = (seed || []).filter((id) => !listed.has(id)).map((id) => model.byId.get(id)).filter((r) => r && r.n).slice(0, 5);
+  const closest = (seed || []).filter((id) => !listed.has(id)).map((id) => model.byId.get(id)).filter((r) => r && r.n).slice(0, caps.closest || 5);
   if (closest.length) out.closest_to_your_question = closest.map((r) => ({ ...item(model, r), kind: kindOf(r.n) }));
   out.go_deeper = 'how / where / when / why about a part, by its name';
   return out;
@@ -440,7 +441,8 @@ export function timelineOf(model, found, { max = 14 } = {}) {
 /* why: every kind of thinking about the subject - decided with its reasons
  * and the finding it rests on, rejected and stashed with what held them
  * back, constraints, rules, open questions, and evidence. No code, no dates. */
-export function reasonsOf(model, found, { seed = [] } = {}) {
+export function reasonsOf(model, found, { seed = [], caps = {} } = {}) {
+  const x = caps.each || 1, up = (n) => Math.max(1, Math.round(n * x));
   const pool = poolOf(model, found, seed);
   const ctxIds = found ? new Set(tie(model, pool, found.context).map((r) => r.id)) : new Set();
   const order = rankWith(model, seed, ctxIds);
@@ -451,15 +453,15 @@ export function reasonsOf(model, found, { seed = [] } = {}) {
   };
   const sel = (k, n, add) => { const rs = pool.filter((r) => kindOf(r.n) === k).sort(order).slice(0, n); return rs.length ? rs.map((r) => ({ ...item(model, r, 180), ...add(r) })) : undefined; };
   const nz = (a) => (a && a.length ? a : undefined);
-  const decided = sel('decided', 5, (r) => ({ because: nz(forces(r.id, 'forward', 2)), evidence: evidenceFor(r.id) }));
+  const decided = sel('decided', up(5), (r) => ({ because: nz(forces(r.id, 'forward', 2)), evidence: evidenceFor(r.id) }));
   const used = new Set((decided || []).map((d) => d.evidence && d.evidence.id).filter(Boolean));
   return {
     decided,
-    rejected: sel('rejected', 3, (r) => ({ held_back: nz(forces(r.id, 'backward', 1)) })),
-    constraints: sel('constraint', 3, (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
-    rules: sel('rule', 3, (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
-    open: sel('open', 3, () => ({})),
-    evidence: nz(pool.filter((r) => kindOf(r.n) === 'finding' && !used.has(r.id)).sort(order).slice(0, 2).map((r) => item(model, r, 160)))
+    rejected: sel('rejected', up(3), (r) => ({ held_back: nz(forces(r.id, 'backward', 1)) })),
+    constraints: sel('constraint', up(3), (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
+    rules: sel('rule', up(3), (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
+    open: sel('open', up(3), () => ({})),
+    evidence: nz(pool.filter((r) => kindOf(r.n) === 'finding' && !used.has(r.id)).sort(order).slice(0, up(2)).map((r) => item(model, r, 160)))
   };
 }
 

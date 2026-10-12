@@ -161,7 +161,7 @@ function runOne(arm, chain, n, walkDir) {
   const frozen = freeze(AT);
   const key = keyOf(frozen.dir), keyCode = keyCodeOf(frozen.dir);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-task-data-'));
-  const mcp = { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'task ' + arm + chain + '.' + n, ...(arm === 'thermal' || arm === 'lens' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' ? { GITX_LENS: '1' } : {}) } } } };
+  const mcp = { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'task ' + arm + chain + '.' + n, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
   /* The final answer's citations teach the walk folder, as in bench-agent. */

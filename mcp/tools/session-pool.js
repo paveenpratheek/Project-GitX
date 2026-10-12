@@ -30,6 +30,7 @@ import { shapeAnswer } from './shape.js';
 import { thermalFor, thermalAsk } from '../thermal/thermal.js';
 import { learnFor } from './walk-learn.js';
 import { lensModel, lensOf, subjectOf, weightsFor, overviewOf, timelineOf, reasonsOf, isBroad, briefOf, onCodeOf } from '../lens/lens.js';
+import { composeLenses, scopeTo, EFFORT } from '../lens/ask.js';
 import { stem } from './rank.js';
 
 const POOLS_KEPT = 2;
@@ -207,7 +208,11 @@ const LEARNED = 0.5;         // a learned word's weight: it widens the search, n
 /* Thermal vision (4th Dimension v2) is on with GITX_THERMAL=1, or `thermal`. */
 /* The lens (4th Dimension v3) is on with GITX_LENS=1, or `lens`; `lensAs`
  * is the shape the agent asked for by name, over the one its words imply. */
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1', lens = process.env.GITX_LENS === '1', lensAs = null } = {}) {
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1', lens = process.env.GITX_LENS === '1', lensAs = null, include = null, topics = null, effort = null } = {}) {
+  /* v3.1: the agent says what it wants (lens.js ask.js); an effort sets the budget it left unset. */
+  const asked31 = Array.isArray(lensAs) || (include && include.length) || (topics && topics.length) || !!effort;
+  if (effort && EFFORT[effort] && !budget) budget = EFFORT[effort].budget;
+  if (!String(query || '').trim() && topics && topics.length) query = topics.join(' ');
   const cx = buildCodeIndex(repoDir);
   const s = sessions.get(repoDir) || { pool: null, kept: [] };
   sessions.set(repoDir, s);
@@ -263,11 +268,12 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
    * names. The subject's other names widen the search; the context words
    * count for less than the subject's (lens.js). */
   let lx = null;
-  if ((lens || lensAs) && q) {
+  if ((lens || lensAs || asked31) && q) {
     try {
       const model = lensModel(repoDir);
-      const found = subjectOf(model, q);
-      lx = { model, found, q, named: LENSES.includes(lensAs), as: LENSES.includes(lensAs) ? lensAs : lensOf(q) };
+      const found = topics && topics.length ? scopeTo(model, /^tp-/.test(q) ? null : subjectOf(model, q), topics) : subjectOf(model, q);
+      const named = (Array.isArray(lensAs) ? lensAs : [lensAs]).filter((x) => LENSES.includes(x));
+      lx = { model, found, q, named: named.length > 0, as: named[0] || lensOf(q), lenses: named.length ? named : [lensOf(q)].filter(Boolean), asked31, include, effort };
       if (found) {
         const ctx = new Set(found.context.flatMap((c) => c.phrase.split(' ').map(stem)));
         const own = new Set(found.subject.phrase.split(' ').map(stem));
@@ -285,7 +291,7 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   /* Cut to the agent's focus and budget (shape.js) before anything is
    * marked given: what was cut was never sent, so a later round may send it. */
   const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
-  const body = lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
+  const body = lx && lx.asked31 ? composeLenses(shaped, lx) : lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
   if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])

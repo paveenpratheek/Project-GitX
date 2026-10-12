@@ -546,6 +546,22 @@ const TOOLS = [
   }
 ];
 
+/* 4th Dimension v3.1 (lens/ask.js): with GITX_V31=1 gitx_related takes
+ * what the agent wants as structure - several lenses, the kinds to include,
+ * topics, an effort - and the subject in words. */
+const V31 = process.env.GITX_V31 === '1';
+if (V31) {
+  const rel = TOOLS.find((t) => t.name === 'gitx_related');
+  const p = rel.inputSchema.properties;
+  p.query.description = 'The subject in your own words - a feature, a concept, an area ("path knowledge", "the 4th Dimension"). Say what you want back with lens, include and effort instead of in the question.';
+  p.lens = { type: 'array', items: { type: 'string', enum: ['what', 'how', 'where', 'when', 'why'] }, description: 'What you want back, one or several in one call: what - its parts, what each is, one or two of every kind of thinking in each, its main code by name; how - code lines, the commits that wrote them and why, the rules, constraints and rejected ideas on that code; where - files and functions only; when - commits in order with their reasons, open questions as raised; why - decisions with reasons and evidence, rejected ideas and what held them back, constraints, rules, open questions, findings.' };
+  p.include = { type: 'array', items: { type: 'string', enum: ['decided', 'rejected', 'constraint', 'rule', 'open', 'finding', 'commits', 'code'] }, description: 'Kinds to give in full beside the lens, kept to the subject - ask here for the rejected ideas, open questions or constraints you would otherwise list in another call.' };
+  p.topics = { type: 'array', items: { type: 'string' }, description: 'Topic ids (tp-...) to keep to; with no query they are the subject.' };
+  p.effort = { type: 'string', enum: ['brief', 'normal', 'deep'], description: 'How much: brief - a quick look (~900 tokens), normal - the default, deep - more of each kind.' };
+  rel.description += ' Each answer ends with next: the calls worth making next, written as calls - copy one rather than rewording.';
+}
+
+
 /* What reaches the agent, less what it already has (the owner's trims, 6
  * October). Measured on the owner's 18 questions, a gitx_related answer was
  * ~2,500 tokens of which 11% was indentation, 274 tokens the same how_to_use
@@ -1206,8 +1222,8 @@ async function handleToolCall(name, args) {
        * what changed. */
       const words = String(args.query || '').trim();
       const refine = (Array.isArray(args.add) ? args.add.length : args.add) || (Array.isArray(args.drop) ? args.drop.length : args.drop);
-      if ((words || refine) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
-        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir(), focus: args.focus, budget: Number(args.budget) || 0, lensAs: args.lens || null });
+      if ((words || refine || (V31 && Array.isArray(args.topics) && args.topics.length)) && !args.layers && !args.outcome && !args.kind && !args.edge && !args.hops) {
+        const r = askPooled(sessions, target.dir, { query: words, add: args.add, drop: args.drop, fresh: !!args.new, paths: args.paths, dataDir: paths.base || logDataDir(), focus: args.focus, budget: Number(args.budget) || 0, lensAs: args.lens || null, ...(V31 ? { include: args.include, topics: args.topics, effort: args.effort } : {}) });
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);

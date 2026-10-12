@@ -77,7 +77,7 @@ function runOne(c, arm, at) {
   const walkDir = WALKS || data;
   /* thermal: the same GitX with thermal vision on (4th Dimension v2). */
   const mcp = arm !== 'hand'
-    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' || arm === 'lens' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' ? { GITX_LENS: '1' } : {}) } } } }
+    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } }
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
