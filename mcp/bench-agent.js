@@ -92,7 +92,7 @@ function runOne(c, arm, at) {
     const hook = [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }];
     fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read|Edit|Write|MultiEdit', hooks: hook }], Stop: [{ hooks: hook }] } }, null, 2));
   }
-  const args = ['-p', PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
+  const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     '--strict-mcp-config', '--mcp-config', mcpFile,
     '--allowedTools', ...TOOLS, ...(arm !== 'hand' ? ['mcp__gitx'] : []),
@@ -151,6 +151,7 @@ function runOne(c, arm, at) {
         tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length, learned_answers: learned, denied,
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
         outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
+        settled_by: c.prompt ? [...settledBy] : undefined,
         answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
       });
       for (const d of [frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
@@ -223,8 +224,61 @@ function walkCount() {
   try { return fs.readdirSync(p).reduce((n, d) => n + fs.readdirSync(path.join(p, d)).filter((x) => x.endsWith('.json')).length, 0); } catch (_) { return 0; }
 }
 
+/* One agent per arm answers every question in one session (--one-agent):
+ * how an agent really works through a list, and the only way GitX's own
+ * session memory - summaries sent once, follow-ups told, nothing sent twice
+ * - is exercised. Each answer is its own section and is scored on its own. */
+const ONE_PROMPT = (cases, arm, k) => [
+  'Answer these ' + cases.length + ' questions about the project in the current folder, one after another.',
+  '',
+  ...cases.map((c, i) => 'Q' + (i + 1) + '. ' + (c.qs ? c.qs[(k - 1) % c.qs.length] : c.q)),
+  '',
+  'Search the project to find each answer. Its code is in the working tree, its history is in the git commit messages ' +
+  '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
+  'per thought; .gitx is git-ignored, so give it as a path when you search it.',
+  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  '',
+  'Reply with one section per question, each starting with its own line "### Q<number>", answered in a few sentences, citing your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
+].join('\n');
+
+async function oneAgent(cases, at) {
+  const k = Number(eq('wording', '1'));
+  console.log('One agent per arm answers all ' + cases.length + ' questions (wording ' + k + '), ' + MODEL + ', frozen at ' + at + ': ' + ARMS.join(', ') + '\n');
+  const rows = await Promise.all(ARMS.map((arm) => runOne({ id: 'all-' + arm, q: '', prompt: ONE_PROMPT(cases, arm, k), expect: {} }, arm, at)));
+  const out = [];
+  for (const r of rows) {
+    const settledBy = new Map(r.settled_by || []);
+    const parts = {};
+    const re = /^#{1,4}\s*Q(\d+)\b[^\n]*\n/gm;
+    const marks = [...String(r.answer || '').matchAll(re)];
+    marks.forEach((m, i) => { parts[Number(m[1])] = r.answer.slice(m.index, i + 1 < marks.length ? marks[i + 1].index : undefined); });
+    const per = cases.map((c, i) => { const sc = score(c, { final: parts[i + 1] || '' }, settledBy); return { id: c.id, answered: !!parts[i + 1], hit: sc.hit, reach: sc.reach, recall: sc.recall }; });
+    out.push({ arm: r.arm, model: r.model, per, hit: per.filter((x) => x.hit).length, reach: per.filter((x) => x.reach).length, answered: per.filter((x) => x.answered).length,
+      seconds: r.seconds, tokens: r.tokens, output_tokens: r.output_tokens, cost_usd: r.cost_usd, turns: r.turns, tool_calls: r.tool_calls, gitx_calls: r.gitx_calls, denied: r.denied, error: r.error, answer: r.answer, calls: r.calls });
+    if (isRefusal(r)) refused = r.answer;
+  }
+  const line = (label, f) => console.log(label.padEnd(24) + out.map((x) => String(f(x)).padEnd(18)).join(''));
+  console.log(''.padEnd(24) + out.map((x) => x.arm.padEnd(18)).join(''));
+  line('answered', (x) => x.answered + '/' + cases.length);
+  line('answer found', (x) => x.hit + '/' + cases.length);
+  line('found, or its commit', (x) => x.reach + '/' + cases.length);
+  line('time', (x) => x.seconds + ' s');
+  line('tool calls (gitx)', (x) => x.tool_calls + ' (' + x.gitx_calls + ')');
+  line('tokens', (x) => x.tokens);
+  line('output tokens', (x) => x.output_tokens);
+  line('cost', (x) => '$' + (x.cost_usd || 0).toFixed(2));
+  line('denied / error', (x) => x.denied + ' / ' + (x.error || '-'));
+  if (refused) console.log('\nStopped by a refusal - not a result: ' + refused);
+  const runs = path.join(REPO, '.gitx', 'bench', 'runs');
+  fs.mkdirSync(runs, { recursive: true });
+  const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  console.log('\nSaved ' + path.relative(REPO, file));
+}
+
 async function main() {
   const { cases, at } = loadCases();
+  if (argv.includes('--one-agent')) return oneAgent(cases, at);
   if (WALKS) fs.mkdirSync(WALKS, { recursive: true });
   const all = [];
   for (let k = 1; k <= ROUNDS && !refused; k++) all.push(await runRound(k, cases, at));
