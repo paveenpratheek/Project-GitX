@@ -51,6 +51,13 @@ const cap = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); r
 const STOP = new Set(('a an the of to in on at by for with from as into is are was were be been it its s t and or this that these those our ' +
   'we you i me my do does did can could should would will about there their tell explain describe overview give show me us all whole ' +
   'work works working part parts thing things gitx project').split(' '));
+/* Words that name what the agent wants back about a subject, not a subject:
+ * "4th Dimension: what it is, how it works, decisions, rejected, costs, open
+ * questions" is one question about the 4th Dimension. Read as a concept,
+ * "open questions" became the subject (first agent run of v3). */
+const FACETS = new Set(('decision decisions decided rejected rejection rejections cost costs open question questions answer answers ' +
+  'built build works work working reason reasons rationale tradeoff tradeoffs trade offs constraint constraints rule rules status ' +
+  'history overview summary detail details layer layers part parts piece pieces how why what when where idea ideas').split(' '));
 const SPECIFIC = 0.06;           // a phrase in more than this share of records is too common to stand for a concept
 const SCOPE_FILES = 0.08;        // a file touched by more than this share of commits says nothing about a scope
 const ALIAS_MIN = 0.6;           // evidence a link needs
@@ -236,7 +243,7 @@ export function namesFor(model, phrase) {
 export function conceptsOf(model, query) {
   const toks = String(query || '').toLowerCase().replace(/'s\b/g, ' ').match(/[a-z0-9]+/g) || [];
   const runs = []; let cur = [];
-  for (const t of toks) { if (ASKING.has(t) || STOP.has(t)) { if (cur.length) runs.push(cur); cur = []; } else cur.push(t); }
+  for (const t of toks) { if (ASKING.has(t) || STOP.has(t) || FACETS.has(t)) { if (cur.length) runs.push(cur); cur = []; } else cur.push(t); }
   if (cur.length) runs.push(cur);
   const found = [];
   for (const run of runs) for (let n = Math.min(3, run.length); n >= 1; n--) for (let i = 0; i + n <= run.length; i++) {
@@ -269,7 +276,13 @@ export function subjectOf(model, query) {
   const cs = conceptsOf(model, query).filter((c) => c.own >= 3 && c.own <= model.records.length * 0.25);
   if (!cs.length) return null;
   cs.sort((a, b) => a.records.length - b.records.length);
-  const subject = cs[0], context = cs.slice(1);
+  /* A question that lists parts beside their whole - "the 4th Dimension:
+   * layers, stack, the agent's walk, path knowledge" - is about the whole: a
+   * concept whose records hold at least half of two others' is their container
+   * and the subject. Otherwise the narrowest is. */
+  const holds = (big, small) => { const ids = new Set(big.records.map((r) => r.id)); return small.records.filter((r) => ids.has(r.id)).length >= 0.5 * small.records.length; };
+  const container = cs.length >= 3 ? cs.slice().reverse().find((c) => cs.filter((o) => o !== c && holds(c, o)).length >= 2) : null;
+  const subject = container || cs[0], context = cs.filter((c) => c !== subject);
   /* Nested: the subject lives inside one broader concept - "the 4th Dimension's
    * path knowledge". Only then does the context count for less; a question
    * that names several things side by side keeps every word at full weight,
@@ -286,7 +299,7 @@ export function subjectOf(model, query) {
  * overview first, held-out answers moved down or out (bench, wording 1). */
 export function isBroad(query, found) {
   if (!found) return false;
-  const toks = (String(query || '').toLowerCase().replace(/'s/g, ' ').match(/[a-z0-9]+/g) || []).filter((t) => !ASKING.has(t) && !STOP.has(t));
+  const toks = (String(query || '').toLowerCase().replace(/'s\b/g, ' ').match(/[a-z0-9]+/g) || []).filter((t) => !ASKING.has(t) && !STOP.has(t) && !FACETS.has(t));
   if (!toks.length) return false;
   const held = new Set([found.subject, ...found.context].flatMap((c) => c.phrase.split(' ')));
   return toks.filter((t) => held.has(t)).length >= 0.7 * toks.length;

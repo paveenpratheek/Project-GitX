@@ -95,6 +95,41 @@ function keyOf(dir) {
   return key;
 }
 
+/* Key B - by code, not by branch (t-2201ae795e): the files the 4th Dimension
+ * added, every commit up to `at` that touched them, the thoughts those
+ * commits settled whatever branch they were thought on, and the thoughts one
+ * link from those - what lost to them, their costs, what refines them. The
+ * lens reads branch anchors and phrases; this key reads neither, so a gain
+ * on it is not the lens finding its own definition. The test harness and
+ * one-off migrations are not the system and are left out. */
+const CODE_KEY_FILES = ['js/context-map.js', 'js/monitor.js', 'mcp/hook.js', 'mcp/thermal/thermal.js', 'mcp/tools/code-find.js',
+  'mcp/tools/commit-code.js', 'mcp/tools/learn.js', 'mcp/tools/path-recorder.js', 'mcp/tools/promote.js', 'mcp/tools/rank.js',
+  'mcp/tools/record.js', 'mcp/tools/session-pool.js', 'mcp/tools/shape.js', 'mcp/tools/topics.js', 'mcp/tools/walk-learn.js'];
+function keyCodeOf(dir) {
+  const touched = new Set(git(['log', '--format=%H', 'HEAD', '--', ...CODE_KEY_FILES], dir).split('\n').filter(Boolean));
+  const all = new Map();
+  for (const sub of ['thoughts', path.join('context', 'thoughts')]) {
+    const d = path.join(dir, '.gitx', sub);
+    for (const f of fs.existsSync(d) ? fs.readdirSync(d) : []) { try { const t = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); all.set(t.id, t); } catch (_) {} }
+  }
+  const seeds = [...all.values()].filter((t) => { const res = t.resulted_in && (t.resulted_in.commit || t.resulted_in); return res && touched.has(res); });
+  const inKey = new Set(seeds.map((t) => t.id));
+  for (const t of all.values()) for (const l of t.links || []) {
+    if (inKey.has(l.to) && !inKey.has(t.id)) inKey.add(t.id);          /* points at a seed: lost-to, cost-of, refines */
+  }
+  for (const t of seeds) for (const l of t.links || []) if (all.has(l.to)) inKey.add(l.to);   /* a seed points at it */
+  const key = { decisions: [], user_decisions: [], avoid: [], costs: [], open: [], findings: [], commits: [...touched].map((h) => h.slice(0, 7)) };
+  for (const id of inKey) {
+    const t = all.get(id);
+    if (t.outcome === 'rejected' || t.outcome === 'stashed') key.avoid.push(t.id);
+    else if (t.outcome === 'open') key.open.push(t.id);
+    else if (t.kind === 'cost') key.costs.push(t.id);
+    else if (t.kind === 'decision') { key.decisions.push(t.id); if (t.decided_by === 'user') key.user_decisions.push(t.id); }
+    else key.findings.push(t.id);
+  }
+  return key;
+}
+
 /* Ids in a text: thoughts, commits of this history, code as file::name. */
 function idsIn(text) {
   const s = String(text);
@@ -124,7 +159,7 @@ function scoreRun(shown, cited, key) {
 
 function runOne(arm, chain, n, walkDir) {
   const frozen = freeze(AT);
-  const key = keyOf(frozen.dir);
+  const key = keyOf(frozen.dir), keyCode = keyCodeOf(frozen.dir);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-task-data-'));
   const mcp = { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'task ' + arm + chain + '.' + n, ...(arm === 'thermal' || arm === 'lens' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' ? { GITX_LENS: '1' } : {}) } } } };
   const mcpFile = path.join(data, 'mcp.json');
@@ -180,7 +215,7 @@ function runOne(arm, chain, n, walkDir) {
         other_calls: calls.filter((x) => !x.tool.startsWith('mcp__gitx') && x.tool !== 'ToolSearch').map((x) => x.tool),
         denied, learned_answers: learned,
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
-        score: scoreRun(shown, cited, key), shown, cited, key,
+        score: scoreRun(shown, cited, key), score_code: scoreRun(shown, cited, keyCode), shown, cited, key, key_code: keyCode,
         answer: text, calls: calls.map((x) => x.tool.replace('mcp__gitx__', '') + ' ' + JSON.stringify(x.input).slice(0, 200))
       });
       for (const d of [frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
@@ -216,19 +251,16 @@ async function chainRun(arm, chain) {
   return rows;
 }
 
-async function main() {
-  console.log(`Task bench: know the 4th Dimension through GitX alone. ${ARMS.join(', ')} x ${CHAINS} chains x ${AGENTS} agents in turn, ${MODEL}, frozen at ${AT.slice(0, 7)} (${BASE}..: ${BRANCH_COMMITS.length} commits), walks in ${WALKS_ROOT}\n`);
-  const jobs = [];
-  for (const arm of ARMS) for (let c = 1; c <= CHAINS; c++) jobs.push(chainRun(arm, c));
-  const rows = (await Promise.all(jobs)).flat();
-
-  console.log('\n' + ''.padEnd(26) + ARMS.map((a) => a.padEnd(18)).join(''));
+function report(rows, arms, agents, field, title) {
+  console.log('\n' + title + '\n' + ''.padEnd(26) + arms.map((a) => a.padEnd(18)).join(''));
   const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
-  const of = (arm) => rows.filter((r) => r.arm === arm && !r.error);
-  const row = (label, f) => console.log(label.padEnd(26) + ARMS.map((a) => String(f(of(a))).padEnd(18)).join(''));
-  const tierPct = (t) => (rs) => rs.length ? Math.round(mean(rs.map((r) => r.score.tiers[t].cited / (r.score.tiers[t].key || 1))) * 100) + '%' : '-';
-  const shownPct = (t) => (rs) => rs.length ? Math.round(mean(rs.map((r) => r.score.tiers[t].shown / (r.score.tiers[t].key || 1))) * 100) + '%' : '-';
+  const of = (arm) => rows.filter((r) => r.arm === arm && !r.error && r[field]);
+  const row = (label, f) => console.log(label.padEnd(26) + arms.map((a) => String(f(of(a))).padEnd(18)).join(''));
+  const tierPct = (t) => (rs) => rs.length ? Math.round(mean(rs.map((r) => r[field].tiers[t].cited / (r[field].tiers[t].key || 1))) * 100) + '%' : '-';
+  const shownPct = (t) => (rs) => rs.length ? Math.round(mean(rs.map((r) => r[field].tiers[t].shown / (r[field].tiers[t].key || 1))) * 100) + '%' : '-';
+  const size = (t) => (rs) => (rs.length ? rs[0][field].tiers[t].key : '-');
   row('agents', (rs) => rs.length);
+  row('key size: decisions/owner', (rs) => size('decisions')(rs) + ' / ' + size('user_decisions')(rs));
   row('decisions cited', tierPct('decisions'));
   row('  owner decisions cited', tierPct('user_decisions'));
   row('rejected/stashed cited', tierPct('avoid'));
@@ -237,16 +269,45 @@ async function main() {
   row('findings cited', tierPct('findings'));
   row('commits cited', tierPct('commits'));
   row('decisions GitX showed', shownPct('decisions'));
-  row('ids cited, mean', (rs) => Math.round(mean(rs.map((r) => r.score.cited))));
-  row('cited on the key', (rs) => Math.round(mean(rs.map((r) => r.score.precision)) * 100) + '%');
-  row('ungrounded ids, mean', (rs) => mean(rs.map((r) => r.score.ungrounded.length)).toFixed(1));
+  row('owner decisions shown', shownPct('user_decisions'));
+  row('ids cited, mean', (rs) => Math.round(mean(rs.map((r) => r[field].cited))));
+  row('cited on the key', (rs) => Math.round(mean(rs.map((r) => r[field].precision)) * 100) + '%');
+  row('ungrounded ids, mean', (rs) => mean(rs.map((r) => r[field].ungrounded.length)).toFixed(1));
   row('gitx calls, mean', (rs) => mean(rs.map((r) => r.gitx_calls)).toFixed(1));
   row('time, mean', (rs) => Math.round(mean(rs.map((r) => r.seconds))) + ' s');
   row('tokens, mean', (rs) => Math.round(mean(rs.map((r) => r.tokens))));
-  row('cost, all', (rs) => '$' + rs.reduce((s, r) => s + (r.cost_usd || 0), 0).toFixed(2));
-  row('denied / errors', (rs) => rs.reduce((s, r) => s + r.denied, 0) + ' / ' + rows.filter((r) => r.arm === rs[0]?.arm && r.error).length);
-  console.log('\nBy place in the chain (decisions cited, mean):');
-  for (const arm of ARMS) console.log('  ' + arm.padEnd(8) + Array.from({ length: AGENTS }, (_, i) => { const rs = of(arm).filter((r) => r.n === i + 1); return '#' + (i + 1) + ' ' + tierPct('decisions')(rs); }).join('   '));
+  row('cost per agent', (rs) => '$' + (rs.length ? rs.reduce((x, r) => x + (r.cost_usd || 0), 0) / rs.length : 0).toFixed(2));
+  row('denied', (rs) => rs.reduce((x, r) => x + (r.denied || 0), 0));
+  console.log('By place in the chain (owner decisions cited, mean):');
+  for (const arm of arms) console.log('  ' + arm.padEnd(8) + Array.from({ length: agents }, (_, i) => { const rs = of(arm).filter((r) => r.n === i + 1); return '#' + (i + 1) + ' ' + tierPct('user_decisions')(rs); }).join('   '));
+}
+
+/* --rescore=a.json,b.json: score saved runs again, under both keys, from a
+ * fresh copy at their commit - no agent is asked again. */
+function rescore(files) {
+  const runs = [];
+  let at = null;
+  for (const f of files) { const j = JSON.parse(fs.readFileSync(path.resolve(f), 'utf8')); at = at || j.at; if (j.at !== at) throw new Error('runs at different commits: ' + j.at + ' and ' + at); runs.push(...j.runs); }
+  const frozen = freeze(at);
+  const key = keyOf(frozen.dir), keyCode = keyCodeOf(frozen.dir);
+  fs.rmSync(frozen.dir, { recursive: true, force: true });
+  for (const r of runs) { r.score = scoreRun(r.shown, r.cited, key); r.score_code = scoreRun(r.shown, r.cited, keyCode); }
+  const arms = [...new Set(runs.map((r) => r.arm))];
+  const agents = Math.max(...runs.map((r) => r.n));
+  console.log('Rescored ' + runs.length + ' runs at ' + at.slice(0, 7) + ' from ' + files.length + ' files');
+  report(runs, arms, agents, 'score', 'Key A - the 4th Dimension by branch: anchored on it or settled by ' + BASE + '..at');
+  report(runs, arms, agents, 'score_code', 'Key B - the 4th Dimension by code: settled by commits to the files it added, and one link out');
+}
+
+async function main() {
+  if (eq('rescore', null)) return rescore(eq('rescore', null).split(','));
+  console.log(`Task bench: know the 4th Dimension through GitX alone. ${ARMS.join(', ')} x ${CHAINS} chains x ${AGENTS} agents in turn, ${MODEL}, frozen at ${AT.slice(0, 7)} (${BASE}..: ${BRANCH_COMMITS.length} commits), walks in ${WALKS_ROOT}\n`);
+  const jobs = [];
+  for (const arm of ARMS) for (let c = 1; c <= CHAINS; c++) jobs.push(chainRun(arm, c));
+  const rows = (await Promise.all(jobs)).flat();
+
+  report(rows, ARMS, AGENTS, 'score', 'Key A - the 4th Dimension by branch: anchored on it or settled by ' + BASE + '..at');
+  report(rows, ARMS, AGENTS, 'score_code', 'Key B - the 4th Dimension by code: settled by commits to the files it added, and one link out');
   if (refused) console.log('\nRun stopped early, not a result: ' + refused);
 
   const dir = path.join(REPO, '.gitx', 'bench', 'runs');
