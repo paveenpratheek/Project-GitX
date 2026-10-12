@@ -40,7 +40,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { NO_CONSOLE } from '../tools/no-console.js';
-import { buildCodeIndex, rankIndexFor } from '../tools/code-find.js';
+import { buildCodeIndex, rankIndexFor, shortName } from '../tools/code-find.js';
 import { stem, statusOf, summaryOf } from '../tools/rank.js';
 import { ASKING } from '../tools/learn.js';
 import { loadThoughts } from '../tools/thoughts.js';
@@ -318,89 +318,164 @@ export function weightsFor(found, { alias = 0.6, context = 0.5 } = {}) {
 /* ------------------------------------------------------------ answers */
 
 const degree = (model, id) => (model.rx.adj.get(id) || []).length;
-const keyRank = (model) => (a, b) => (b.n.decided_by === 'user') - (a.n.decided_by === 'user') || degree(model, b.id) - degree(model, a.id) || String(b.created).localeCompare(String(a.created));
 const thoughtsIn = (rs) => rs.filter((r) => (r.layer === 'thought' || r.layer === 'context') && r.n);
-const line = (model, r, n = 160) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, n) });
 const tie = (model, rs, ctx) => (ctx && ctx.length ? rs.filter((r) => ctx.some((c) => c.records.some((x) => x.id === r.id))) : []);
+const firstSentence = (s, n) => cap(String(s || '').split(/(?<=[.!?])\s/)[0], n);
 
-/* what: the subject's parts - each topic its records fall in, what it is,
- * how much is recorded, and its key decisions - so a broad question gets the
- * shape of the whole and the agent picks where to go deeper. */
-export function overviewOf(model, found, { parts = 8, keys = 3 } = {}) {
-  const S = found.subject, rs = S.records;
+/* Every kind of thought has one place: what it is decides which lens
+ * carries it (t-58927692a8). */
+export function kindOf(n) {
+  if (n.outcome === 'rejected' || n.outcome === 'stashed') return 'rejected';
+  if (n.outcome === 'open') return 'open';
+  if (n.kind === 'cost') return 'constraint';
+  if (n.kind === 'learned') return 'rule';
+  if (n.kind === 'finding') return 'finding';
+  return 'decided';
+}
+
+/* The thoughts an answer chooses from: the subject's own, and those the word
+ * search ranked for this question (seed), which come first in their kind -
+ * so the one thought a question is about is not lost to a better-linked one. */
+function poolOf(model, found, seed) {
+  const pool = new Map();
+  for (const id of seed || []) { const r = model.byId.get(id); if (r && r.n && (r.layer === 'thought' || r.layer === 'context')) pool.set(id, r); }
+  if (found) for (const r of thoughtsIn(found.subject.records)) if (!pool.has(r.id)) pool.set(r.id, r);
+  return [...pool.values()];
+}
+function rankWith(model, seed, ctxIds = new Set()) {
+  const at = new Map((seed || []).map((id, i) => [id, i]));
+  const s = (r) => (at.has(r.id) ? at.get(r.id) : 1e6);
+  return (a, b) => s(a) - s(b) || (ctxIds.has(b.id) - ctxIds.has(a.id)) || (b.n.decided_by === 'user') - (a.n.decided_by === 'user') ||
+    degree(model, b.id) - degree(model, a.id) || String(b.created).localeCompare(String(a.created));
+}
+const item = (model, r, n = 140) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, n) });
+
+/* The one line every lens may carry: what the subject is, and its other names. */
+export function briefOf(model, found) {
+  if (!found) return undefined;
+  const S = found.subject;
+  const tops = new Map();
+  for (const r of S.records) if (r.topic) tops.set(r.topic, (tops.get(r.topic) || 0) + 1);
+  const top = [...tops].sort((a, b) => b[1] - a[1])[0];
+  const t = top && model.rx.topics.get(top[0]);
+  const is = t && t.digest && top[1] >= 0.5 * [...tops.values()].reduce((x, y) => x + y, 0) ? firstSentence(t.digest.text, 170) : undefined;
+  return { subject: S.phrase, also_called: S.names.size ? [...S.names.keys()] : undefined, within: found.nested ? found.context.map((c) => c.phrase) : undefined, is };
+}
+
+/* Code a set of thoughts' commits wrote most of: names only, never lines. */
+function mainCode(model, rs, n = 3) {
+  const commits = new Set(rs.map((r) => r.n.commit).filter(Boolean).map((h) => h.slice(0, 12)));
+  if (!commits.size) return [];
+  const scored = [];
+  for (const g of model.cx.regions) { let s = 0; for (const [c, k] of Object.entries(g.commits || {})) if (commits.has(c)) s += k; if (s >= 3) scored.push([g, s]); }
+  return scored.sort((a, b) => b[1] - a[1]).slice(0, n).map(([g]) => path.basename(g.file) + ' · ' + shortName(g));
+}
+
+/* what: the parts, and in each one or two of every kind - decided, rejected,
+ * a constraint, a rule, an open question - and its main code by name. No
+ * code lines, no reasons, no dates: those are how, why and when. */
+export function overviewOf(model, found, { seed = [], parts = 8, code = [] } = {}) {
+  const S = found.subject;
+  const pool = poolOf(model, found, seed);
+  const order = rankWith(model, seed);
   const byTopic = new Map();
-  for (const r of rs) { const t = r.topic || '(no topic)'; byTopic.set(t, (byTopic.get(t) || 0) + 1); }
-  const ranked = [...byTopic].sort((a, b) => b[1] - a[1]);
-  const top = ranked.filter(([t]) => t !== '(no topic)');
+  for (const r of S.records) { const t = r.topic || ''; byTopic.set(t, (byTopic.get(t) || 0) + 1); }
+  const top = [...byTopic].filter(([t]) => t).sort((a, b) => b[1] - a[1]);
   const focused = top.length && top[0][1] >= 0.6 * top.reduce((s, [, n]) => s + n, 0);
-  const allThoughts = model.records.filter((r) => (r.layer === 'thought' || r.layer === 'context') && r.n);
-  const partOf = ([tid, n]) => {
+  const want = { decided: 2, rejected: 1, constraint: 1, rule: 1, open: 1 };
+  const kinds = (rs) => {
+    const out = {}, more = {};
+    for (const k of Object.keys(want)) {
+      const all = rs.filter((r) => kindOf(r.n) === k).sort(order);
+      if (all.length) out[k] = all.slice(0, want[k]).map((r) => item(model, r));
+      if (all.length > want[k]) more[k] = all.length - want[k];
+    }
+    return { ...out, more: Object.keys(more).length ? Object.entries(more).map(([k, v]) => v + ' ' + k).join(', ') : undefined };
+  };
+  const partOf = (tid) => {
     const t = model.rx.topics.get(tid);
-    const inTopic = allThoughts.filter((r) => r.topic === tid);
-    const count = (f) => inTopic.filter(f).length;
-    const key = inTopic.filter((r) => r.n.kind === 'decision' && r.n.outcome === 'accepted').sort(keyRank(model)).slice(0, keys);
-    return {
-      part: t ? t.title : tid, topic: tid, mentions: n,
-      is: t && t.digest ? cap(t.digest.text.split(/(?<=\.)\s/)[0], 170) : undefined,
-      recorded: count((r) => r.n.kind === 'decision' && r.n.outcome === 'accepted') + ' decisions, ' + count((r) => r.n.outcome === 'rejected' || r.n.outcome === 'stashed') + ' rejected, ' + count((r) => r.n.outcome === 'open') + ' open, ' + count((r) => r.n.kind === 'cost') + ' costs',
-      key: key.map((r) => line(model, r, 150))
-    };
+    const rs = pool.filter((r) => r.topic === tid);
+    const code = mainCode(model, rs);
+    return { part: t ? t.title : tid, topic: tid, is: t && t.digest ? firstSentence(t.digest.text, 160) : undefined, ...kinds(rs), main_code: code.length ? code : undefined };
   };
-  const out = {
-    subject: S.phrase,
-    also_called: S.names.size ? [...S.names].map(([b, e]) => b + ' (' + cap(e.evidence[0], 90) + ')') : undefined,
-    first_recorded: S.first.slice(0, 10) || undefined,
-    on_branch: S.branch ? S.branch + ' thoughts were thought on a branch of this name' : undefined,
-    records: rs.length
-  };
-  if (focused) {
-    const s = summaryOf(model.rx, top[0][0]);
-    out.summary = s ? cap(s.summary, 600) : undefined;
-    out.parts = [partOf(top[0]), ...top.slice(1, 3).map(partOf)];
-  } else out.parts = top.slice(0, parts).map(partOf);
-  const loose = thoughtsIn(rs).filter((r) => !r.topic && r.n.kind === 'decision' && r.n.outcome === 'accepted').sort(keyRank(model)).slice(0, keys);
-  if (loose.length) out.not_in_a_topic = loose.map((r) => line(model, r, 150));
-  const within = found.context.length ? tie(model, thoughtsIn(rs), found.context).filter((r) => r.n.kind === 'decision').sort(keyRank(model)).slice(0, keys) : [];
-  if (within.length) out.within = { context: found.context.map((c) => c.phrase).join(', '), key: within.map((r) => line(model, r, 150)) };
-  out.go_deeper = 'ask how / where / when / why about a part by its name, or gitx_thought topic for all of one part';
+  const out = { subject: S.phrase };
+  out.parts = (focused ? top.slice(0, 3) : top.slice(0, parts)).map(([tid]) => partOf(tid));
+  const loose = pool.filter((r) => !r.topic);
+  if (loose.length) out.not_in_a_topic = kinds(loose);
+  /* What the word search found for this very question - the code it landed
+   * on, by name, and its closest thoughts of any kind. A "what is X" about one
+   * thing is often answered there (held-out: a function name, a finding),
+   * and the parts above choose by kind and could leave it out. */
+  const names = [...new Set((code || []).map((e) => String(e).replace(/ \(tree below\)$/, '').replace(/\s+\d+-\d+$/, '')))].slice(0, 6);
+  if (names.length) out.main_code = names;
+  const listed = new Set(JSON.stringify(out).match(/t-[0-9a-f]{10}/g) || []);
+  const closest = (seed || []).filter((id) => !listed.has(id)).map((id) => model.byId.get(id)).filter((r) => r && r.n).slice(0, 5);
+  if (closest.length) out.closest_to_your_question = closest.map((r) => ({ ...item(model, r), kind: kindOf(r.n) }));
+  out.go_deeper = 'how / where / when / why about a part, by its name';
   return out;
 }
 
-/* when: the subject's commits in order, under every name it had. */
-export function timelineOf(model, found, { max = 16 } = {}) {
+/* when: the subject's commits in order under every name it had, each with
+ * its reason in a sentence and what it settled, and the open questions in
+ * the order they were raised. No code. */
+export function timelineOf(model, found, { max = 14 } = {}) {
   const S = found.subject;
   const settledBy = new Map();
   for (const r of thoughtsIn(S.records)) if (r.n.commit) { const l = settledBy.get(r.n.commit) || []; l.push(r.id); settledBy.set(r.n.commit, l); }
   const ids = new Set([...S.records.filter((r) => r.layer === 'commit').map((r) => r.id), ...settledBy.keys()]);
   const commits = [...ids].map((h) => model.byId.get(h)).filter(Boolean).sort((a, b) => a.created.localeCompare(b.created));
   const pick = commits.length > max ? [...commits.slice(0, 4), ...commits.slice(-(max - 4))] : commits;
+  const reasonOf = (h) => { const c = model.cx.commits.get(h.slice(0, 12)); const body = c && c.body ? c.body.split(/\n\s*\n/).find((p) => !/^[\w-]+:\s/.test(p.trim())) : ''; return body ? firstSentence(body.replace(/\s+/g, ' '), 150) : undefined; };
+  const steps = pick.map((r) => ({ date: r.created.slice(0, 10), commit: r.id.slice(0, 7), subject: cap(r.n.text, 90), reason: reasonOf(r.id), settled: settledBy.get(r.id) }));
+  const opened = thoughtsIn(S.records).filter((r) => kindOf(r.n) === 'open').sort((a, b) => a.created.localeCompare(b.created)).slice(-3);
+  for (const r of opened) steps.push({ date: String(r.created).slice(0, 10), open: r.id, text: cap(r.n.text, 120) });
+  steps.sort((a, b) => a.date.localeCompare(b.date));
   return {
-    subject: S.phrase,
     names: [S.phrase, ...S.names.keys()].map((p) => { const h = hitsOf(model, p); return p + ': ' + firstOf(h).slice(0, 10) + ' to ' + (h.map((r) => r.created).filter(Boolean).sort().pop() || '').slice(0, 10); }),
-    commits: pick.map((r) => ({ date: r.created.slice(0, 10), commit: r.id.slice(0, 7), subject: cap(r.n.text, 100), settled: settledBy.get(r.id) })),
-    skipped: commits.length > pick.length ? commits.length - pick.length + ' commits in the middle - gitx_graph_chain or git log gives them' : undefined
+    steps,
+    skipped: commits.length > pick.length ? commits.length - pick.length + ' commits in the middle - gitx_graph_chain gives them' : undefined
   };
 }
 
-/* why: what was decided about the subject and why, what lost, what it cost. */
-export function reasonsOf(model, found, { decisions = 6, rejected = 4, costs = 3, open = 3 } = {}) {
-  const ts = thoughtsIn(found.subject.records);
-  const ctxIds = new Set(tie(model, ts, found.context).map((r) => r.id));
-  const order = (a, b) => (ctxIds.has(b.id) - ctxIds.has(a.id)) || keyRank(model)(a, b);
-  const withWhy = (r) => {
-    const raw = readThought(model.repoDir, r.id);
-    const fw = (raw && raw.forces || []).filter((f) => f.direction === 'forward').slice(0, 2).map((f) => cap(f.text, 170));
-    const bw = (raw && raw.forces || []).filter((f) => f.direction === 'backward').slice(0, 1).map((f) => cap(f.text, 170));
-    return { ...line(model, r, 200), because: fw.length ? fw : undefined, held_back: bw.length ? bw : undefined };
+/* why: every kind of thinking about the subject - decided with its reasons
+ * and the finding it rests on, rejected and stashed with what held them
+ * back, constraints, rules, open questions, and evidence. No code, no dates. */
+export function reasonsOf(model, found, { seed = [] } = {}) {
+  const pool = poolOf(model, found, seed);
+  const ctxIds = found ? new Set(tie(model, pool, found.context).map((r) => r.id)) : new Set();
+  const order = rankWith(model, seed, ctxIds);
+  const forces = (id, dir, n) => { const raw = readThought(model.repoDir, id); return ((raw && raw.forces) || []).filter((f) => f.direction === dir).slice(0, n).map((f) => cap(f.text, 160)); };
+  const evidenceFor = (id) => {
+    for (const e of model.rx.adj.get(id) || []) { const n = model.rx.nodes.get(e.to); if (n && n.kind === 'finding' && /supports/.test(e.type)) return { id: e.to, text: cap(n.text, 130) }; }
+    return undefined;
   };
-  const sel = (f, n) => ts.filter(f).sort(order).slice(0, n).map(withWhy);
+  const sel = (k, n, add) => { const rs = pool.filter((r) => kindOf(r.n) === k).sort(order).slice(0, n); return rs.length ? rs.map((r) => ({ ...item(model, r, 180), ...add(r) })) : undefined; };
+  const nz = (a) => (a && a.length ? a : undefined);
+  const decided = sel('decided', 5, (r) => ({ because: nz(forces(r.id, 'forward', 2)), evidence: evidenceFor(r.id) }));
+  const used = new Set((decided || []).map((d) => d.evidence && d.evidence.id).filter(Boolean));
   return {
-    subject: found.subject.phrase,
-    decided: sel((r) => r.n.kind === 'decision' && r.n.outcome === 'accepted', decisions),
-    rejected: sel((r) => r.n.outcome === 'rejected' || r.n.outcome === 'stashed', rejected),
-    costs: sel((r) => r.n.kind === 'cost', costs),
-    open: sel((r) => r.n.outcome === 'open', open)
+    decided,
+    rejected: sel('rejected', 3, (r) => ({ held_back: nz(forces(r.id, 'backward', 1)) })),
+    constraints: sel('constraint', 3, (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
+    rules: sel('rule', 3, (r) => ({ because: nz(forces(r.id, 'forward', 1)) })),
+    open: sel('open', 3, () => ({})),
+    evidence: nz(pool.filter((r) => kindOf(r.n) === 'finding' && !used.has(r.id)).sort(order).slice(0, 2).map((r) => item(model, r, 160)))
   };
+}
+
+/* how: the rules, constraints and rejected alternatives on a piece of code -
+ * settled by a commit that wrote it, linked to a thought that was, or naming
+ * the function or its file. */
+export function onCodeOf(model, file, from, { n = 3 } = {}) {
+  const g = model.cx.regions.find((x) => x.file === file && x.from <= from && x.to >= from);
+  if (!g) return undefined;
+  const commits = new Set(Object.keys(g.commits || {}));
+  const settledHere = new Set(model.records.filter((r) => r.n && r.n.commit && commits.has(r.n.commit.slice(0, 12))).map((r) => r.id));
+  const name = shortName(g), base = path.basename(file).replace(/\.[^.]+$/, '');
+  const named = (t) => (name.length >= 5 && new RegExp('\\b' + name.replace(/[^\w$]/g, '') + '\\b').test(t)) || (base.length >= 5 && t.includes(base));
+  const hits = model.records.filter((r) => r.n && ['rule', 'constraint', 'rejected'].includes(kindOf(r.n)) &&
+    (settledHere.has(r.id) || (model.rx.adj.get(r.id) || []).some((e) => settledHere.has(e.to)) || named(r.text)));
+  return hits.length ? hits.sort((a, b) => degree(model, b.id) - degree(model, a.id)).slice(0, n).map((r) => ({ [kindOf(r.n)]: r.id, text: cap(r.n.text, 140) })) : undefined;
 }
 
 function readThought(repoDir, id) {

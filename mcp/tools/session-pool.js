@@ -29,7 +29,7 @@ import { buildCodeIndex, termsOf, questionTerms, idfOf, RARE_SHARE, codeFirst, r
 import { shapeAnswer } from './shape.js';
 import { thermalFor, thermalAsk } from '../thermal/thermal.js';
 import { learnFor } from './walk-learn.js';
-import { lensModel, lensOf, subjectOf, weightsFor, overviewOf, timelineOf, reasonsOf, isBroad } from '../lens/lens.js';
+import { lensModel, lensOf, subjectOf, weightsFor, overviewOf, timelineOf, reasonsOf, isBroad, briefOf, onCodeOf } from '../lens/lens.js';
 import { stem } from './rank.js';
 
 const POOLS_KEPT = 2;
@@ -93,7 +93,7 @@ function remember(pool, answer) {
     for (const o of t.open || []) give(o.id);
   }
   for (const d of answer.thinking || []) give('doc:' + d.doc);
-  for (const k of ['overview', 'timeline', 'reasons']) for (const id of JSON.stringify(answer[k] || '').match(/t-[0-9a-f]{10}/g) || []) give(id);
+  for (const k of ['overview', 'timeline', 'reasons', 'brief']) for (const id of JSON.stringify(answer[k] || '').match(/t-[0-9a-f]{10}/g) || []) give(id);
   for (const c of answer.context || []) give(c.id);
   for (const c of answer.decided || []) give(c.id);
   for (const w of termsOf(JSON.stringify(answer))) pool.sentTerms.add(w);
@@ -284,8 +284,8 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   for (const k of [...ahead.keys()]) if (k.startsWith(pool.id + ':')) ahead.delete(k);
   /* Cut to the agent's focus and budget (shape.js) before anything is
    * marked given: what was cut was never sent, so a later round may send it. */
-  const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus: lx && lx.found && lx.as === 'why' && focus === 'both' ? 'thinking' : focus, budget });
-  const body = lx && lx.found ? lensShape(shaped, lx, { focus, budget }) : shaped;
+  const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
+  const body = lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
   if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])
@@ -328,20 +328,32 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
  * Trees give way to their names only on the default shape - an agent that
  * chose a focus or a budget keeps what it chose. */
 const LENSES = ['what', 'how', 'where', 'when', 'why'];
+/* Each lens answers with its own kind of information and a one-line brief,
+ * nothing else (t-58927692a8): what - the parts and one or two of every kind
+ * of thinking in each; how - the code, the commits that wrote it and why, and
+ * the rules, constraints and rejected ideas on it; where - places only; when -
+ * commits in order with their reasons, and open questions as they were
+ * raised; why - every kind of thinking with its reasons and evidence. The
+ * word search still runs first, and what it ranked leads within each kind. */
 function lensShape(body, { model, found, as, q, named }, { focus, budget }) {
-  /* Asked for by name, the overview is given; read from the words, only for a broad question. */
   if (as === 'what' && !named && !isBroad(q, found)) as = 'how';
-  const a = { ...body };
-  const free = focus === 'both' && !budget;
-  const toNames = () => { if (free && a.trees && a.trees.length) { a.code_at = [...(a.code_at || []), ...a.trees.map((t) => t.function + (t.ref ? ' (' + t.ref + ')' : ''))]; delete a.trees; } };
-  let lead = null;
-  /* A subject spread over several parts gets the parts in place of code; one
-   * that is a single thing keeps its code too - the answer to "what is X" is
-   * often in it (held-out, two answers lost when it was cut). */
-  if (as === 'what') { const o = overviewOf(model, found); lead = { overview: o }; if (!o.summary) { toNames(); if (free && a.map) { delete a.map.wiring; delete a.map.surface; } } }
-  else if (as === 'when') { lead = { timeline: timelineOf(model, found) }; toNames(); }
-  else if (as === 'why') { lead = { reasons: reasonsOf(model, found) }; }
-  else if (as === 'where') { toNames(); if (free) { for (const k of ['decided', 'context', 'more_context', 'summaries', 'thinking']) delete a[k]; } }
-  else if (as === 'how') { const o = overviewOf(model, found, { parts: 1, keys: 0 }); lead = { about: { subject: o.subject, also_called: o.also_called, is: o.summary ? o.summary.split(/(?<=.)s/)[0] : o.parts && o.parts[0] ? o.parts[0].is : undefined } }; }
-  return lead ? { ...lead, ...a } : a;
+  if (!found && as !== 'where' && as !== 'why') return body;
+  const seed = [...new Set(JSON.stringify(body).match(/t-[0-9a-f]{10}/g) || [])];
+  const brief = briefOf(model, found);
+  const keep = (k) => body[k];
+  const head = { asked: keep('asked'), carried: keep('carried'), no_code: keep('no_code') };
+  if (as === 'what') return { brief, ...head, overview: overviewOf(model, found, { seed, code: [...((body.map && body.map.core) || []).slice(0, 4), ...((body.map && body.map.wiring) || []).slice(0, 2)] }) };
+  if (as === 'when') return { brief, ...head, timeline: timelineOf(model, found) };
+  if (as === 'why') return { brief, ...head, reasons: reasonsOf(model, found, { seed }) };
+  if (as === 'where') {
+    const m = body.map || {};
+    const places = [...(m.core || []), ...(body.trees || []).map((t) => t.function + (t.ref ? ' (' + t.ref + ')' : ''))];
+    return { brief, ...head, map: body.map ? { feature: m.feature, core: m.core, wiring: m.wiring, surface: m.surface } : undefined, code_at: body.trees ? [...new Set(places.filter((x) => / \(/.test(x)))] : undefined, commits_by_message: body.commits_by_message };
+  }
+  /* how: the code answer, with what governs each piece of it. */
+  const a = { brief, ...body };
+  delete a.summaries; delete a.more_context;
+  if (a.trees) a.trees = a.trees.map((t) => { const m = String(t.ref || '').match(/^(.*):(\d+)$/); const on = m ? onCodeOf(model, m[1], Number(m[2])) : undefined; return on ? { ...t, on_this_code: on } : t; });
+  if (a.context) a.context = a.context.filter((c) => !/^OPEN/.test(String(c.status || '')));
+  return a;
 }
