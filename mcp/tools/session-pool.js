@@ -293,8 +293,12 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
   let body = lx && lx.asked31 ? composeLenses(shaped, lx) : lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
   /* The lens sections are built afresh each call; what this stack already
-   * holds is named, not sent again (ask.js notTwice). */
-  if (lx) { s.ever = s.ever || new Map(); const nt = notTwice(body, pool.sent, pool.round, s.ever, pool.id); body = nt.answer; for (const id of nt.fresh) { if (!pool.sent.has(id)) pool.sent.set(id, pool.round); if (!s.ever.has(id)) s.ever.set(id, pool.id); } }
+   * holds is named, not sent again (ask.js notTwice) - this question's stack
+   * only. Across questions it was wrong: an agent working through a list was
+   * sent a thought as a side item for one question, then got only its id,
+   * "(earlier question)", when it was the answer to the next - and missed it
+   * (one-agent rounds: 4 and 5 of 14 found, against 8 and 9). */
+  if (lx) { const nt = notTwice(body, pool.sent, pool.round); body = nt.answer; for (const id of nt.fresh) if (!pool.sent.has(id)) pool.sent.set(id, pool.round); }
   if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])

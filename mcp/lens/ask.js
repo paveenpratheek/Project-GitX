@@ -90,16 +90,16 @@ function nextOf(lenses, found, overview, include) {
  * and the round it came in, a part already described keeps only its name,
  * and the brief comes once a stack. `sent` is the stack's id -> round. */
 const identity = (x) => (x && typeof x === 'object' ? x.id || x.open || (x.commit ? 'commit:' + x.commit : null) : null);
-export function notTwice(answer, sent, round, ever = null, stack = null) {
+export function notTwice(answer, sent, round) {
   const fresh = [];
-  /* ever: what this session sent in other stacks - a new question starts a
-   * new stack, but the agent still holds what the old ones gave it. */
-  const earlier = (id) => !!ever && ever.has(id) && ever.get(id) !== stack;
-  const before = (id) => (sent.has(id) && sent.get(id) < round) || earlier(id);
+  /* This question's stack only, never across questions: a thought sent as a
+   * side item for one question can be the answer to the next, and given there
+   * as a bare id "(earlier question)" the agent missed it (t-c266155064). */
+  const before = (id) => sent.has(id) && sent.get(id) < round;
   /* Within one answer too: the same rejected idea sat in reasons and in
    * included, and on every function its commit wrote. */
   const now = new Set();
-  const named = (id) => id.replace(/^commit:/, '') + (sent.has(id) && sent.get(id) < round ? ' (round ' + sent.get(id) + ')' : earlier(id) ? ' (earlier question)' : ' (above)');
+  const named = (id) => id.replace(/^commit:/, '') + (before(id) ? ' (round ' + sent.get(id) + ')' : ' (above)');
   /* The code answer comes first in the reply: a thought it already gives in
    * full - settled by a tree's commit, decided, waiting - is above. */
   const seen = (v) => { if (Array.isArray(v)) v.forEach(seen); else if (v && typeof v === 'object') { if (/^t-/.test(String(v.id || '')) && typeof v.text === 'string') now.add(v.id); for (const k of Object.keys(v)) if (k !== 'on_this_code') seen(v[k]); } };
