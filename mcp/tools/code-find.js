@@ -485,6 +485,7 @@ const DOCS_SHOWN = 2;
 const COMMITS_SHOWN = 6;
 const THOUGHTS_SHOWN = 6;
 const CONTEXT_SHOWN = 5;
+const LEARNED_EXTRA = 2;     // learned waiting thoughts shown beside the word search's, never in place of them
 const WHY_CHARS = 320;
 const cap = (s, n) => { s = String(s || '').replace(/\s+/g, ' ').trim(); return s.length <= n ? s : s.slice(0, n).replace(/\s+\S*$/, '') + '…'; };
 
@@ -1078,15 +1079,25 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
    * to joins the answer itself, not only its order. Asked in other words the
    * search can miss it, and naming an id the agent must open again is a turn
    * the agent pays for. */
-  if (thermal) for (const [k, v] of [...(use || [])].sort((a, b) => a[1].a - b[1].a)) {
+  /* Beside the word search's own, never in place of it: learned thoughts used
+   * to go to the front without limit, and words an agent working through a
+   * list had attached to many thoughts pushed the one the question asked for
+   * out of the five shown (held-out, two wordings, three answers lost). Now
+   * the strongest LEARNED_EXTRA not already shown join after them. */
+  const learnedCtx = [];
+  if (thermal) for (const [k, v] of [...(use || [])].sort((a, b) => b[1].a - a[1].a)) {
     if (!k.startsWith('t-') || !learnedUse(v)) continue;
     const n = rx.nodes.get(k);
     if (!n) continue;
-    /* Already listed below the cut, or not at all: either way, to the front. */
-    if (n.layer === 'context') { const i = context.findIndex((x) => x.id === k); const it = i >= 0 ? context.splice(i, 1)[0] : { id: k, text: n.text, topic: n.topic }; context.unshift(it); }
-    else if (!decidedCandidates.some((x) => x.t.id === k)) decidedCandidates.push({ t: { id: k, text: n.text }, share: Math.max(DECIDED_FLOOR, shareOf({ id: k, text: n.text })) });
+    if (n.layer === 'context') {
+      if (learnedCtx.length >= LEARNED_EXTRA || context.slice(0, CONTEXT_SHOWN).some((x) => x.id === k)) continue;
+      const i = context.findIndex((x) => x.id === k);
+      learnedCtx.push(i >= 0 ? context.splice(i, 1)[0] : { id: k, text: n.text, topic: n.topic });
+    } else if (!decidedCandidates.some((x) => x.t.id === k)) decidedCandidates.push({ t: { id: k, text: n.text }, share: Math.max(DECIDED_FLOOR, shareOf({ id: k, text: n.text })) });
   }
-  const contextBest = Math.max(0, ...context.slice(0, CONTEXT_SHOWN).map(shareOf), ...decidedCandidates.map((x) => x.share));
+  if (learnedCtx.length) context.splice(Math.min(CONTEXT_SHOWN, context.length), 0, ...learnedCtx);
+  const shownCtx = CONTEXT_SHOWN + learnedCtx.length;
+  const contextBest = Math.max(0, ...context.slice(0, shownCtx).map(shareOf), ...decidedCandidates.map((x) => x.share));
   /* With no code, the commits whose messages say it are what the code side
    * has - c-sidebar's answer is one, and the context led over it on the
    * code score alone. */
@@ -1120,8 +1131,8 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   const decided = decidedCandidates.filter((x) => !seen.thoughts.has(x.t.id)).sort((a, b) => b.share - a.share).slice(0, DECIDED_SHOWN).map((x) => x.t);
   const contextOut = {
     decided: decided.length ? decided.map((t) => ({ id: t.id, status: statusFor(t.id), text: t.text })) : undefined,
-    context: context.slice(0, CONTEXT_SHOWN).map((r) => ({ id: r.id, status: statusFor(r.id), text: r.text, topic: r.topic ? (rx.topics.get(r.topic) || {}).title : undefined })),
-    more_context: context.length > CONTEXT_SHOWN ? context.length - CONTEXT_SHOWN + ' more waiting thoughts hold these words - gitx_thought outcome or topic lists them' : undefined
+    context: context.slice(0, shownCtx).map((r) => ({ id: r.id, status: statusFor(r.id), text: r.text, topic: r.topic ? (rx.topics.get(r.topic) || {}).title : undefined })),
+    more_context: context.length > shownCtx ? context.length - shownCtx + ' more waiting thoughts hold these words - gitx_thought outcome or topic lists them' : undefined
   };
   const out = {
     asked: query,
@@ -1168,7 +1179,7 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
   }
   docs.forEach(({ r }, i) => nodes.push({ id: codeId(r), layer: 'thought', role: 'result', rank: i + 1, kind: 'doc', status: 'DOC', text: cap(r.name, 120) }));
   decided.forEach((t, i) => nodes.push({ id: t.id, layer: 'thought', role: 'result', rank: i + 1, status: statusFor(t.id), text: cap(t.text, 160) }));
-  context.slice(0, CONTEXT_SHOWN).forEach((r, i) => nodes.push({ id: r.id, layer: 'context', role: 'result', rank: i + 1, kind: r.kind, status: statusFor(r.id), text: cap(r.text, 160) }));
+  context.slice(0, shownCtx).forEach((r, i) => nodes.push({ id: r.id, layer: 'context', role: 'result', rank: i + 1, kind: r.kind, status: statusFor(r.id), text: cap(r.text, 160) }));
   const monitor = {
     phases: {
       mode: 'code',

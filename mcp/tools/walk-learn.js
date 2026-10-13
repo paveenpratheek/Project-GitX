@@ -26,8 +26,10 @@
  *             of it for its first question - the opens were filed under the
  *             rewording, and the next agent asking in the first words matched
  *             a walk with nothing used in it. One agent's walks within
- *             CHAIN_GAP of each other now share what was used, and the earlier
- *             ones learn the later questions' words as words added.
+ *             CHAIN_GAP of each other share what was used, and the earlier
+ *             ones learn the later questions' words as words added - when
+ *             they are about the same thing (search-chain.js): an agent
+ *             working through a list asks unrelated questions minutes apart.
  *   reads     what the agent read with its own tools, from hook.js: a thought
  *             file is that thought, a range of a code file the functions it
  *             covers - counted like an open for the walk it happened in.
@@ -39,6 +41,7 @@ import { readPaths, pathsHome } from './path-recorder.js';
 import { keyOf, ASKING } from './learn.js';
 import { termsOf, questionTerms, buildCodeIndex, shortName } from './code-find.js';
 import { repoKey } from './path-recorder.js';
+import { searches, walkForEvent } from './search-chain.js';
 
 const DECAY = 0.98;          // per day of a path's age
 const USED = 1;              // opened or expanded
@@ -48,7 +51,6 @@ const LEARN_MIN = 1.5;       // a word is learned once paths worth this much add
 const KEY_OVERLAP = 0.5;     // keys match when they share this share of the larger one
 const PATHS_READ = 5000;
 const READ = 1;              // read with the agent's own tools, through hook.js
-const CHAIN_GAP = 10 * 60 * 1000;   // one agent's walks closer than this are one search
 const READ_AFTER = 10 * 60 * 1000;  // reads this long after an agent's last walk still belong to it
 const WHOLE_FILE = 3;       // a read with no range counts for a file of at most this many functions
 
@@ -102,20 +104,24 @@ function walks(repoDir, dataDir, rx) {
   return out;
 }
 
-/* One agent's walks, in order: each is credited with what the later ones in
- * its chain used, and learns their questions' words as its own added words. */
+/* One agent's walks, in order, cut into searches - close in time and about
+ * the same thing (search-chain.js): within a search each walk is credited
+ * with what the later ones used, and learns their questions' words as its
+ * own added words. */
 function chain(out) {
   const byAgent = new Map();
   for (const w of out) if (w.agent) { if (!byAgent.has(w.agent)) byAgent.set(w.agent, []); byAgent.get(w.agent).push(w); }
-  for (const ws of byAgent.values()) {
-    ws.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+  for (const all of byAgent.values()) {
+    all.sort((a, b) => String(a.at).localeCompare(String(b.at)));
+    for (const ws of searches(all.map((w) => ({ w, at: w.at, words: new Set(w.key), nodes: new Set(w.shown.keys()) }))).map((g) => g.map((x) => x.w))) {
     const own = ws.map((w) => ({ used: new Map(w.used), words: [...questionTerms([...w.asked].join(' '))].filter((t) => !t.includes('_')) }));
     for (let i = 0; i < ws.length; i++) {
-      for (let j = i + 1; j < ws.length && Date.parse(ws[j].at) - Date.parse(ws[j - 1].at) <= CHAIN_GAP; j++) {
+      for (let j = i + 1; j < ws.length; j++) {
         for (const [k, v] of own[j].used) ws[i].used.set(k, Math.max(ws[i].used.get(k) || 0, v));
         for (const [k, n] of ws[j].names) if (!ws[i].names.has(k)) ws[i].names.set(k, n);
         for (const t of [...own[j].words, ...ws[j].added]) if (!ws[i].asked.has(t) && !ASKING.has(t) && !ws[i].added.includes(t)) ws[i].added.push(t);
       }
+    }
     }
   }
 }
@@ -133,32 +139,36 @@ function readsOf(repoDir, dataDir) {
   return reads;
 }
 
-/* Each read goes to the walk it happened in: same repository folder, after
- * the walk began and before that agent's next one - or within READ_AFTER of
- * its last. A thought file is the thought; a code range, the functions it
- * covers at HEAD. */
+/* Each read goes to the walk it belongs to (search-chain.js): the latest
+ * walk in the same repository folder, within READ_AFTER before it, that it
+ * relates to - the thought or a function in that walk's answer, a file the
+ * answer pointed into, or code holding the question's own words. A read that
+ * relates to no walk teaches nothing. A thought file is the thought; a code
+ * range, the functions it covers at HEAD. */
 function creditReads(repoDir, dataDir, out) {
   const reads = readsOf(repoDir, dataDir);
   if (!reads.length) return;
   let regions = null;
-  const keysOf = (r) => {
-    if (r.thought) return [r.thought];
+  const touchedOf = (r) => {
     if (!regions) { try { regions = buildCodeIndex(repoDir).regions; } catch (_) { regions = []; } }
     const inFile = regions.filter((x) => x.file === r.file && x.kind !== 'doc');
-    const hit = r.from ? inFile.filter((x) => x.to >= r.from && x.from <= (r.to || r.from + 200)) : inFile.length <= WHOLE_FILE ? inFile : [];
-    return hit.map((x) => x.file + '::' + shortName(x));
+    return { inFile, hit: r.from ? inFile.filter((x) => x.to >= r.from && x.from <= (r.to || r.from + 200)) : inFile.length <= WHOLE_FILE ? inFile : [] };
+  };
+  const keysOf = (r) => (r.thought ? [r.thought] : touchedOf(r).hit.map((x) => x.file + '::' + shortName(x)));
+  const wordsOf = (w) => new Set([...w.key, ...questionTerms([...w.asked].join(' '))].filter((t) => !t.includes('_')));
+  const relates = (w, r) => {
+    const keys = keysOf(r);
+    if (keys.some((k) => w.shown.has(k) || w.used.has(k))) return true;
+    if (r.thought) return false;
+    if ([...w.shown.keys()].some((k) => k.split('::')[0] === r.file)) return true;
+    const words = wordsOf(w), { inFile, hit } = touchedOf(r);
+    return (r.from ? hit : inFile).some((x) => [...words].some((t) => x.own && x.own.has(t)));
   };
   const same = (a, b) => !!a && !!b && path.resolve(String(a)).toLowerCase() === path.resolve(String(b)).toLowerCase();
-  const sorted = out.slice().sort((a, b) => String(a.at).localeCompare(String(b.at)));
-  for (const w of sorted) {
-    const t0 = Date.parse(w.at);
-    const next = sorted.find((x) => x !== w && x.agent === w.agent && Date.parse(x.at) > t0);
-    const t1 = next ? Date.parse(next.at) : t0 + READ_AFTER;
-    for (const r of reads) {
-      const t = Date.parse(r.at);
-      if (t < t0 || t >= t1 || !same(r.repo, w.repo)) continue;
-      for (const k of keysOf(r)) { w.used.set(k, Math.max(w.used.get(k) || 0, READ)); if (!w.names.has(k)) w.names.set(k, k); }
-    }
+  for (const r of reads) {
+    const w = walkForEvent(out.filter((x) => same(r.repo, x.repo)), r.at, READ_AFTER, (x) => relates(x, r));
+    if (!w) continue;
+    for (const k of keysOf(r)) { w.used.set(k, Math.max(w.used.get(k) || 0, READ)); if (!w.names.has(k)) w.names.set(k, k); }
   }
 }
 

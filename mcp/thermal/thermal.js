@@ -41,12 +41,13 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { NO_CONSOLE } from '../tools/no-console.js';
 import { readPaths, pathsHome, repoKey } from '../tools/path-recorder.js';
-import { buildCodeIndex, questionTerms, termsOf, shortName } from '../tools/code-find.js';
+import { buildCodeIndex, questionTerms, termsOf, shortName, rankIndexFor } from '../tools/code-find.js';
+import { searches, walkForEvent } from '../tools/search-chain.js';
 
 const DAY = 86400000;
 const DECAY = 0.98;              // per day of an event's age, as path learning
-const CHAIN_GAP = 10 * 60000;    // one agent's questions closer than this are one search
 const READ_AFTER = 10 * 60000;   // a read this long after an agent's last question still belongs to it
+const CITE_AFTER = 60 * 60000;   // a final answer cites what the whole session found
 const EV = { expand: 1, read: 1, edit: 2, cite: 2, open: 1, shown: 0.25 };
 const SPREAD_HIT = 1, SPREAD_OTHER = 0.15;   // a whole-file read: lines holding the words, and the rest
 const RANGE_REGIONS = 3;         // a read across more functions than this attaches less to each
@@ -93,37 +94,30 @@ function jsonl(file) {
   try { return fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim()).map((l) => { try { return JSON.parse(l); } catch (_) { return null; } }).filter(Boolean); } catch (_) { return []; }
 }
 
-/* The words a walk teaches: the distinctive ones of its question and of every
- * question its agent asked around it, rewordings included. */
-function chainWords(walks) {
+/* The words a walk teaches: the distinctive ones of its question and of the
+ * questions its agent asked around it about the same thing, rewordings
+ * included (search-chain.js) - not every question of a session. */
+const stackNodes = (w) => new Set(((w.stack && w.stack.nodes) || []).filter((n) => n.role === 'result').map((n) => String(n.id)));
+const askedWords = (w, rare) => { const out = new Set(); for (const s of [w.question.query, ...(w.path || []).filter((x) => x.kind === 'refine').map((x) => x.asked)]) for (const t of questionTerms(s || '')) if (!t.includes('_') && rare(t)) out.add(t); return out; };
+function chainWords(walks, rare) {
   const byAgent = new Map();
   for (const w of walks) { const a = (w.agent && w.agent.id) || w.id; if (!byAgent.has(a)) byAgent.set(a, []); byAgent.get(a).push(w); }
   for (const ws of byAgent.values()) {
     ws.sort((a, b) => String(a.at).localeCompare(String(b.at)));
-    let group = [];
-    const close = () => {
+    for (const group of searches(ws.map((w) => ({ w, at: w.at, words: askedWords(w, rare), nodes: stackNodes(w) }))).map((g) => g.map((x) => x.w))) {
       const words = new Set();
       for (const w of group) for (const s of [w.question.query, ...(w.path || []).filter((x) => x.kind === 'refine').map((x) => x.asked)]) for (const t of questionTerms(s || '')) if (!t.includes('_')) words.add(t);
       for (const w of group) w._words = words;
-    };
-    for (const w of ws) {
-      if (group.length && Date.parse(w.at) - Date.parse(group[group.length - 1].at) > CHAIN_GAP) { close(); group = []; }
-      group.push(w);
     }
-    if (group.length) close();
   }
 }
 
-/* The walk an event made outside GitX belongs to: the same repository folder,
- * the latest question asked before it, within READ_AFTER. */
-function walkFor(walks, ev) {
-  const t = Date.parse(ev.at), repo = norm(ev.repo);
-  let best = null;
-  for (const w of walks) {
-    const tw = Date.parse(w.at);
-    if (tw <= t && t - tw <= READ_AFTER && norm(w.repo) === repo && (!best || tw > Date.parse(best.at))) best = w;
-  }
-  return best;
+/* The walk an event made outside GitX belongs to (search-chain.js): the same
+ * repository folder, the latest question within the window before it that
+ * the event relates to. */
+function walkFor(walks, ev, window, relates) {
+  const repo = norm(ev.repo);
+  return walkForEvent(walks.filter((w) => norm(w.repo) === repo), ev.at, window, relates);
 }
 
 /* ------------------------------------------------------------ the model */
@@ -156,7 +150,20 @@ export function thermalFor(repoDir, dataDir) {
   const regionAt = (file, line) => (byFile.get(file) || []).find((r) => line >= r.from && line <= r.to) || null;
 
   const walks = readPaths(repoDir, dataDir, 5000).filter((p) => !p.started_by && p.question && p.question.query);
-  chainWords(walks);
+  chainWords(walks, rare);
+  /* Does an event relate to a walk: a thought in its answer or holding its
+   * words, a file its answer pointed into, code holding its words. */
+  let rx = null;
+  const thoughtWords = (id) => { if (!rx) { try { rx = rankIndexFor(repoDir); } catch (_) { rx = { nodes: new Map() }; } } const n = rx.nodes.get(id); return n ? n.own : new Set(); };
+  const answerFiles = (w) => new Set([...stackNodes(w)].filter((id) => id.startsWith('code:')).map((id) => resolveFile(id.slice(5, id.lastIndexOf(':')))).filter(Boolean));
+  const relatesThought = (w, id) => stackNodes(w).has(id) || [...(w._words || [])].some((t) => thoughtWords(id).has(t));
+  const relatesCode = (w, fileIn, from, to) => {
+    const file = resolveFile(fileIn);
+    if (!file) return false;
+    if (answerFiles(w).has(file)) return true;
+    const regs = (byFile.get(file) || []).filter((r) => !from || (r.to >= from && r.from <= (to || from)));
+    return regs.some((r) => [...(w._words || [])].some((t) => rare(t) && r.own && r.own.has(t)));
+  };
 
   const vocab = new Map();        // node key -> Map(word -> { a, b })
   const heat = new Map();         // file -> Map(line -> [{ w, words }])
@@ -214,16 +221,18 @@ export function thermalFor(repoDir, dataDir) {
   }
   /* From the read hook and the edit and stop hooks. */
   for (const r of jsonl(path.join(dataDir, 'reads', key + '.jsonl'))) {
-    const w = walkFor(walks, r);
+    const w = walkFor(walks, r, READ_AFTER, (x) => (r.thought ? relatesThought(x, r.thought) : relatesCode(x, r.file, r.from, r.to)));
     if (!w) continue;
     if (r.thought) { attach(r.thought, w._words || [], EV.read * age(r.at)); use(w, r.thought); }
     else codeEvent(w, 'read', r.file, r.from, r.to, r.head, r.at);
   }
   for (const e of jsonl(path.join(dataDir, 'thermal', key + '.jsonl'))) {
-    const w = walkFor(walks, e);
-    if (!w) continue;
-    if (e.kind === 'edit') codeEvent(w, 'edit', e.file, e.from, e.to, e.head, e.at);
+    if (e.kind === 'edit') { const w = walkFor(walks, e, READ_AFTER, (x) => relatesCode(x, e.file, e.from, e.to)); if (w) codeEvent(w, 'edit', e.file, e.from, e.to, e.head, e.at); }
+    /* A final answer cites what the session found, question by question: each
+     * reference goes to the walk it relates to, not all of them to the last. */
     if (e.kind === 'cite') for (const ref of e.refs || []) {
+      const w = walkFor(walks, e, CITE_AFTER, (x) => (ref.id ? relatesThought(x, ref.id) : relatesCode(x, ref.file, ref.line, ref.to || ref.line)));
+      if (!w) continue;
       if (ref.id) { attach(ref.id, w._words || [], EV.cite * age(e.at)); use(w, ref.id); continue; }
       const file = resolveFile(ref.file);
       if (!file) continue;
