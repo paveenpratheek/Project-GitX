@@ -255,7 +255,7 @@ function runOne(arm, chain, n, walkDir) {
         score: scoreRun(shown, cited, key), score_code: scoreRun(shown, cited, keyCode), shown, cited, key, key_code: keyCode,
         answer: text, calls: calls.map((x) => x.tool.replace('mcp__gitx__', '') + ' ' + JSON.stringify(x.input).slice(0, 200))
       });
-      for (const d of [frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
+      for (const d of [frozen.parent || frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
     });
   });
 }
@@ -331,7 +331,7 @@ function rescore(files) {
   for (const f of files) { const j = JSON.parse(fs.readFileSync(path.resolve(f), 'utf8')); at = at || j.at; if (j.at !== at) throw new Error('runs at different commits: ' + j.at + ' and ' + at); runs.push(...j.runs); }
   const frozen = freeze(at);
   const key = keyOf(frozen.dir), keyCode = keyCodeOf(frozen.dir);
-  fs.rmSync(frozen.dir, { recursive: true, force: true });
+  fs.rmSync(frozen.parent || frozen.dir, { recursive: true, force: true });
   for (const r of runs) { r.score = scoreRun(r.shown, r.cited, key); r.score_code = scoreRun(r.shown, r.cited, keyCode); }
   const arms = [...new Set(runs.map((r) => r.arm))];
   const agents = Math.max(...runs.map((r) => r.n));
@@ -354,7 +354,7 @@ async function main() {
   const dir = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, 'task-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-task/0', when: new Date().toISOString(), at: AT, base: BASE, model: MODEL, arms: ARMS, chains: CHAINS, agents: AGENTS, walks: WALKS_ROOT, aborted: refused || undefined, prompt: PROMPT('<copy>'), runs: rows }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-task/0', when: new Date().toISOString(), at: AT, base: BASE, model: MODEL, arms: ARMS, chains: CHAINS, agents: AGENTS, walks: WALKS_ROOT, aborted: refused || undefined, prompt: QUESTION ? QPROMPT('<copy>', ARMS[0]) : PROMPT('<copy>'), runs: rows }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
 }
 

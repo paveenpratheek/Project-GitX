@@ -157,6 +157,20 @@ export function composeLenses(body, { model, found, lenses, include, effort }) {
   const inc = includedOf(model, found, include, { seed, n: caps.include });
   if (inc) out.included = inc;
   out.next = nextOf(lenses, found, overview, include);
+  /* An overview names the parts; an agent that wants all of it asked about
+   * four of eight and stopped (natural-prompt run). cover_all is one call per
+   * part, ready to copy, so all of it is one call a part away. */
+  /* Every part the subject has, whatever the effort: the plan is for an agent
+   * that wants all of it, so a brief overview does not shorten it. */
+  if (overview) {
+    const n = new Map();
+    for (const r of found.subject.records) if (r.topic && model.rx.topics.has(r.topic)) n.set(r.topic, (n.get(r.topic) || 0) + 1);
+    const parts = [...n].sort((x, y) => y[1] - x[1]).map(([t]) => t);
+    if (parts.length > 1) out.cover_all = {
+      note: 'to know all of ' + found.subject.phrase + ', one call per part:',
+      calls: parts.map((t) => ({ query: model.rx.topics.get(t).title, lens: ['what', 'why'], topics: [t], include: ['rejected', 'open', 'constraint', 'rule'], effort: 'brief' }))
+    };
+  }
   return effort === 'brief' ? brief(out, caps.budget) : out;
 }
 
@@ -172,7 +186,7 @@ function brief(a, budget) {
       for (const k of Object.keys(o)) {
         if (k === 'text' && typeof o[k] === 'string' && o[k].length > text) o[k] = o[k].slice(0, text - 1) + '…';
         else if (['because', 'held_back', 'evidence'].includes(k) && list < 2) delete o[k];
-        else if (Array.isArray(o[k]) && o[k].length > list && k !== 'next' && k !== 'lens') o[k] = o[k].slice(0, list);
+        else if (Array.isArray(o[k]) && o[k].length > list && !['next', 'lens', 'calls', 'include', 'topics'].includes(k)) o[k] = o[k].slice(0, list);
       }
     });
   }

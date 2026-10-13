@@ -154,7 +154,7 @@ function runOne(c, arm, at) {
         settled_by: c.prompt ? [...settledBy] : undefined,
         answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
       });
-      for (const d of [frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
+      for (const d of [frozen.parent || frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
     });
   });
 }

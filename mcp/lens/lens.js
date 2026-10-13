@@ -272,9 +272,27 @@ export function conceptsOf(model, query) {
 
 /* The subject: the narrowest concept; the rest are its context. A concept
  * as common as a word of talk is neither. */
+/* The project's own name: the repository folder's words that are not
+ * "project" or "repo" ("Project GitX" -> gitx). */
+const projectWords = (repoDir) => path.basename(repoDir).toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !['project', 'repo', 'the'].includes(w));
+
+/* The whole project as a subject: every thought and commit, every topic a part. */
+function wholeProject(model, name) {
+  const records = model.records.filter((r) => r.n && r.layer !== 'topic');
+  return { subject: { phrase: name, own: records.length, branch: 0, records, names: new Map(), first: firstOf(records) }, context: [], nested: false, whole: true };
+}
+
 export function subjectOf(model, query) {
   const cs = conceptsOf(model, query).filter((c) => c.own >= 3 && c.own <= model.records.length * 0.25);
-  if (!cs.length) return null;
+  /* A question about the project itself names it, and its name is in most of
+   * the record - too common to be a concept, so "GitX project overview" got
+   * no overview at all (natural-prompt run). Named with nothing narrower, the
+   * subject is the whole project. */
+  if (!cs.length) {
+    const toks = String(query || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+    const name = projectWords(model.repoDir).find((w) => toks.includes(w));
+    return name ? wholeProject(model, name) : null;
+  }
   cs.sort((a, b) => a.records.length - b.records.length);
   /* A question that lists parts beside their whole - "the 4th Dimension:
    * layers, stack, the agent's walk, path knowledge" - is about the whole: a

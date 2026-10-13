@@ -126,7 +126,11 @@ export function loadCases() {
 /* --------------------------------------------------------------- freeze */
 
 export function freeze(at, { thinking = true } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-bench-'));
+  /* Named after the project, inside a plain temp folder - never "gitx-bench":
+   * an agent working in a folder called a benchmark acted like one was being
+   * checked, verifying against git log and dumping .gitx (t-87ae86e034). */
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'w'));
+  const dir = path.join(parent, path.basename(REPO));
   git(['clone', '-q', '--no-hardlinks', '--no-checkout', REPO, dir]);
   git(['checkout', '-q', '--detach', at], dir);
   const history = git(['rev-list', 'HEAD'], dir).split('\n').filter(Boolean);
@@ -180,7 +184,7 @@ export function freeze(at, { thinking = true } = {}) {
       }
     }
   }
-  return { dir, when, head: history[0], stats, known };
+  return { dir, parent, when, head: history[0], stats, known };
 }
 
 /* The repository itself, for --live: only read, and never removed. */
@@ -387,7 +391,7 @@ function main() {
       console.log('\nSaved ' + path.relative(REPO, file));
     }
   } finally {
-    for (const f of [frozenFull, frozenBare]) if (f && !f.live && f.dir !== REPO) fs.rmSync(f.dir, { recursive: true, force: true });
+    for (const f of [frozenFull, frozenBare]) if (f && !f.live && f.dir !== REPO) fs.rmSync(f.parent || f.dir, { recursive: true, force: true });
   }
 }
 
