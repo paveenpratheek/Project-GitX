@@ -13,6 +13,13 @@
  * thought - to <data folder>/reads/<repository key>.jsonl, and walk-learn.js
  * counts a read like an open for the walk it happened in.
  *
+ * Antigravity (agy) is read too: its hooks send camelCase - toolCall,
+ * conversationId, workspacePaths, transcriptPath - with its own tools
+ * (view_file, write_to_file, replace_file_content, multi_replace_file_content),
+ * run synchronously, and expect JSON back, so every run prints {}. Set it up
+ * in ~/.gemini/config/hooks.json on PostToolUse for those four tools and on
+ * Stop.
+ *
  * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), and
  * as a Stop hook, in .claude/settings.json:
  *
@@ -74,6 +81,37 @@ function citations(text) {
   for (const m of text.matchAll(/\bt-[0-9a-f]{10}\b/g)) add({ id: m[0] });
   return refs.slice(0, 40);
 }
+/* agy's tool arguments may arrive JSON-encoded ("\"e:\\\\x\""), as in its transcripts. */
+const unq = (v) => { if (typeof v === 'string' && /^"[\s\S]*"$/.test(v)) { try { return JSON.parse(v); } catch (_) {} } return v; };
+
+/* An agy hook event in the shape the rest of this file reads. */
+const AGY_TOOLS = { view_file: 'Read', write_to_file: 'Write', replace_file_content: 'Edit', multi_replace_file_content: 'MultiEdit' };
+function fromAgy(e) {
+  const base = { session_id: e.conversationId || null, cwd: (e.workspacePaths || [])[0] || null, transcript_path: e.transcriptPath || null, agy: true };
+  if (e.terminationReason !== undefined || e.executionNum !== undefined) return { ...base, hook_event_name: 'Stop' };
+  const call = e.toolCall || {}, a = call.args || {};
+  const tool = AGY_TOOLS[call.name];
+  if (!tool) return { ...base, hook_event_name: 'PostToolUse', tool_name: call.name };
+  const file = unq(a.AbsolutePath || a.TargetFile);
+  const input = { file_path: file };
+  if (tool === 'Read') { const from = Number(unq(a.StartLine)) || 0, to = Number(unq(a.EndLine)) || 0; if (from) { input.offset = from; if (to >= from) input.limit = to - from + 1; } }
+  if (tool === 'Write') input.content = unq(a.CodeContent);
+  if (tool === 'Edit') input.new_string = unq(a.ReplacementContent);
+  if (tool === 'MultiEdit') { let chunks = unq(a.ReplacementChunks); if (typeof chunks === 'string') { try { chunks = JSON.parse(chunks); } catch (_) { chunks = []; } } input.edits = (chunks || []).map((c) => ({ new_string: unq(c.ReplacementContent) })); }
+  return { ...base, hook_event_name: 'PostToolUse', tool_name: tool, tool_input: input };
+}
+
+/* agy's transcript: one step a line; the answer is the model's last
+ * PLANNER_RESPONSE with content. */
+function lastAgyAnswer(transcript) {
+  let text = '';
+  for (const l of fs.readFileSync(transcript, 'utf8').split('\n')) {
+    let m; try { m = JSON.parse(l); } catch (_) { continue; }
+    if (m.source === 'MODEL' && m.type === 'PLANNER_RESPONSE' && typeof m.content === 'string' && m.content.trim()) text = m.content;
+  }
+  return text;
+}
+
 function lastAnswer(transcript) {
   let text = '';
   for (const l of fs.readFileSync(transcript, 'utf8').split('\n')) {
@@ -88,7 +126,8 @@ function lastAnswer(transcript) {
 async function main() {
   let input = '';
   for await (const chunk of process.stdin) input += chunk;
-  const e = JSON.parse(input);
+  const raw = JSON.parse(input);
+  const e = raw.toolCall || raw.conversationId ? fromAgy(raw) : raw;
   const data = dataDir();
   if (!data) return;
   const at = new Date().toISOString(), session = e.session_id || null;
@@ -98,7 +137,7 @@ async function main() {
     if (!e.transcript_path) return;
     const p = place(e.cwd, null);
     if (!p) return;
-    const refs = citations(lastAnswer(e.transcript_path));
+    const refs = citations(e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path));
     if (refs.length) append(data, 'thermal', p.root, { at, session, kind: 'cite', repo: p.root, head: p.head, refs });
     return;
   }
@@ -135,4 +174,5 @@ async function main() {
   });
 }
 
-main().catch(() => {}).finally(() => process.exit(0));
+/* agy runs hooks in line and wants JSON back; Claude Code ignores it. */
+main().catch(() => {}).finally(() => { process.stdout.write('{}\n'); process.exit(0); });
