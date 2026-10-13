@@ -589,6 +589,9 @@ setInterval(() => {
   for (const dir of sessions.keys()) { try { warm(dir); } catch (_) { /* answered at the next call instead */ } }
 }, WARM_EVERY).unref();
 const CODE_FIRST_HOW = 'Read the map first: (Ask for less when you need less: focus "thinking" for decisions and why, focus "code" for code, budget for a cap in tokens, find for an exact name or value.) core is the code that implements it, wiring where it is connected (imports, calls, shared event names and URLs), surface where it is shown - whole functions with line ranges at HEAD - and words are the feature\'s own words. trees give the core\'s best functions in full: the lines worth reading, the commits git blame names for them with why the code is as it is, the thoughts each settled - status first - and what is still open. Open any other map entry with expand. For more, ask again with a word from words or one you read, or add / drop words: question says whether GitX took it as new or a follow-up, and why, and a follow-up gives only what changed - map entries new, back or hidden, new lines and thoughts of functions already given (given_in) - nothing twice. words are the pool\'s words with their weights. thinking holds doc sections; summaries what the topic does today; context, beside the stack, is waiting thinking - open questions, proposals, decided but not built, rules. no_code means nothing at HEAD holds the question: what is there is plans and discussion. carried names words kept from your previous question.';
+/* With v3.1 the how-to leads with asking by structure: the schema says what
+ * each option is, this says how they go together, once a session. */
+const CODE_FIRST_HOW_V31 = 'Ask by structure, the subject in words: { "query": "<the subject>", "lens": ["what","why"], "include": ["rejected","open","constraint"], "effort": "brief" }. lens is what you want back - what (its parts and every kind of thinking in each), how (code with the commits and rules on it), where (places only), when (commits in order with reasons), why (decisions, rejected ideas, constraints, rules, open questions, evidence) - several in one call. include gives those kinds in full, kept to the subject, instead of listing them repo-wide in another call. topics keeps to parts (tp-...). effort is brief, normal or deep. Every answer ends with next: copy one of its calls rather than rewording. brief is the one-line what-it-is; the rest is the lens you asked for, nothing else. ' + CODE_FIRST_HOW;
 function lean(tool, result) {
   const first = result && Array.isArray(result.content) ? result.content[0] : null;
   if (!first || first.type !== 'text') return result;
@@ -1227,7 +1230,7 @@ async function handleToolCall(name, args) {
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
-        return reply({ repo: target.dir, ...r.answer, how_to_use: CODE_FIRST_HOW });
+        return reply({ repo: target.dir, ...r.answer, how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */

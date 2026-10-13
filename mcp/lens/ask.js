@@ -62,7 +62,8 @@ export function includedOf(model, found, kinds, { seed = [], n = 4 } = {}) {
       if (code.length) out.code = code;
     } else if (KINDS.includes(k)) {
       const rs = pool.filter((r) => kindOf(r.n) === k).sort(order).slice(0, n);
-      if (rs.length) out[k] = rs.map((r) => item(model, r, 160));
+      /* An empty kind is said, so the agent does not go and list it repo-wide. */
+      out[k] = rs.length ? rs.map((r) => item(model, r, 160)) : 'none recorded about ' + (found ? found.subject.phrase : 'this');
     }
   }
   return Object.keys(out).length ? out : undefined;

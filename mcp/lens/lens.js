@@ -336,10 +336,22 @@ export function kindOf(n) {
 /* The thoughts an answer chooses from: the subject's own, and those the word
  * search ranked for this question (seed), which come first in their kind -
  * so the one thought a question is about is not lost to a better-linked one. */
+export function focusTopic(records) {
+  const n = new Map();
+  for (const r of records) if (r.topic && r.layer !== 'topic') n.set(r.topic, (n.get(r.topic) || 0) + 1);
+  const all = [...n.values()].reduce((a, b) => a + b, 0);
+  const top = [...n].sort((a, b) => b[1] - a[1])[0];
+  return top && top[1] >= 0.5 * all && top[1] >= 3 ? top[0] : null;
+}
 export function poolOf(model, found, seed) {
   const pool = new Map();
   for (const id of seed || []) { const r = model.byId.get(id); if (r && r.n && (r.layer === 'thought' || r.layer === 'context')) pool.set(id, r); }
   if (found) for (const r of thoughtsIn(found.subject.records)) if (!pool.has(r.id)) pool.set(r.id, r);
+  /* A subject that is mostly one topic is that topic: its thoughts count even
+   * when they never say the phrase. "path knowledge" named none of its four
+   * rejected ideas, all filed under Path knowledge. */
+  const t = found && focusTopic(found.subject.records);
+  if (t) for (const r of model.records) if (r.topic === t && r.n && (r.layer === 'thought' || r.layer === 'context') && !pool.has(r.id)) pool.set(r.id, r);
   return [...pool.values()];
 }
 export function rankWith(model, seed, ctxIds = new Set()) {
