@@ -81,6 +81,60 @@ function nextOf(lenses, found, overview, include) {
   return out.slice(0, 3);
 }
 
+/* Nothing twice, for the lens sections too. The base answer already sends a
+ * function, commit or thought once per question's stack and names it after
+ * that; the lens sections were built afresh each call and sent whole - on
+ * five sub-questions about one subject 50-70% of the ids in answers 2-4 had
+ * been sent already, and the answers stayed at 2-4k tokens where the base
+ * ones fell to 300-1,700. Here an item the stack already holds becomes its id
+ * and the round it came in, a part already described keeps only its name,
+ * and the brief comes once a stack. `sent` is the stack's id -> round. */
+const identity = (x) => (x && typeof x === 'object' ? x.id || x.open || (x.commit ? 'commit:' + x.commit : null) : null);
+export function notTwice(answer, sent, round, ever = null, stack = null) {
+  const fresh = [];
+  /* ever: what this session sent in other stacks - a new question starts a
+   * new stack, but the agent still holds what the old ones gave it. */
+  const earlier = (id) => !!ever && ever.has(id) && ever.get(id) !== stack;
+  const before = (id) => (sent.has(id) && sent.get(id) < round) || earlier(id);
+  /* Within one answer too: the same rejected idea sat in reasons and in
+   * included, and on every function its commit wrote. */
+  const now = new Set();
+  const named = (id) => id.replace(/^commit:/, '') + (sent.has(id) && sent.get(id) < round ? ' (round ' + sent.get(id) + ')' : earlier(id) ? ' (earlier question)' : ' (above)');
+  /* The code answer comes first in the reply: a thought it already gives in
+   * full - settled by a tree's commit, decided, waiting - is above. */
+  const seen = (v) => { if (Array.isArray(v)) v.forEach(seen); else if (v && typeof v === 'object') { if (/^t-/.test(String(v.id || '')) && typeof v.text === 'string') now.add(v.id); for (const k of Object.keys(v)) if (k !== 'on_this_code') seen(v[k]); } };
+  seen([answer.trees, answer.decided, answer.context]);
+  const walk = (o) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const k of Object.keys(o)) {
+      const v = o[k];
+      if (Array.isArray(v) && v.some(identity)) {
+        const keep = [], given = [];
+        for (const x of v) {
+          const id = identity(x);
+          if (id && (before(id) || now.has(id))) given.push(named(id));
+          else { keep.push(x); if (id) { fresh.push(id); now.add(id); } walk(x); }
+        }
+        if (given.length) { o[k] = keep.length ? keep : undefined; o[k + '_given_before'] = given; }
+      } else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === 'object') walk(v);
+    }
+  };
+  const a = { ...answer };
+  for (const k of ['overview', 'reasons', 'included', 'timeline']) if (a[k]) { a[k] = JSON.parse(JSON.stringify(a[k])); walk(a[k]); }
+  /* The rules, constraints and rejected ideas on a piece of code (how): the
+   * same thought sits on every function its commit wrote. */
+  if (a.trees) a.trees = a.trees.map((tr) => { if (!tr.on_this_code) return tr; const c = { on_this_code: JSON.parse(JSON.stringify(tr.on_this_code)) }; walk(c); return { ...tr, ...c }; });
+  /* A decision's evidence already sent is named by its id. */
+  for (const d of (a.reasons && a.reasons.decided) || []) if (d.evidence && before(d.evidence.id)) d.evidence = d.evidence.id + ' (round ' + sent.get(d.evidence.id) + ')'; else if (d.evidence) fresh.push(d.evidence.id);
+  for (const p of (a.overview && a.overview.parts) || []) {
+    const id = 'part:' + p.topic;
+    if (before(id)) delete p.is; else fresh.push(id);
+  }
+  if (a.brief) { const id = 'brief:' + a.brief.subject; if (before(id)) delete a.brief; else fresh.push(id); }
+  return { answer: a, fresh };
+}
+
 /* One answer for several lenses and the kinds asked for: the brief once,
  * each lens's own section, then what was included. */
 export function composeLenses(body, { model, found, lenses, include, effort }) {

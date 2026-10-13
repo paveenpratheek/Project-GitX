@@ -30,7 +30,7 @@ import { shapeAnswer } from './shape.js';
 import { thermalFor, thermalAsk } from '../thermal/thermal.js';
 import { learnFor } from './walk-learn.js';
 import { lensModel, lensOf, subjectOf, weightsFor, overviewOf, timelineOf, reasonsOf, isBroad, briefOf, onCodeOf } from '../lens/lens.js';
-import { composeLenses, scopeTo, EFFORT } from '../lens/ask.js';
+import { composeLenses, scopeTo, EFFORT, notTwice } from '../lens/ask.js';
 import { stem } from './rank.js';
 
 const POOLS_KEPT = 2;
@@ -291,7 +291,10 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
   /* Cut to the agent's focus and budget (shape.js) before anything is
    * marked given: what was cut was never sent, so a later round may send it. */
   const shaped = shapeAnswer(pool.round === 1 ? cf.answer : changesOf(pool, cf.answer), { focus, budget });
-  const body = lx && lx.asked31 ? composeLenses(shaped, lx) : lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
+  let body = lx && lx.asked31 ? composeLenses(shaped, lx) : lx && lx.as ? lensShape(shaped, lx, { focus, budget }) : shaped;
+  /* The lens sections are built afresh each call; what this stack already
+   * holds is named, not sent again (ask.js notTwice). */
+  if (lx) { s.ever = s.ever || new Map(); const nt = notTwice(body, pool.sent, pool.round, s.ever, pool.id); body = nt.answer; for (const id of nt.fresh) { if (!pool.sent.has(id)) pool.sent.set(id, pool.round); if (!s.ever.has(id)) s.ever.set(id, pool.id); } }
   if (pool.round === 1) for (const ring of ['core', 'wiring', 'surface']) for (const e of (body.map || {})[ring] || []) { const k = keyOf(ring, e); pool.shown.set(k, 1); pool.visible.add(k); }
   remember(pool, body);
   const words = [...pool.weights].filter(([w]) => !w.includes('_')).sort((a, b) => b[1] - a[1])

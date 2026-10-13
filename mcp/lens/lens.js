@@ -489,7 +489,7 @@ export function onCodeOf(model, file, from, { n = 3 } = {}) {
   const named = (t) => (name.length >= 5 && new RegExp('\\b' + name.replace(/[^\w$]/g, '') + '\\b').test(t)) || (base.length >= 5 && t.includes(base));
   const hits = model.records.filter((r) => r.n && ['rule', 'constraint', 'rejected'].includes(kindOf(r.n)) &&
     (settledHere.has(r.id) || (model.rx.adj.get(r.id) || []).some((e) => settledHere.has(e.to)) || named(r.text)));
-  return hits.length ? hits.sort((a, b) => degree(model, b.id) - degree(model, a.id)).slice(0, n).map((r) => ({ [kindOf(r.n)]: r.id, text: cap(r.n.text, 140) })) : undefined;
+  return hits.length ? hits.sort((a, b) => degree(model, b.id) - degree(model, a.id)).slice(0, n).map((r) => ({ id: r.id, kind: kindOf(r.n), text: cap(r.n.text, 140) })) : undefined;
 }
 
 function readThought(repoDir, id) {
