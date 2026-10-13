@@ -48,6 +48,22 @@ const AT = git(['rev-parse', eq('at', 'HEAD')]).trim();
 const WALKS_ROOT = path.resolve(eq('walks-root', fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-task-walks-'))));
 const SERVER = path.join(HERE, 'server.js');
 
+/* --question: one broad question instead of the 4th Dimension task - "what
+ * is GitX" - asked of an agent by hand (files and git) or with GitX beside
+ * its own tools, as in the question bench; --key=all scores it against the
+ * whole record. */
+const QUESTION = eq('question', null);
+const KEY_ALL = eq('key', '') === 'all';
+const HAND_TOOLS = ['Read', 'Grep', 'Glob', 'Bash(git log:*)', 'Bash(git show:*)'];
+const QPROMPT = (dir, arm) => [
+  QUESTION + ' Find out as much as you can about it - what it is, how it works, what was decided and why, what was rejected, what it costs, what is still open - in the project in ' + dir + '.',
+  '',
+  'Its code is in the working tree, its history is in the git commit messages (git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file per thought; .gitx is git-ignored, so give it as a path when you search it.',
+  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  'Do not write or change anything.',
+  '',
+  'When you are done, reply with what you found, citing every piece of evidence by id: thought ids (t-...), commit hashes, and file::function names for code.'
+].join('\n');
 const PROMPT = (dir) => [
   'You have been assigned to add feature X to the 5th Dimension of the project in ' + dir + '.',
   'The 5th Dimension is built on top of the 4th Dimension, so before any work you need to know the 4th Dimension: ' +
@@ -75,7 +91,26 @@ const DENY = ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write', 'MultiEdit', 'Not
 const BRANCH_COMMITS = git(['rev-list', BASE + '..' + AT]).split('\n').filter(Boolean);
 const ALL_COMMITS = git(['rev-list', AT]).split('\n').filter(Boolean);
 
+function keyAllOf(dir) {
+  const key = { decisions: [], user_decisions: [], avoid: [], costs: [], open: [], findings: [], rules: [], commits: ALL_COMMITS.map((h) => h.slice(0, 7)), topicOf: {} };
+  for (const sub of ['thoughts', path.join('context', 'thoughts')]) {
+    const d = path.join(dir, '.gitx', sub);
+    for (const f of fs.existsSync(d) ? fs.readdirSync(d) : []) {
+      let t; try { t = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); } catch (_) { continue; }
+      if (t.topic) key.topicOf[t.id] = t.topic;
+      if (t.outcome === 'rejected' || t.outcome === 'stashed') key.avoid.push(t.id);
+      else if (t.outcome === 'open') key.open.push(t.id);
+      else if (t.kind === 'cost') key.costs.push(t.id);
+      else if (t.kind === 'learned') key.rules.push(t.id);
+      else if (t.kind === 'decision') { key.decisions.push(t.id); if (t.decided_by === 'user') key.user_decisions.push(t.id); }
+      else key.findings.push(t.id);
+    }
+  }
+  return key;
+}
+
 function keyOf(dir) {
+  if (KEY_ALL) return keyAllOf(dir);
   const on = new Set(BRANCH_COMMITS);
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
   const key = { decisions: [], user_decisions: [], avoid: [], costs: [], open: [], findings: [], commits: BRANCH_COMMITS.map((h) => h.slice(0, 7)) };
@@ -142,7 +177,7 @@ function idsIn(text) {
 
 function scoreRun(shown, cited, key) {
   const has = (list, x) => list.includes(x);
-  const tiers = ['user_decisions', 'decisions', 'avoid', 'costs', 'open', 'findings', 'commits'];
+  const tiers = ['user_decisions', 'decisions', 'avoid', 'costs', 'open', 'findings', 'commits', ...(key.rules ? ['rules'] : [])];
   const out = {};
   for (const t of tiers) {
     const pool = key[t], from = t === 'commits' ? 'commits' : 'thoughts';
@@ -152,7 +187,8 @@ function scoreRun(shown, cited, key) {
   const citedAll = cited.thoughts.length + cited.commits.length;
   const onKey = cited.thoughts.filter((x) => keyThoughts.has(x)).length + cited.commits.filter((x) => key.commits.includes(x)).length;
   const ungrounded = [...cited.thoughts.filter((x) => !shown.thoughts.includes(x)), ...cited.commits.filter((x) => !shown.commits.includes(x))];
-  return { tiers: out, cited: citedAll, cited_code: cited.code.length, on_key: onKey, precision: citedAll ? Math.round((onKey / citedAll) * 100) / 100 : 0, ungrounded };
+  const topics = key.topicOf ? new Set(cited.thoughts.map((x) => key.topicOf[x]).filter(Boolean)).size : undefined;
+  return { tiers: out, topics, cited: citedAll, cited_code: cited.code.length, on_key: onKey, precision: citedAll ? Math.round((onKey / citedAll) * 100) / 100 : 0, ungrounded };
 }
 
 /* --------------------------------------------------------------- one agent */
@@ -161,17 +197,18 @@ function runOne(arm, chain, n, walkDir) {
   const frozen = freeze(AT);
   const key = keyOf(frozen.dir), keyCode = keyCodeOf(frozen.dir);
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-task-data-'));
-  const mcp = { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'task ' + arm + chain + '.' + n, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } };
+  const mcp = arm === 'hand' ? { mcpServers: {} } : { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'task ' + arm + chain + '.' + n, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
   /* The final answer's citations teach the walk folder, as in bench-agent. */
   const fwd = (p) => p.replace(/\\/g, '/');
   fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
   const hook = [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }];
-  fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { Stop: [{ hooks: hook }] } }, null, 2));
-  const args = ['-p', PROMPT(frozen.dir), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
+  if (arm !== 'hand') fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { ...(QUESTION ? { PostToolUse: [{ matcher: 'Read|Edit|Write|MultiEdit', hooks: hook }] } : {}), Stop: [{ hooks: hook }] } }, null, 2));
+  const args = ['-p', QUESTION ? QPROMPT(frozen.dir, arm) : PROMPT(frozen.dir), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
-    '--strict-mcp-config', '--mcp-config', mcpFile, '--allowedTools', ...ALLOW, '--disallowedTools', ...DENY];
+    '--strict-mcp-config', '--mcp-config', mcpFile, '--allowedTools', ...(arm === 'hand' ? HAND_TOOLS : QUESTION ? [...ALLOW, ...HAND_TOOLS] : ALLOW),
+    '--disallowedTools', ...(QUESTION ? DENY.filter((t) => !['Read', 'Grep', 'Glob', 'Bash'].includes(t)) : DENY)];
   return new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn('claude', args, { cwd: frozen.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -226,7 +263,8 @@ function runOne(arm, chain, n, walkDir) {
 /* ------------------------------------------------------------------ runs */
 
 let refused = null;
-const isRefusal = (r) => !r.tokens && /limit|resets/i.test(r.answer || '');
+/* A usage limit or an expired login: no tokens, and nothing after it can run. */
+const isRefusal = (r) => !r.tokens && /limit|resets|authenticate|oauth|log ?in/i.test(r.answer || '');
 const pct = (a, b) => (b ? Math.round((a / b) * 100) + '%' : '-');
 
 function line(r) {
@@ -267,6 +305,9 @@ function report(rows, arms, agents, field, title) {
   row('costs cited', tierPct('costs'));
   row('open questions cited', tierPct('open'));
   row('findings cited', tierPct('findings'));
+  if (rows.some((r) => r[field] && r[field].tiers.rules)) row('rules cited', tierPct('rules'));
+  if (rows.some((r) => r[field] && r[field].topics !== undefined)) row('topics reached', (rs) => rs.map((r) => r[field].topics).join(' / '));
+  row('owner decisions, count', (rs) => rs.map((r) => r[field].tiers.user_decisions.cited).join(' / '));
   row('commits cited', tierPct('commits'));
   row('decisions GitX showed', shownPct('decisions'));
   row('owner decisions shown', shownPct('user_decisions'));

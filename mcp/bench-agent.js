@@ -163,7 +163,8 @@ function runOne(c, arm, at) {
  * whole first learning rerun went on asking 120 of them after the limit hit,
  * and saved rounds of nothing. The first refusal stops the run. */
 let refused = null;
-const isRefusal = (r) => !r.tokens && /limit|resets/i.test(r.answer || '');
+/* A usage limit or an expired login: no tokens, and nothing after it can run. */
+const isRefusal = (r) => !r.tokens && /limit|resets|authenticate|oauth|log ?in/i.test(r.answer || '');
 
 async function runRound(k, cases, at) {
   const jobs = [];
