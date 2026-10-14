@@ -67,8 +67,14 @@ const isGitx = (arm) => arm !== 'hand' && arm !== 'bm25';
 const ONLY = argv.includes('--gitx-only');
 const SHEET = argv.includes('--sheet');
 const NO_FILES = ['Read', 'Grep', 'Glob', 'Bash', 'PowerShell', 'LS', 'NotebookRead'];
+/* --neutral: the task without a map of where to look. The usual prompt names
+ * the working tree, git log and the thought files, and agents searched them
+ * beside GitX whatever else they were told (sheet run, 14 October); a user
+ * asking about their project says what they want, not where it is. */
+const NEUTRAL = argv.includes('--neutral');
 const SEARCH_LINE = ONLY
   ? 'Use only the tools you are given: they search this project\'s code, commits and recorded design reasoning. You cannot read files or run commands; answer from what the tools return.'
+  : NEUTRAL ? 'Find the answer in this project.'
   : 'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
     '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
     'per thought; .gitx is git-ignored, so give it as a path when you search it.';
@@ -101,8 +107,10 @@ function runOne(c, arm, at) {
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));
   /* Learning on: hook.js tells the walk folder what the agent read with its
-   * own tools - most answers are found by Read, which GitX cannot see. A
-   * project hook, in this run's own copy, so nothing of the owner's is set. */
+   * own tools - most answers are found by Read, which GitX cannot see. The
+   * hooks are loaded with --settings from this run's data folder, outside the
+   * copy: written into the copy's .claude, agents found them and spent calls
+   * on the hook file instead of the questions (sheet run, 14 October). */
   const fwd = (p) => p.replace(/\\/g, '/');
   const hooks = {};
   if (isGitx(arm) && WALKS) {
@@ -113,12 +121,11 @@ function runOne(c, arm, at) {
   }
   /* --sheet: GitX introduced on the prompt (sheet.js), in the form the arm calls it. */
   if (isGitx(arm) && SHEET) hooks.UserPromptSubmit = [{ hooks: [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'sheet.js')) + '"' + (arm === 'subjects' ? ' --subjects' : ''), timeout: 15 }] }];
-  if (Object.keys(hooks).length) {
-    fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
-    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks }, null, 2));
-  }
+  const settingsFile = path.join(data, 'settings.json');
+  if (Object.keys(hooks).length) fs.writeFileSync(settingsFile, JSON.stringify({ hooks }, null, 2));
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
+    ...(Object.keys(hooks).length ? ['--settings', settingsFile] : []),
     '--strict-mcp-config', '--mcp-config', mcpFile,
     '--allowedTools', ...(ONLY ? [] : TOOLS), ...(arm === 'bm25' ? ['mcp__search'] : arm !== 'hand' ? ['mcp__gitx'] : []),
     '--disallowedTools', ...DENY, ...(ONLY ? NO_FILES : [])];
@@ -259,7 +266,7 @@ const ONE_PROMPT = (cases, arm, k) => [
   '',
   ...cases.map((c, i) => 'Q' + (i + 1) + '. ' + (c.qs ? c.qs[(k - 1) % c.qs.length] : c.q)),
   '',
-  SEARCH_LINE.replace('find the answer', 'find each answer'),
+  SEARCH_LINE.replace(/(f)ind the answer/i, '$1ind each answer'),
   ...MCP_NOTE(arm),
   '',
   'Reply with one section per question, each starting with its own line "### Q<number>", answered in a few sentences, citing your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
@@ -312,7 +319,7 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
   return out;
 }
