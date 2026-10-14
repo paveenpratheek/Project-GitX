@@ -68,6 +68,7 @@ const isGitx = (arm) => arm !== 'hand' && arm !== 'bm25';
  * gave and nothing the agent found around it. */
 const ONLY = argv.includes('--gitx-only');
 const SHEET = argv.includes('--sheet');
+const DEBRIEF = argv.includes('--debrief');
 const NO_FILES = ['Read', 'Grep', 'Glob', 'Bash', 'PowerShell', 'LS', 'NotebookRead'];
 /* --neutral: the task without a map of where to look. The usual prompt names
  * the working tree, git log and the thought files, and agents searched them
@@ -125,9 +126,12 @@ function runOne(c, arm, at) {
   if (isGitx(arm) && SHEET) hooks.UserPromptSubmit = [{ hooks: [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'sheet.js')) + '"' + (arm === 'subjects' ? ' --subjects' : ''), timeout: 15 }] }];
   const settingsFile = path.join(data, 'settings.json');
   if (Object.keys(hooks).length) fs.writeFileSync(settingsFile, JSON.stringify({ hooks }, null, 2));
+  /* --debrief keeps a GitX agent's session so the same agent can be asked,
+   * after its answer, how using GitX went (debrief below). */
+  const keep = DEBRIEF && isGitx(arm);
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     ...(EFFORT ? ['--effort', EFFORT] : []),
-    '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
+    '--setting-sources', 'project,local', '--disable-slash-commands', ...(keep ? [] : ['--no-session-persistence']),
     ...(Object.keys(hooks).length ? ['--settings', settingsFile] : []),
     '--strict-mcp-config', '--mcp-config', mcpFile,
     '--allowedTools', ...(ONLY ? [] : TOOLS), ...(arm === 'bm25' ? ['mcp__search'] : arm !== 'hand' ? ['mcp__gitx'] : []),
@@ -162,8 +166,9 @@ function runOne(c, arm, at) {
     });
     child.stderr.on('data', (d) => { err += d; });
     const timer = setTimeout(() => child.kill(), MINUTES * 60 * 1000);
-    child.on('close', () => {
+    child.on('close', async () => {
       clearTimeout(timer);
+      const debriefed = keep && result && result.session_id && !isRefusal({ tokens: 1, answer: String(result.result || '') }) ? await debrief(result.session_id, frozen.dir, mcpFile) : undefined;
       const text = result ? String(result.result || '') : '';
       const u = (result && result.usage) || {};
       const tokens = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.output_tokens || 0);
@@ -187,9 +192,34 @@ function runOne(c, arm, at) {
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
         outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
         settled_by: c.prompt ? [...settledBy] : undefined,
-        answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160))
+        answer: text, calls: calls.map((x) => x.tool + ' ' + JSON.stringify(x.input).slice(0, 160)),
+        debrief: debriefed
       });
       for (const d of [frozen.parent || frozen.dir, data]) fs.rmSync(d, { recursive: true, force: true });
+      /* The kept session lives under the CLI's projects folder, named after the copy - removed with it. */
+      if (keep) fs.rmSync(path.join(os.homedir(), '.claude', 'projects', frozen.dir.replace(/[^a-zA-Z0-9]/g, '-')), { recursive: true, force: true });
+    });
+  });
+}
+
+/* The same agent, asked after its answer how GitX served it. Neutral on
+ * purpose, and no tools: it answers from what it went through. */
+const DEBRIEF_Q = 'Before you finish, a short debrief about the tools, for the people who build GitX. Answer from your experience in this session only - do not use any tools now. ' +
+  '1) How was using GitX for this work? 2) What in its answers helped you most, and what was missing, wrong or confusing? ' +
+  '3) When did you use your own tools (Grep, Read, git) instead of or after GitX, and why? 4) What one change would make you rely on GitX more? ' +
+  'Be candid: problems are as useful to hear as what worked.';
+function debrief(sessionId, cwd, mcpFile) {
+  const args = ['-p', DEBRIEF_Q, '--resume', sessionId, '--output-format', 'json', '--model', MODEL, ...(EFFORT ? ['--effort', EFFORT] : []),
+    '--setting-sources', 'project,local', '--disable-slash-commands', '--strict-mcp-config', '--mcp-config', mcpFile,
+    '--disallowedTools', ...DENY, ...NO_FILES, 'mcp__gitx', 'mcp__search', '--max-turns', '2'];
+  return new Promise((resolve) => {
+    let out = '';
+    const child = spawn('claude', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const timer = setTimeout(() => child.kill(), 10 * 60 * 1000);
+    child.stdout.on('data', (d) => { out += d; });
+    child.on('close', () => {
+      clearTimeout(timer);
+      try { const j = JSON.parse(out); resolve({ text: String(j.result || ''), cost_usd: j.total_cost_usd }); } catch (_) { resolve({ text: '(no debrief: ' + out.slice(0, 200) + ')' }); }
     });
   });
 }
@@ -307,7 +337,7 @@ async function oneRound(cases, at, k) {
     marks.forEach((m, i) => { parts[Number(m[1])] = r.answer.slice(m.index, i + 1 < marks.length ? marks[i + 1].index : undefined); });
     const per = cases.map((c, i) => { const sc = score(c, { final: parts[i + 1] || '' }, settledBy); return { id: c.id, answered: !!parts[i + 1], hit: sc.hit, reach: sc.reach, recall: sc.recall }; });
     out.push({ arm: r.arm, model: r.model, per, hit: per.filter((x) => x.hit).length, reach: per.filter((x) => x.reach).length, answered: per.filter((x) => x.answered).length,
-      seconds: r.seconds, tokens: r.tokens, output_tokens: r.output_tokens, cost_usd: r.cost_usd, turns: r.turns, tool_calls: r.tool_calls, gitx_calls: r.gitx_calls, denied: r.denied, error: r.error, answer: r.answer, calls: r.calls });
+      seconds: r.seconds, tokens: r.tokens, output_tokens: r.output_tokens, cost_usd: r.cost_usd, turns: r.turns, tool_calls: r.tool_calls, gitx_calls: r.gitx_calls, denied: r.denied, error: r.error, answer: r.answer, calls: r.calls, debrief: r.debrief });
     if (isRefusal(r)) refused = r.answer;
   }
   const line = (label, f) => console.log(label.padEnd(24) + out.map((x) => String(f(x)).padEnd(18)).join(''));
@@ -325,8 +355,9 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, effort: EFFORT || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, effort: EFFORT || undefined, debrief: DEBRIEF || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
+  for (const x of out) if (x.debrief) console.log('\nDebrief, ' + x.arm + ' (wording ' + k + '):\n' + x.debrief.text);
   return out;
 }
 
