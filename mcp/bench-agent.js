@@ -65,6 +65,7 @@ const isGitx = (arm) => arm !== 'hand' && arm !== 'bm25';
  * shell, blocked rather than asked - so the answers are what the retriever
  * gave and nothing the agent found around it. */
 const ONLY = argv.includes('--gitx-only');
+const SHEET = argv.includes('--sheet');
 const NO_FILES = ['Read', 'Grep', 'Glob', 'Bash', 'PowerShell', 'LS', 'NotebookRead'];
 const SEARCH_LINE = ONLY
   ? 'Use only the tools you are given: they search this project\'s code, commits and recorded design reasoning. You cannot read files or run commands; answer from what the tools return.'
@@ -102,13 +103,19 @@ function runOne(c, arm, at) {
   /* Learning on: hook.js tells the walk folder what the agent read with its
    * own tools - most answers are found by Read, which GitX cannot see. A
    * project hook, in this run's own copy, so nothing of the owner's is set. */
+  const fwd = (p) => p.replace(/\\/g, '/');
+  const hooks = {};
   if (isGitx(arm) && WALKS) {
-    const fwd = (p) => p.replace(/\\/g, '/');
-    fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
     /* Reads, edits and the final answer's citations - the same hooks for every
      * GitX arm, so they differ only in what GitX does with them. */
     const hook = [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'hook.js')) + '" --data "' + fwd(walkDir) + '"', async: true }];
-    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Read|Edit|Write|MultiEdit', hooks: hook }], Stop: [{ hooks: hook }] } }, null, 2));
+    Object.assign(hooks, { PostToolUse: [{ matcher: 'Read|Edit|Write|MultiEdit', hooks: hook }], Stop: [{ hooks: hook }] });
+  }
+  /* --sheet: GitX introduced on the prompt (sheet.js), in the form the arm calls it. */
+  if (isGitx(arm) && SHEET) hooks.UserPromptSubmit = [{ hooks: [{ type: 'command', command: 'node "' + fwd(path.join(HERE, 'sheet.js')) + '"' + (arm === 'subjects' ? ' --subjects' : ''), timeout: 15 }] }];
+  if (Object.keys(hooks).length) {
+    fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(frozen.dir, '.claude', 'settings.json'), JSON.stringify({ hooks }, null, 2));
   }
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
@@ -305,7 +312,7 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined,model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
   return out;
 }
