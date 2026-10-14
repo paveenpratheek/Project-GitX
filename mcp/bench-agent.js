@@ -61,6 +61,16 @@ const SERVER = path.join(HERE, 'server.js');
 const BM25 = path.join(HERE, 'bench-bm25.js');
 /* The baseline arm: a keyword retriever, not GitX (bench-bm25.js). */
 const isGitx = (arm) => arm !== 'hand' && arm !== 'bm25';
+/* --gitx-only: the arm's own tools and nothing else - no Read, Grep, Glob or
+ * shell, blocked rather than asked - so the answers are what the retriever
+ * gave and nothing the agent found around it. */
+const ONLY = argv.includes('--gitx-only');
+const NO_FILES = ['Read', 'Grep', 'Glob', 'Bash', 'PowerShell', 'LS', 'NotebookRead'];
+const SEARCH_LINE = ONLY
+  ? 'Use only the tools you are given: they search this project\'s code, commits and recorded design reasoning. You cannot read files or run commands; answer from what the tools return.'
+  : 'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
+    '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
+    'per thought; .gitx is git-ignored, so give it as a path when you search it.';
 const MCP_NOTE = (arm) => arm === 'bm25' ? ['This project also has a search MCP tool (search) that searches its code, commits and reasoning by keywords.']
   : arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : [];
 
@@ -69,9 +79,7 @@ const PROMPT = (q, arm) => [
   '',
   '"' + q + '"',
   '',
-  'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
-  '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
-  'per thought; .gitx is git-ignored, so give it as a path when you search it.',
+  SEARCH_LINE,
   ...MCP_NOTE(arm),
   '',
   'Answer in a few sentences, and cite your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
@@ -105,8 +113,8 @@ function runOne(c, arm, at) {
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     '--strict-mcp-config', '--mcp-config', mcpFile,
-    '--allowedTools', ...TOOLS, ...(arm === 'bm25' ? ['mcp__search'] : arm !== 'hand' ? ['mcp__gitx'] : []),
-    '--disallowedTools', ...DENY];
+    '--allowedTools', ...(ONLY ? [] : TOOLS), ...(arm === 'bm25' ? ['mcp__search'] : arm !== 'hand' ? ['mcp__gitx'] : []),
+    '--disallowedTools', ...DENY, ...(ONLY ? NO_FILES : [])];
   return new Promise((resolve) => {
     const t0 = Date.now();
     const child = spawn('claude', args, { cwd: frozen.dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -244,9 +252,7 @@ const ONE_PROMPT = (cases, arm, k) => [
   '',
   ...cases.map((c, i) => 'Q' + (i + 1) + '. ' + (c.qs ? c.qs[(k - 1) % c.qs.length] : c.q)),
   '',
-  'Search the project to find each answer. Its code is in the working tree, its history is in the git commit messages ' +
-  '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
-  'per thought; .gitx is git-ignored, so give it as a path when you search it.',
+  SEARCH_LINE.replace('find the answer', 'find each answer'),
   ...MCP_NOTE(arm),
   '',
   'Reply with one section per question, each starting with its own line "### Q<number>", answered in a few sentences, citing your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
@@ -299,7 +305,7 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined,model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
   return out;
 }
