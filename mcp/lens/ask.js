@@ -140,7 +140,12 @@ export function notTwice(answer, sent, round) {
 export function composeLenses(body, { model, found, lenses, include, effort }) {
   const caps = EFFORT[effort] || EFFORT.normal;
   const seed = [...new Set(JSON.stringify(body).match(/\bt-[0-9a-f]{10}\b/g) || [])];
-  const out = { brief: briefOf(model, found), asked: body.asked, no_code: body.no_code };
+  /* No lens named and none in the words: the whole stack, as before v3.1.
+   * Built from the lenses alone it was a subject line and `next` - 118 tokens
+   * for a question GitX had the answer to - and the agent, given nothing,
+   * grepped the thought files instead (one-agent round 3: 3 of 14 found,
+   * against 9 the stacks held). */
+  const out = lenses.length ? { brief: briefOf(model, found), asked: body.asked, no_code: body.no_code } : { ...body, brief: briefOf(model, found) };
   let overview = null;
   for (const as of lenses) {
     if (as === 'what' && found) out.overview = overview = overviewOf(model, found, { seed, caps, code: [...((body.map && body.map.core) || []).slice(0, 4), ...((body.map && body.map.wiring) || []).slice(0, 2)] });
@@ -193,5 +198,4 @@ function brief(a, budget) {
   if (size(a) > budget && a.overview && a.overview.parts) a.overview.parts = a.overview.parts.slice(0, 3);
   a.cut = size(a) > budget ? undefined : 'brief: one line each - effort "normal" gives the rest';
   return a;
-  return out;
 }
