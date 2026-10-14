@@ -63,7 +63,7 @@ export function includedOf(model, found, kinds, { seed = [], n = 4 } = {}) {
     } else if (KINDS.includes(k)) {
       const rs = pool.filter((r) => kindOf(r.n) === k).sort(order).slice(0, n);
       /* An empty kind is said, so the agent does not go and list it repo-wide. */
-      out[k] = rs.length ? rs.map((r) => item(model, r, 160)) : 'none recorded about ' + (found ? found.subject.phrase : 'this');
+      out[k] = rs.length ? rs.map((r) => item(model, r)) : 'none recorded about ' + (found ? found.subject.phrase : 'this');
     }
   }
   return Object.keys(out).length ? out : undefined;
@@ -180,12 +180,14 @@ export function composeLenses(body, { model, found, lenses, include, effort }) {
 }
 
 /* brief means brief: the lens sections are built after the budget cut, so
- * they are trimmed here - texts to a line, then lists to their first items -
- * until the answer fits. */
+ * they are trimmed here until the answer fits - lists to their first items
+ * first, and only then texts. Texts went first once, and a sentence cut to a
+ * line ended in "…" for every agent to read again by id (debriefs, 15
+ * October): fewer items, each whole, serve better than more items cut. */
 const size = (x) => Math.round(JSON.stringify(x).length / 4);
 function brief(a, budget) {
   const walk = (v, f) => { if (Array.isArray(v)) { v.forEach((x) => walk(x, f)); return; } if (v && typeof v === 'object') { f(v); for (const k of Object.keys(v)) walk(v[k], f); } };
-  for (const [text, list] of [[110, 2], [80, 1], [60, 1]]) {
+  for (const [text, list] of [[Infinity, 2], [Infinity, 1], [300, 1], [160, 1]]) {
     if (size(a) <= budget) break;
     walk(a, (o) => {
       for (const k of Object.keys(o)) {
@@ -196,6 +198,6 @@ function brief(a, budget) {
     });
   }
   if (size(a) > budget && a.overview && a.overview.parts) a.overview.parts = a.overview.parts.slice(0, 3);
-  a.cut = size(a) > budget ? undefined : 'brief: one line each - effort "normal" gives the rest';
+  a.cut = size(a) > budget ? undefined : 'brief: the first items of each kind, whole - effort "normal" gives the rest';
   return a;
 }

@@ -12,6 +12,10 @@
 import { askPooled } from './session-pool.js';
 import { lensModel } from '../lens/lens.js';
 import { resolve, meetsOf, menuOf } from '../lens/subjects.js';
+import { findText } from './code-find.js';
+
+/* Lines of a text search shown for a name that is not a subject. */
+const TEXT_LINES = 12;
 
 /* What a subject's part of the answer does not need to repeat. */
 const NOISE = ['asked', 'why', 'round', 'words', 'dropped', 'carried', 'lens', 'asked_first', 'next_words'];
@@ -37,7 +41,11 @@ function poolFor(sessions, repoDir, phrase) {
 export function askSubjects(sessions, repoDir, { subjects = [], lens = null, include = null, effort = null, dataDir = null, thermal } = {}) {
   const model = lensModel(repoDir);
   const asked = [...new Set([].concat(subjects).map((x) => String(x || '').trim()).filter(Boolean))];
-  const resolved = asked.map((n) => resolve(model, n));
+  /* A name written like code - RELATION_KEYS, askPooled, path-recorder.js - is
+   * an exact thing to find, not a subject: read as one it resolved to a loose
+   * concept of its parts ("relation", "keys"). */
+  const codeLike = (n) => /_|[a-z][A-Z]|\.[a-z]{1,4}$|^[A-Z0-9_]{4,}$/.test(n) && !menuOf(model).some((e) => e.name.toLowerCase() === n.toLowerCase());
+  const resolved = asked.map((n) => (codeLike(n) ? { asked: n, unknown: true, closest: [] } : resolve(model, n)));
   const known = resolved.filter((r) => !r.unknown);
   const lenses = Array.isArray(lens) && lens.length ? lens : lens ? [lens] : ['what'];
   const eff = effort || (known.length > SEVERAL ? 'brief' : 'normal');
@@ -54,7 +62,20 @@ export function askSubjects(sessions, repoDir, { subjects = [], lens = null, inc
     if (a.cover_all) a.cover_all = { ...a.cover_all, calls: a.cover_all.calls.map(asCall) };
     return { head: { asked: r.asked, read_as: r.read_as, also_called: r.also_called }, body: a, next };
   });
-  const unknown = resolved.filter((r) => r.unknown).map((r) => ({ asked: r.asked, not_a_subject: true, closest: r.closest.length ? r.closest : undefined }));
+  /* A name that is not a subject is searched as text over the code and the
+   * thoughts, and said to be a text search. Refused outright, it sent agents
+   * to grep for every code-only area - worktrees, issues, commit trailers,
+   * limits - which has no subject because nothing about it was ever recorded
+   * as thinking (debriefs, 15 October). */
+  const unknown = resolved.filter((r) => r.unknown).map((r) => {
+    let hit = null;
+    try { hit = findText(repoDir, r.asked); } catch (_) { hit = null; }
+    const lines = hit && Array.isArray(hit.lines) ? hit.lines.slice(0, TEXT_LINES) : [];
+    const thoughts = hit && Array.isArray(hit.thoughts) ? hit.thoughts : [];
+    return lines.length || thoughts.length
+      ? { asked: r.asked, not_a_subject: 'searched as text instead', lines, more_lines: hit.more_lines, thoughts: thoughts.length ? thoughts : undefined, closest_subjects: r.closest.length ? r.closest : undefined }
+      : { asked: r.asked, not_a_subject: 'and nothing in the code or the record says it', closest_subjects: r.closest.length ? r.closest : undefined };
+  });
   const answer = {};
   if (parts.length === 1) Object.assign(answer, { subject: parts[0].head }, parts[0].body);
   else if (parts.length) answer.subjects = parts.map((p) => ({ ...p.head, ...p.body }));
@@ -62,7 +83,7 @@ export function askSubjects(sessions, repoDir, { subjects = [], lens = null, inc
   if (meets) answer.meets = meets;
   if (unknown.length) {
     answer.not_subjects = unknown;
-    answer.subjects_here = menuOf(model).map((e) => e.name);
+    if (unknown.some((u) => !u.lines || !u.lines.length)) answer.subjects_here = menuOf(model).map((e) => e.name);
   }
   const next = parts.flatMap((p) => p.next);
   if (next.length) answer.next = next.slice(0, 6);

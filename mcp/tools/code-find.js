@@ -35,6 +35,7 @@ import { ASKING } from './learn.js';
 import { stem, buildRankIndex, rank, statusOf, summaryOf } from './rank.js';
 import { loadThoughts } from './thoughts.js';
 import { loadTopics } from './topics.js';
+import { staleOf } from './stale.js';
 import { hotCode, rejectedIndex, historyOf, attachedWords } from '../thermal/thermal.js';
 
 /* 3: regions split after the regex-literal fix (bd2133f) - a cache from
@@ -413,6 +414,19 @@ export function findCode(ix, text, { carry = [], limit = 6, near = 0.5, weights 
  * the same rule as code, or the part that answers is cut for the part that
  * happens to sit nearest the declaration. Gaps marked; the lines holding
  * most of the question's words are kept first when there are too many. */
+/* A thought's text in full: one sentence by the recording rule, capped only
+ * as a safety limit (agents re-read cut texts by id - debriefs, 15 October). */
+const THOUGHT_TEXT = 600;
+/* expand is asked for one function: it comes whole, up to this many lines -
+ * cut to its best lines, the part an agent needed was left out (debriefs). */
+const EXPAND_LINES = 220;
+function fullCode(region) {
+  const lines = region.text.split('\n');
+  const out = lines.slice(0, EXPAND_LINES).map((l, i) => String(region.from + i).padStart(5) + '  ' + l);
+  if (lines.length > EXPAND_LINES) out.push('  … ' + (lines.length - EXPAND_LINES) + ' more lines - read ' + region.file + ':' + (region.from + EXPAND_LINES) + '-' + region.to);
+  return out.join('\n');
+}
+
 export function linesFor(region, terms) {
   const lines = region.text.split('\n');
   const want = new Set(terms.filter((w) => !w.includes('_')));
@@ -883,7 +897,7 @@ function aboutTest(rx, query, order) {
  * hottest lines, tells a feature commit from one passing through, names
  * the ideas that lost to what each commit settled, and adds the older
  * commits on those lines. */
-function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, about = null, thermal = null } = {}) {
+function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown = 3, about = null, thermal = null, full = false } = {}) {
   const statusFor = (id) => { const n = rx.nodes.get(id); return n ? statusOf(rx, n) : null; };
   const n = r.to - r.from + 1;
   /* Which commits: the one that wrote most of it, and then those whose
@@ -924,7 +938,7 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
         if (seen.thoughts.has(t.id)) return { id: t.id, see: seen.thoughts.get(t.id) };
         seen.thoughts.set(t.id, shortName(r));
         const lost = thermal ? (thermal.rejected.get(t.id) || []).slice(0, 2) : [];
-        return { id: t.id, status: statusFor(t.id), text: t.text, rejected: lost.length ? lost : undefined };
+        return { id: t.id, status: statusFor(t.id), text: t.text, ...staleOf(cx.repoDir, statusFor(t.id), t.text), rejected: lost.length ? lost : undefined };
       }) : undefined,
       more_settled: ts.length > thoughtsShown ? ts.slice(thoughtsShown).map((t) => t.id).join(', ') : undefined,
       on_other_things: elsewhere ? elsewhere + ' more thought' + (elsewhere === 1 ? '' : 's') + ' it settled, not about this question' : undefined
@@ -936,16 +950,16 @@ function treeOf(cx, rx, r, terms, order, seen, { commitsShown = 2, thoughtsShown
   for (const [c] of Object.entries(r.commits)) { const cm = cx.commits.get(c); if (cm) for (const t of cm.thoughts) settledIds.add(t.id); }
   const open = cx.waiting.filter((t) => (t.links || []).some((l) => settledIds.has(l.to)) || (t.forces || []).some((f) => (f.cites || []).some((x) => settledIds.has(x))))
     .sort((a, b) => (order.has(a.id) ? order.get(a.id) : 999) - (order.has(b.id) ? order.get(b.id) : 999))
-    .slice(0, 3).map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, 200) }));
+    .slice(0, 3).map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, THOUGHT_TEXT), ...staleOf(cx.repoDir, statusFor(t.id), t.text) }));
   const hot = thermal ? hotCode(thermal.model, r, thermal.words, thermal.expand) : null;
   /* Older commits on these lines - where superseded and rejected ideas attached
    * to earlier versions are. Only when agents have been here: it costs a git log -L. */
   const history = hot ? historyOf(cx.repoDir, r.file, r.from, r.to, new Set(Object.keys(r.commits))).map((h) => {
     const cm = [...cx.commits.values()].find((c) => c.hash.startsWith(h.commit));
     const ts = cm ? cm.thoughts.filter((t) => !thermal.about || thermal.about(t)).slice(0, 2) : [];
-    return { ...h, settled: ts.length ? ts.map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, 160), rejected: (thermal.rejected.get(t.id) || []).slice(0, 1).length ? (thermal.rejected.get(t.id) || []).slice(0, 1) : undefined })) : undefined };
+    return { ...h, settled: ts.length ? ts.map((t) => ({ id: t.id, status: statusFor(t.id), text: cap(t.text, THOUGHT_TEXT), rejected: (thermal.rejected.get(t.id) || []).slice(0, 1).length ? (thermal.rejected.get(t.id) || []).slice(0, 1) : undefined })) : undefined };
   }) : [];
-  return { function: entry(r), ref: r.file + ':' + r.from, heat: hot ? hot.heat : undefined, code: hot ? hot.code : linesFor(r, terms), written_by: written, open: open.length ? open : undefined, history: history.length ? history : undefined };
+  return { function: entry(r), ref: r.file + ':' + r.from, heat: hot ? hot.heat : undefined, code: full ? fullCode(r) : hot ? hot.code : linesFor(r, terms), written_by: written, open: open.length ? open : undefined, history: history.length ? history : undefined };
 }
 
 /* A question answered from the code down, map first (t-da800103d5):
@@ -1231,7 +1245,7 @@ export function findText(repoDir, text, { paths = [] } = {}) {
     find: String(text),
     lines,
     more_lines: total > lines.length ? (total - lines.length) + ' more lines match - narrow it, or give paths' : undefined,
-    thoughts: thoughts.length ? thoughts.slice(0, FIND_THOUGHTS).map((t) => ({ id: t.id, text: cap(t.text, 160) })) : undefined,
+    thoughts: thoughts.length ? thoughts.slice(0, FIND_THOUGHTS).map((t) => ({ id: t.id, text: cap(t.text, THOUGHT_TEXT) })) : undefined,
     more_thoughts: thoughts.length > FIND_THOUGHTS ? thoughts.length - FIND_THOUGHTS + ' more thoughts say it' : undefined,
     next: lines.length ? 'expand a function from in, or Read the file at the line' : 'nothing at HEAD says this - ask in words with query'
   };
@@ -1256,7 +1270,7 @@ export function expandRegion(repoDir, name, { query = '' } = {}) {
   const order = new Map(rank(rx, { text: query || shortName(candidates[0]), layers: ['thought'], limit: 200 }).results.map((r, i) => [r.id, i]));
   const seen = { commits: new Map(), thoughts: new Map() };
   const about = query ? aboutTest(rx, query, order) : null;
-  return { expanded: candidates.slice(0, 2).map((r) => treeOf(cx, rx, r, terms, order, seen, { commitsShown: 3, thoughtsShown: 4, about })) };
+  return { expanded: candidates.slice(0, 2).map((r) => treeOf(cx, rx, r, terms, order, seen, { commitsShown: 3, thoughtsShown: 4, about, full: true })) };
 }
 
 /* Everything a question needs, built now - for the server to call when HEAD
