@@ -4,6 +4,8 @@
  *
  *   hand   files and git only: Read, Grep, Glob, git log, git show
  *   gitx   the same, plus GitX's MCP tools
+ *   bm25   the same, plus a plain keyword search (bench-bm25.js) over the
+ *          same code, commits and thoughts - the baseline GitX must beat
  *
  *   node mcp/bench-agent.js [repo] [--set heldout] [--only id,id]
  *        [--arms=hand,gitx] [--model=sonnet] [--parallel=3] [--minutes=12]
@@ -54,6 +56,11 @@ const WALKS = eq('walks', null) ? path.resolve(eq('walks', null)) : null;
 const ROUNDS = Number(eq('rounds', '1'));
 const REPO = path.resolve(argv.find((a, i) => !a.startsWith('--') && !['--set', '--only', '--at'].includes(argv[i - 1])) || path.join(HERE, '..'));
 const SERVER = path.join(HERE, 'server.js');
+const BM25 = path.join(HERE, 'bench-bm25.js');
+/* The baseline arm: a keyword retriever, not GitX (bench-bm25.js). */
+const isGitx = (arm) => arm !== 'hand' && arm !== 'bm25';
+const MCP_NOTE = (arm) => arm === 'bm25' ? ['This project also has a search MCP tool (search) that searches its code, commits and reasoning by keywords.']
+  : arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : [];
 
 const PROMPT = (q, arm) => [
   'Answer this question about the project in the current folder:',
@@ -63,7 +70,7 @@ const PROMPT = (q, arm) => [
   'Search the project to find the answer. Its code is in the working tree, its history is in the git commit messages ' +
   '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
   'per thought; .gitx is git-ignored, so give it as a path when you search it.',
-  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  ...MCP_NOTE(arm),
   '',
   'Answer in a few sentences, and cite your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
 ].join('\n');
@@ -76,7 +83,8 @@ function runOne(c, arm, at) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'gitx-agent-data-'));
   const walkDir = WALKS || data;
   /* thermal: the same GitX with thermal vision on (4th Dimension v2). */
-  const mcp = arm !== 'hand'
+  const mcp = arm === 'bm25' ? { mcpServers: { search: { command: process.execPath, args: [BM25], env: { BM25_REPO: frozen.dir } } } }
+    : arm !== 'hand'
     ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } }
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
@@ -84,7 +92,7 @@ function runOne(c, arm, at) {
   /* Learning on: hook.js tells the walk folder what the agent read with its
    * own tools - most answers are found by Read, which GitX cannot see. A
    * project hook, in this run's own copy, so nothing of the owner's is set. */
-  if (arm !== 'hand' && WALKS) {
+  if (isGitx(arm) && WALKS) {
     const fwd = (p) => p.replace(/\\/g, '/');
     fs.mkdirSync(path.join(frozen.dir, '.claude'), { recursive: true });
     /* Reads, edits and the final answer's citations - the same hooks for every
@@ -95,7 +103,7 @@ function runOne(c, arm, at) {
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     '--strict-mcp-config', '--mcp-config', mcpFile,
-    '--allowedTools', ...TOOLS, ...(arm !== 'hand' ? ['mcp__gitx'] : []),
+    '--allowedTools', ...TOOLS, ...(arm === 'bm25' ? ['mcp__search'] : arm !== 'hand' ? ['mcp__gitx'] : []),
     '--disallowedTools', ...DENY];
   return new Promise((resolve) => {
     const t0 = Date.now();
@@ -148,7 +156,7 @@ function runOne(c, arm, at) {
         id: c.id, arm, model, hit: s.hit, reach: s.reach, recall: s.recall,
         seconds: Math.round((Date.now() - t0) / 1000), tokens, output_tokens: u.output_tokens || 0,
         cost_usd: result ? result.total_cost_usd : null, turns: result ? result.num_turns : null,
-        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__gitx')).length, learned_answers: learned, denied,
+        tool_calls: calls.length, gitx_calls: calls.filter((x) => x.tool.startsWith('mcp__')).length, learned_answers: learned, denied,
         error: result ? (result.is_error ? result.subtype : null) : 'no result' + (err ? ': ' + err.slice(0, 200) : ''),
         outside: outside.length ? outside.map((x) => x.tool + ' ' + (x.input.file_path || x.input.path)) : undefined,
         settled_by: c.prompt ? [...settledBy] : undefined,
@@ -237,7 +245,7 @@ const ONE_PROMPT = (cases, arm, k) => [
   'Search the project to find each answer. Its code is in the working tree, its history is in the git commit messages ' +
   '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
   'per thought; .gitx is git-ignored, so give it as a path when you search it.',
-  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  ...MCP_NOTE(arm),
   '',
   'Reply with one section per question, each starting with its own line "### Q<number>", answered in a few sentences, citing your evidence: thought ids (t-...), commit hashes, and file::function names for code.'
 ].join('\n');
@@ -280,7 +288,7 @@ async function oneRound(cases, at, k) {
   line('answer found', (x) => x.hit + '/' + cases.length);
   line('found, or its commit', (x) => x.reach + '/' + cases.length);
   line('time', (x) => x.seconds + ' s');
-  line('tool calls (gitx)', (x) => x.tool_calls + ' (' + x.gitx_calls + ')');
+  line('tool calls (search)', (x) => x.tool_calls + ' (' + x.gitx_calls + ')');
   line('tokens', (x) => x.tokens);
   line('output tokens', (x) => x.output_tokens);
   line('cost', (x) => '$' + (x.cost_usd || 0).toFixed(2));
