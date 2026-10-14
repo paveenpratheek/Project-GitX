@@ -48,6 +48,8 @@ const argv = process.argv.slice(2);
 const eq = (name, dflt) => { const a = argv.find((x) => x.startsWith('--' + name + '=')); return a ? a.slice(name.length + 3) : dflt; };
 const ARMS = eq('arms', 'hand,gitx').split(',');
 const MODEL = eq('model', 'sonnet');
+/* --effort=low|medium|high|...: the agent's reasoning effort, passed to the CLI; the CLI's own default when unset. */
+const EFFORT = eq('effort', null);
 const PARALLEL = Number(eq('parallel', '3'));
 const MINUTES = Number(eq('minutes', '12'));
 /* Learning on: one walk folder kept across every GitX agent and round, so
@@ -124,6 +126,7 @@ function runOne(c, arm, at) {
   const settingsFile = path.join(data, 'settings.json');
   if (Object.keys(hooks).length) fs.writeFileSync(settingsFile, JSON.stringify({ hooks }, null, 2));
   const args = ['-p', c.prompt || PROMPT(c.q, arm), '--output-format', 'stream-json', '--verbose', '--model', MODEL,
+    ...(EFFORT ? ['--effort', EFFORT] : []),
     '--setting-sources', 'project,local', '--disable-slash-commands', '--no-session-persistence',
     ...(Object.keys(hooks).length ? ['--settings', settingsFile] : []),
     '--strict-mcp-config', '--mcp-config', mcpFile,
@@ -195,8 +198,11 @@ function runOne(c, arm, at) {
  * whole first learning rerun went on asking 120 of them after the limit hit,
  * and saved rounds of nothing. The first refusal stops the run. */
 let refused = null;
-/* A usage limit or an expired login: no tokens, and nothing after it can run. */
-const isRefusal = (r) => !r.tokens && /limit|resets|authenticate|oauth|log ?in/i.test(r.answer || '');
+/* A usage limit or an expired login: nothing after it can run. A limit can
+ * also land mid-run, after tokens were spent - the agent's whole reply is
+ * then the one-line notice, and round 3 of the Opus run (15 October) was
+ * scored 0 of 14 for two arms on it. */
+const isRefusal = (r) => { const a = String(r.answer || ''); return (!r.tokens || a.length < 300) && /hit your .*limit|usage limit|limit · resets|resets \w+ \d|authenticate|oauth|log ?in/i.test(a); };
 
 async function runRound(k, cases, at) {
   const jobs = [];
@@ -319,7 +325,7 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, effort: EFFORT || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
   return out;
 }
