@@ -21,6 +21,9 @@ import { recordThoughts } from './tools/record.js';
 import { related, buildRankIndex, summaryOf } from './tools/rank.js';
 import { expandRegion, findText, warm } from './tools/code-find.js';
 import { newSessions, askPooled, prefetch } from './tools/session-pool.js';
+import { askSubjects } from './tools/ask-subjects.js';
+import { instructionsFor } from './lens/subjects.js';
+import { lensModel } from './lens/lens.js';
 import { commitCode } from './tools/commit-code.js';
 /* The path taken for each prompt (t-50e40ce534): what GitX did with an agent's
  * question and where the agent went next, kept per prompt and streamed to the
@@ -560,6 +563,47 @@ if (V31) {
   p.effort = { type: 'string', enum: ['brief', 'normal', 'deep'], description: 'How much: brief - a quick look (~900 tokens), normal - the default, deep - more of each kind.' };
   rel.description += ' Each answer ends with next: the calls worth making next, written as calls - copy one rather than rewording.';
 }
+
+/* 4th Dimension, subjects (lens/subjects.js, tools/ask-subjects.js): with
+ * GITX_SUBJECTS=1 gitx_related takes subjects, never a question. A question in
+ * words made the agent's wording the search, and a question like "can we do
+ * X" asked GitX for a decision no retrieval can make: the agent names what it
+ * wants the record of, GitX returns the record, the agent decides. Exact
+ * lookups - a name, a value, a function - are data too, and move to
+ * gitx_find. The subject list reaches the agent before its first call, in the
+ * server's instructions, since the tools themselves may not be loaded yet. */
+const SUBJECTS = process.env.GITX_SUBJECTS === '1';
+if (SUBJECTS) {
+  const rel = TOOLS.find((t) => t.name === 'gitx_related');
+  const p = rel.inputSchema.properties;
+  rel.description = 'The record of one or several subjects of this project - its code, the commits that wrote it and the reasoning behind them (decisions, rejected ideas with what held them back, constraints, rules, open questions). It returns what is recorded; it does not answer questions or decide: name the subjects you need the record of, from the list in GitX\'s instructions, and decide yourself. Several subjects also give where they meet - each pair and all together. Each answer ends with next: calls worth making next, ready to copy.';
+  rel.inputSchema = {
+    type: 'object',
+    properties: {
+      subjects: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Subject names from GitX\'s list - the project, a topic or a concept, by today\'s name or an old one ("path knowledge", "4th Dimension", "trails"). Not a question. A name that is not a subject here comes back with the closest ones.' },
+      lens: { ...p.lens, type: 'array', items: { type: 'string', enum: ['what', 'how', 'where', 'when', 'why'] } },
+      include: p.include,
+      effort: p.effort,
+      cwd: p.cwd
+    },
+    required: ['subjects']
+  };
+  TOOLS.push({
+    name: 'gitx_find',
+    description: 'An exact lookup in this project: find - text as written (case ignored) or /regex/, for a name, a value or a list such as every tool or every default - returns each matching line as file:line with its function and the thoughts that say it; expand - a function named in an answer (its map name or file:line), returned with its code, the commits that wrote it and the thoughts they settled.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        find: { type: 'string', description: 'Text as written, or /regex/.' },
+        expand: { type: 'string', description: 'A function from an answer: its name as written there, or file:line.' },
+        paths: { type: 'array', items: { type: 'string' }, description: 'Files or folders to keep a find to.' },
+        cwd: p.cwd
+      },
+      required: []
+    }
+  });
+}
+const SUBJECTS_HOW = 'Answers keep to the subjects named: brief is what each is; overview its parts, each with one or two of every kind of thinking; reasons the decisions with evidence and what lost to them; included the kinds asked for in full, kept to the subject; meets the records joining subjects, "names all of them" first. Asking a subject again gives only what changed. A name that is not a subject comes back under not_subjects with the closest ones.';
 
 
 /* What reaches the agent, less what it already has (the owner's trims, 6
@@ -1215,6 +1259,20 @@ async function handleToolCall(name, args) {
        * question's words choosing its lines and thoughts. */
       /* An exact lookup: where, not an essay (code-find.js findText). */
       if (args.find) return reply({ repo: target.dir, ...findText(target.dir, String(args.find), { paths: args.paths }) });
+      /* By subject: the record of what the agent named, never a question. */
+      if (SUBJECTS && !args.expand) {
+        const named = [].concat(args.subjects || []).map((x) => String(x || '').trim()).filter(Boolean);
+        if (!named.length) {
+          let list = [];
+          try { list = instructionsFor(lensModel(target.dir)); } catch (_) { /* the error alone */ }
+          return reply({ repo: target.dir, error: 'gitx_related takes subjects, not a question: name what you need the record of, and decide yourself from what comes back.' + (args.query ? ' "' + String(args.query).slice(0, 80) + '" was not searched.' : ''), how: list });
+        }
+        /* The walk is keyed by the subjects, so learning is per subject. */
+        args.query = named.join(', ');
+        const r = askSubjects(sessions, target.dir, { subjects: named, lens: args.lens || null, include: args.include || null, effort: args.effort || null, dataDir: paths.base || logDataDir() });
+        lastMonitor = r.monitor;
+        return reply({ repo: target.dir, ...r.answer, how_to_use: SUBJECTS_HOW });
+      }
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
@@ -1238,6 +1296,19 @@ async function handleToolCall(name, args) {
       lastMonitor = out._monitor || null;
       delete out._monitor;
       return reply({ repo: target.dir, ...out });
+    }
+
+    case 'gitx_find': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+      if (args.find) return reply({ repo: target.dir, ...findText(target.dir, String(args.find), { paths: args.paths }) });
+      if (args.expand) {
+        const pool = (sessions.get(target.dir) || {}).pool;
+        const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
+        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
+      }
+      return reply({ repo: target.dir, error: 'gitx_find takes find (text or /regex/) or expand (a function from an answer).' });
     }
 
     case 'gitx_thought':
@@ -1284,13 +1355,19 @@ rl.on('line', async (line) => {
 
     if (method === 'initialize') {
       paths.start(params && params.clientInfo, { id: AGENT_ID, name: AGENT_NAME, model: AGENT_MODEL });
+      /* What the agent reads before any tool is loaded: with subjects, what
+       * GitX is for and the subjects there are (t-1f7b592df4: the server sent
+       * nothing, and nothing pointed an agent to GitX). */
+      let instructions;
+      if (SUBJECTS) { try { instructions = instructionsFor(lensModel(ROOT_DIR)); } catch (_) { instructions = undefined; } }
       sendResponse({
         jsonrpc: '2.0',
         id,
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: 'gitx-mcp-server', version: '1.0.0' }
+          serverInfo: { name: 'gitx-mcp-server', version: '1.0.0' },
+          ...(instructions ? { instructions } : {})
         }
       });
       return;

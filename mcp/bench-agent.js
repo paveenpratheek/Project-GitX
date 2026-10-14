@@ -6,6 +6,8 @@
  *   gitx   the same, plus GitX's MCP tools
  *   bm25   the same, plus a plain keyword search (bench-bm25.js) over the
  *          same code, commits and thoughts - the baseline GitX must beat
+ *   subjects  GitX asked by subject, not by question (GITX_SUBJECTS, with
+ *          thermal, lens and v3.1): the subject list in its instructions
  *
  *   node mcp/bench-agent.js [repo] [--set heldout] [--only id,id]
  *        [--arms=hand,gitx] [--model=sonnet] [--parallel=3] [--minutes=12]
@@ -85,7 +87,7 @@ function runOne(c, arm, at) {
   /* thermal: the same GitX with thermal vision on (4th Dimension v2). */
   const mcp = arm === 'bm25' ? { mcpServers: { search: { command: process.execPath, args: [BM25], env: { BM25_REPO: frozen.dir } } } }
     : arm !== 'hand'
-    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' ? { GITX_V31: '1' } : {}) } } } }
+    ? { mcpServers: { gitx: { command: process.execPath, args: [SERVER], env: { GITX_DATA_DIR: walkDir, GITX_BROKER_URL: 'ws://127.0.0.1:9', GITX_AGENT_NAME: 'bench ' + c.id, ...(arm === 'thermal' || arm === 'lens' || arm === 'lens31' || arm === 'subjects' ? { GITX_THERMAL: '1' } : {}), ...(arm === 'lens' || arm === 'lens31' || arm === 'subjects' ? { GITX_LENS: '1' } : {}), ...(arm === 'lens31' || arm === 'subjects' ? { GITX_V31: '1' } : {}), ...(arm === 'subjects' ? { GITX_SUBJECTS: '1' } : {}) } } } }
     : { mcpServers: {} };
   const mcpFile = path.join(data, 'mcp.json');
   fs.writeFileSync(mcpFile, JSON.stringify(mcp));

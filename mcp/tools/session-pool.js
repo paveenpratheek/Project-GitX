@@ -208,7 +208,7 @@ const LEARNED = 0.5;         // a learned word's weight: it widens the search, n
 /* Thermal vision (4th Dimension v2) is on with GITX_THERMAL=1, or `thermal`. */
 /* The lens (4th Dimension v3) is on with GITX_LENS=1, or `lens`; `lensAs`
  * is the shape the agent asked for by name, over the one its words imply. */
-export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1', lens = process.env.GITX_LENS === '1', lensAs = null, include = null, topics = null, effort = null } = {}) {
+export function askPooled(sessions, repoDir, { query = '', add = null, drop = null, fresh = false, paths = [], dataDir = null, focus = 'both', budget = 0, thermal = process.env.GITX_THERMAL === '1', lens = process.env.GITX_LENS === '1', lensAs = null, include = null, topics = null, effort = null, asSubject = null } = {}) {
   /* v3.1: the agent says what it wants (lens.js ask.js); an effort sets the budget it left unset. */
   const asked31 = Array.isArray(lensAs) || (include && include.length) || (topics && topics.length) || !!effort;
   if (effort && EFFORT[effort] && !budget) budget = EFFORT[effort].budget;
@@ -268,10 +268,12 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
    * names. The subject's other names widen the search; the context words
    * count for less than the subject's (lens.js). */
   let lx = null;
-  if ((lens || lensAs || asked31) && q) {
+  if ((lens || lensAs || asked31 || asSubject) && q) {
     try {
       const model = lensModel(repoDir);
-      const found = topics && topics.length ? scopeTo(model, /^tp-/.test(q) ? null : subjectOf(model, q), topics) : subjectOf(model, q);
+      /* A subject the agent named (subjects.js resolve) is taken as named, not
+       * read again out of words. */
+      const found = asSubject || (topics && topics.length ? scopeTo(model, /^tp-/.test(q) ? null : subjectOf(model, q), topics) : subjectOf(model, q));
       const named = (Array.isArray(lensAs) ? lensAs : [lensAs]).filter((x) => LENSES.includes(x));
       lx = { model, found, q, named: named.length > 0, as: named[0] || lensOf(q), lenses: named.length ? named : [lensOf(q)].filter(Boolean), asked31, include, effort };
       if (found) {
