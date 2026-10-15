@@ -311,13 +311,27 @@ const ONE_PROMPT = (cases, arm, k) => [
 /* With --rounds, a new agent per arm each round, the next wording each
  * time; a GitX arm keeps the same walk folder (--walks), so round 2's agent
  * asks the same GitX round 1's agent taught. Rounds run one after another. */
+/* --shuffle=<seed>: the questions in a different order each round, the same
+ * order for the same seed - so two versions compared see the same orders, and
+ * no strategy can lean on one order (an agent working a list in order shaped
+ * its first call by the opening questions; 15 October). */
+const SHUFFLE = eq('shuffle', null);
+function shuffled(cases, round) {
+  if (SHUFFLE === null) return cases;
+  let s = (Number(SHUFFLE) || 1) * 1000 + round;
+  const rnd = () => { s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; };
+  const out = cases.slice();
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; }
+  return out;
+}
+
 async function oneAgent(cases, at) {
   const first = Number(eq('wording', '1'));
   const all = [];
   for (let r = 0; r < ROUNDS && !refused; r++) {
     const k = first + r;
     console.log('\n=== Round ' + (r + 1) + ' of ' + ROUNDS + (WALKS ? ', walks so far: ' + walkCount() : ''));
-    all.push({ round: r + 1, wording: k, out: await oneRound(cases, at, k) });
+    all.push({ round: r + 1, wording: k, out: await oneRound(shuffled(cases, r + 1), at, k) });
   }
   if (ROUNDS > 1) {
     console.log('\nAcross rounds' + (WALKS ? ', GitX learning carried in ' + WALKS : '') + ':');
@@ -355,7 +369,7 @@ async function oneRound(cases, at, k) {
   const runs = path.join(REPO, '.gitx', 'bench', 'runs');
   fs.mkdirSync(runs, { recursive: true });
   const file = path.join(runs, 'one-agent-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json');
-  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, effort: EFFORT || undefined, debrief: DEBRIEF || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
+  fs.writeFileSync(file, JSON.stringify({ schema: 'gitx.bench-one-agent/0', when: new Date().toISOString(), at, gitx_only: ONLY || undefined, sheet: SHEET || undefined, neutral: NEUTRAL || undefined, effort: EFFORT || undefined, debrief: DEBRIEF || undefined, shuffle: SHUFFLE || undefined, model: MODEL, arms: ARMS, wording: k, aborted: refused || undefined, runs: out }, null, 2) + '\n');
   console.log('\nSaved ' + path.relative(REPO, file));
   for (const x of out) if (x.debrief) console.log('\nDebrief, ' + x.arm + ' (wording ' + k + '):\n' + x.debrief.text);
   return out;
