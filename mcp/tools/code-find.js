@@ -39,12 +39,28 @@ import { staleOf } from './stale.js';
 import { hotCode, rejectedIndex, historyOf, attachedWords } from '../thermal/thermal.js';
 
 /* 3: regions split after the regex-literal fix (bd2133f) - a cache from
- * before it kept serving code-find.js as one region named STARTS. */
-const SCHEMA = 3;
+ * before it kept serving code-find.js as one region named STARTS.
+ * 4: large hand-written files are indexed (see generated below) - a cache
+ * from before would keep serving them as absent. */
+const SCHEMA = 4;
 const CODE_EXT = /\.(m?js|cjs|jsx|tsx?|py|go|rs|java|rb|php|cs|css|scss|html?|vue|svelte)$/i;
 const DOC_EXT = /\.(md|markdown)$/i;
 const SKIP = /(^|\/)(node_modules|vendor|dist|build|\.gitx)\//;
-const MAX_FILE_LINES = 6000;
+/* A file is left out for being generated, not for being long. A 6,000-line
+ * cap set when GitX's own largest file had 1,444 lines dropped ter-manager's
+ * public/app.js - 13,410 lines, most of that project's logic - so code search
+ * there could not find the tiling engine at all (15 October). Code is cut into
+ * function-sized regions, so a long file costs index time, not answer size.
+ * What is left out instead: minified or bundled output - very long lines, or
+ * a bundler's or generator's mark near the top - and a safety cap far above
+ * any hand-written file. */
+const MAX_FILE_LINES = 100000;
+const LONG_LINE = 2000;          // a hand-written line is never this long; a minified bundle's are
+const GENERATED = /(@generated|do not edit|auto-?generated|webpackBootstrap|sourceMappingURL=|\/\*! For license)/i;
+function generated(lines) {
+  if (lines.some((l) => l.length > LONG_LINE)) return true;
+  return GENERATED.test(lines.slice(0, 15).join('\n'));
+}
 const REGION_MAX = 120;      // a region longer than this is cut at blank lines
 const CHUNK = 60;
 const WHY_SHARE = 0.2;       // a commit's words count for a region it wrote this share of
@@ -253,7 +269,7 @@ function regionsOfFile(repoDir, f) {
   let text;
   try { text = git(repoDir, ['show', 'HEAD:' + f]); } catch (_) { return []; }
   const lines = text.split('\n');
-  if (lines.length > MAX_FILE_LINES) return [];
+  if (lines.length > MAX_FILE_LINES || generated(lines)) return [];
   const blame = blameFile(repoDir, f);
   return splitFile(f, lines).map((r) => {
     const commits = {};
