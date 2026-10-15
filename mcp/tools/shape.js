@@ -1,5 +1,5 @@
 /*
- * What the agent asked to receive: a gitx_related answer cut to a focus and
+ * What the agent asked to receive: a gitx_search answer cut to a focus and
  * a size, by the agent's own choice (t-ef96bfc909).
  *
  * GitX is System 1 for the agent's System 2: it lowers the agent's load, and

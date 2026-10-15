@@ -32,7 +32,7 @@ import { commitCode } from './tools/commit-code.js';
 import { PathRecorder } from './tools/path-recorder.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
-/* What gitx_related did, for the path recorder; never part of the agent's answer. */
+/* What gitx_search did, for the path recorder; never part of the agent's answer. */
 let lastMonitor = null;
 
 /* The commit form's vocabulary. Conventional-commit types, so the header parses
@@ -347,7 +347,7 @@ const TOOLS = [
   },
   {
     name: 'gitx_find_related',
-    description: 'Finds earlier commits related to what you are working on, so you can read the reasoning behind them instead of guessing. Two uses: AFTER staging and before writing a commit message, or when ORIENTING in an unfamiliar area before changing anything. Ranks on which code regions are involved AND how you describe the work - the two reach different things, so supply both. Reads the staged diff itself; do not paste it in. gitx_related searches commits and thoughts by words; this searches by example, from staged work.',
+    description: 'Finds earlier commits related to what you are working on, so you can read the reasoning behind them instead of guessing. Two uses: AFTER staging and before writing a commit message, or when ORIENTING in an unfamiliar area before changing anything. Ranks on which code regions are involved AND how you describe the work - the two reach different things, so supply both. Reads the staged diff itself; do not paste it in. gitx_search searches commits and thoughts by words; this searches by example, from staged work.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -423,7 +423,7 @@ const TOOLS = [
    * their clone. Writing them is a later, separate set of tools. */
   {
     name: 'gitx_thought_catch_up',
-    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, a one-line count of the thinking waiting in the context graph (search it with gitx_related), questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
+    description: 'Call this at the START of a session in a repository, before changing anything, to pick up where the last agent or session left off. Returns: thinking recorded since the last commit (what was in progress), what the recent commits decided and turned down, where the newest reasoning is if the recent commits have none, a one-line count of the thinking waiting in the context graph (search it with gitx_search), questions still open, turned-down ideas that can come back and under what condition, ideas stashed for later, and rules learned from past corrections - which you should follow. Every empty answer says so explicitly: "no thinking on record" is a fact, not a failure. Pass since (a commit hash) to catch up on everything after a commit you already know.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -436,10 +436,10 @@ const TOOLS = [
   },
   /* Reading a thought, not searching for one: by id from either graph, the
    * thinking behind a commit, lists by outcome or kind, and the stashes.
-   * Searching by words is gitx_related's - see tools/thought-query.js. */
+   * Searching by words is gitx_search's - see tools/thought-query.js. */
   {
     name: 'gitx_thought',
-    description: 'Read reasoning GitX holds, by address rather than by words: one thought by id in full - every force, every link both ways, where it sits, whether a commit settled it - from the thought graph (settled) or the context graph (waiting); the thinking behind one commit; one topic\'s summary in full, with every commit that built it, its code and everything still open; every thought of an outcome or kind, or rejected ideas that can come back (reopenable), from both graphs; or the stashes. To find thinking by words, use gitx_related. An empty answer says which kind of empty it is.',
+    description: 'Read reasoning GitX holds, by address rather than by words: one thought by id in full - every force, every link both ways, where it sits, whether a commit settled it - from the thought graph (settled) or the context graph (waiting); the thinking behind one commit; one topic\'s summary in full, with every commit that built it, its code and everything still open; every thought of an outcome or kind, or rejected ideas that can come back (reopenable), from both graphs; or the stashes. To find thinking by words, use gitx_search. An empty answer says which kind of empty it is.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -459,7 +459,7 @@ const TOOLS = [
   /* The ranking engine (tools/rank.js) as an agent asks it: one list over
    * everything GitX holds, where the tools above each search one part. */
   {
-    name: 'gitx_related',
+    name: 'gitx_search',
     description: 'Find what GitX already holds about something - commits, settled reasoning and thinking still waiting - BEFORE working it out again. Give a query (a question, a task, a draft in your own words), and optionally paths you work in. GitX answers from the code down, map first: the feature\'s core (the code that implements it), wiring (where it is connected) and surface (where it is shown) as functions with line ranges, and its own words; then its best functions as trees - the lines worth reading, no file to open; the commits that wrote those lines and why; the thoughts they settled, each with its status first (OPEN QUESTION, PROPOSED - NOT CONFIRMED, ANSWERED by <thought>, ACCEPTED - NOT BUILT, SETTLED in <commit>, REJECTED with what held it back, SUPERSEDED); the topic summary; and beside them the context graph - waiting plans, open questions and rules. With no code about it, it says so and answers from the plans. Open any map entry with expand. A follow-up question keeps the previous one\'s rare words until the subject changes. Filtering by layers, outcome or kind, or giving ids with no query, lists the older stack instead. An empty answer says so, and is not evidence nothing was considered. Ask for what you need, not everything: focus "thinking" for why and what was decided (small, no code), focus "code" for the code, a budget in tokens for a quick check, or find for an exact name, value or list - each lowers what you have to read.',
     inputSchema: {
       type: 'object',
@@ -540,7 +540,7 @@ const TOOLS = [
         },
         summary: {
           type: 'object',
-          description: 'Rewrite a topic\'s summary in place: what that part of the project does TODAY, in a few lines (20-1200 characters). Read first by gitx_related; the reply of every record says which topics\' summaries are missing or have fallen behind.',
+          description: 'Rewrite a topic\'s summary in place: what that part of the project does TODAY, in a few lines (20-1200 characters). Read first by gitx_search; the reply of every record says which topics\' summaries are missing or have fallen behind.',
           properties: {
             topic: { type: 'string', description: 'The topic id (tp-...).' },
             text: { type: 'string', description: 'What it does today - not its history, which its thoughts and commits already hold.' }
@@ -566,12 +566,12 @@ const TOOLS = [
   }
 ];
 
-/* 4th Dimension v3.1 (lens/ask.js): with GITX_V31=1 gitx_related takes
+/* 4th Dimension v3.1 (lens/ask.js): with GITX_V31=1 gitx_search takes
  * what the agent wants as structure - several lenses, the kinds to include,
  * topics, an effort - and the subject in words. */
 const V31 = process.env.GITX_V31 === '1';
 if (V31) {
-  const rel = TOOLS.find((t) => t.name === 'gitx_related');
+  const rel = TOOLS.find((t) => t.name === 'gitx_search');
   const p = rel.inputSchema.properties;
   p.query.description = 'The subject in your own words - a feature, a concept, an area ("path knowledge", "the 4th Dimension"). Say what you want back with lens, include and effort instead of in the question.';
   p.lens = { type: 'array', items: { type: 'string', enum: ['what', 'how', 'where', 'when', 'why'] }, description: 'What you want back, one or several in one call: what - its parts, what each is, one or two of every kind of thinking in each, its main code by name; how - code lines, the commits that wrote them and why, the rules, constraints and rejected ideas on that code; where - files and functions only; when - commits in order with their reasons, open questions as raised; why - decisions with reasons and evidence, rejected ideas and what held them back, constraints, rules, open questions, findings.' };
@@ -582,7 +582,7 @@ if (V31) {
 }
 
 /* 4th Dimension, subjects (lens/subjects.js, tools/ask-subjects.js): with
- * GITX_SUBJECTS=1 gitx_related takes subjects, never a question. A question in
+ * GITX_SUBJECTS=1 gitx_search takes subjects, never a question. A question in
  * words made the agent's wording the search, and a question like "can we do
  * X" asked GitX for a decision no retrieval can make: the agent names what it
  * wants the record of, GitX returns the record, the agent decides. Exact
@@ -591,7 +591,7 @@ if (V31) {
  * server's instructions, since the tools themselves may not be loaded yet. */
 const SUBJECTS = process.env.GITX_SUBJECTS === '1';
 if (SUBJECTS) {
-  const rel = TOOLS.find((t) => t.name === 'gitx_related');
+  const rel = TOOLS.find((t) => t.name === 'gitx_search');
   const p = rel.inputSchema.properties;
   rel.description = 'The record of one or several subjects of this project - its code, the commits that wrote it and the reasoning behind them (decisions, rejected ideas with what held them back, constraints, rules, open questions). It returns what is recorded; it does not answer questions or decide: name the subjects you need the record of, from the list in GitX\'s instructions, and decide yourself. Several subjects also give where they meet - each pair and all together. Each answer ends with next: calls worth making next, ready to copy.';
   rel.inputSchema = {
@@ -624,7 +624,7 @@ const SUBJECTS_HOW = 'Answers keep to the subjects named: brief is what each is;
 
 
 /* What reaches the agent, less what it already has (the owner's trims, 6
- * October). Measured on the owner's 18 questions, a gitx_related answer was
+ * October). Measured on the owner's 18 questions, a gitx_search answer was
  * ~2,500 tokens of which 11% was indentation, 274 tokens the same how_to_use
  * as last time, and 550 the same topic summaries as the last question in
  * that topic. So every answer goes out as compact JSON; each how_to_use text
@@ -1261,7 +1261,10 @@ async function handleToolCall(name, args) {
       return reply({ repo: target.dir, ...recordThoughts(target.dir, args, { agent: AGENT_ID, name: AGENT_NAME, model: AGENT_MODEL, session: 'mcp-' + AGENT_ID }) });
     }
 
-    case 'gitx_related': {
+    /* gitx_related was this tool's name until 15 October: still answered, so a
+     * session or skill written for it keeps working, but no longer listed. */
+    case 'gitx_related':
+    case 'gitx_search': {
       const target = resolveTargetRepo(args.cwd);
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
@@ -1282,7 +1285,7 @@ async function handleToolCall(name, args) {
         if (!named.length) {
           let list = [];
           try { list = instructionsFor(lensModel(target.dir)); } catch (_) { /* the error alone */ }
-          return reply({ repo: target.dir, error: 'gitx_related takes subjects, not a question: name what you need the record of, and decide yourself from what comes back.' + (args.query ? ' "' + String(args.query).slice(0, 80) + '" was not searched.' : ''), how: list });
+          return reply({ repo: target.dir, error: 'gitx_search takes subjects, not a question: name what you need the record of, and decide yourself from what comes back.' + (args.query ? ' "' + String(args.query).slice(0, 80) + '" was not searched.' : ''), how: list });
         }
         /* The walk is keyed by the subjects, so learning is per subject. */
         args.query = named.join(', ');

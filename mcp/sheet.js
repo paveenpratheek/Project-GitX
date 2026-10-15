@@ -64,9 +64,9 @@ async function sheet() {
     'What it holds: the project\'s whole record linked into one stack - the code by function, every commit and why it was made, and the reasoning behind them: decisions, rejected ideas and what held them back, constraints, rules, open questions.',
     'Why first: one GitX call returns what would take many greps, file reads and git log calls - the code that implements a subject, the commits that wrote it and the decisions behind them, already joined. It is the shorter path; reach for files when GitX points you to them or has nothing.',
     BY_SUBJECT
-      ? 'Search: gitx_related {"subjects": [...], "lens": ["what"|"how"|"where"|"when"|"why"], "include": ["decided","rejected","constraint","rule","open"], "effort": "brief"|"normal"|"deep"} - several subjects in one call also give where they meet. Subjects here: ' + subjects + '.'
-      : 'Search: gitx_related {"query": "<the subject in a few words>", "lens": ["what"|"how"|"where"|"when"|"why"], "include": ["decided","rejected","constraint","rule","open"], "effort": "brief"|"normal"|"deep"}.',
-    'Exact lookups: ' + (BY_SUBJECT ? 'gitx_find' : 'gitx_related') + ' {"find": "a name, value or /regex/"} or {"expand": "a function from an answer"}. A thought by id: gitx_thought {"id": "t-..."}.',
+      ? 'Search: gitx_search {"subjects": [...], "lens": ["what"|"how"|"where"|"when"|"why"], "include": ["decided","rejected","constraint","rule","open"], "effort": "brief"|"normal"|"deep"} - several subjects in one call also give where they meet. Subjects here: ' + subjects + '.'
+      : 'Search: gitx_search {"query": "<the subject in a few words>", "lens": ["what"|"how"|"where"|"when"|"why"], "include": ["decided","rejected","constraint","rule","open"], "effort": "brief"|"normal"|"deep"}.',
+    'Exact lookups: ' + (BY_SUBJECT ? 'gitx_find' : 'gitx_search') + ' {"find": "a name, value or /regex/"} or {"expand": "a function from an answer"}. A thought by id: gitx_thought {"id": "t-..."}.',
     'GitX returns what is recorded; you decide. Cite what it shows by id: t-..., commit hashes, file::function.'
   ].join('\n');
 }

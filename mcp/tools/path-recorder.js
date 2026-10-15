@@ -13,7 +13,7 @@
  *              in the stack, and the move - enter, along, up, down, off
  *   status     walking, then declared, re-asked or left
  *
- * A prompt starts with gitx_related; every GitX call after it, until the next
+ * A prompt starts with gitx_search; every GitX call after it, until the next
  * one, is a step on its path. Self-contained like the trails were: server.js
  * calls it in two places, it never fails a call, and it writes only its own
  * folder - never inside a repository, since a path names private thoughts and
@@ -182,10 +182,10 @@ export class PathRecorder {
 
   /* One tool call, after its answer has gone. Never throws.
    *
-   * Every call is kept, not only the ones after a gitx_related: GitX Logs show
+   * Every call is kept, not only the ones after a gitx_search: GitX Logs show
    * an agent's movement, and most of it - find_related before a commit, the
    * record tool, a commit opened by hash - happens with no question asked
-   * first (measured: 4 gitx_related against about 200 other GitX calls in one
+   * first (measured: 4 gitx_search against about 200 other GitX calls in one
    * session). A call with no path open starts a path of its own, with no
    * stack; it teaches nothing, since only a declare citing its own stack does
    * (learn.js). Each step carries the words the agent gave and what it got. */
@@ -194,7 +194,7 @@ export class PathRecorder {
       const body = error ? null : parse(result);
       /* A question starts a path; opening a map entry (expand) is a step on
        * it, down to that function in the code layer. */
-      if (tool === 'gitx_related' && !(args && args.expand)) {
+      if ((tool === 'gitx_search' || tool === 'gitx_related') && !(args && args.expand)) {
         /* A follow-up keeps its path (t-2c70a44885): a refine step, and what
          * it brought joins the path's stack, so opening it next is on it. */
         const cur = this.current.get(repoDir);
@@ -222,7 +222,7 @@ export class PathRecorder {
     const m = body.map || {};
     const words = [args.query, ...[].concat(args.add || []).map((w) => '+' + w), ...[].concat(args.drop || []).map((w) => '-' + w)].filter(Boolean).join(' ');
     this.walk(rec, {
-      kind: 'refine', tool: 'gitx_related', asked: words || undefined, what: body.why,
+      kind: 'refine', tool: 'gitx_search', asked: words || undefined, what: body.why,
       got: 'round ' + body.round + ': ' + (m.new || []).length + ' new, ' + (m.back || []).length + ' back, ' + (m.hidden || []).length + ' hidden, ' + (m.kept || 0) + ' kept' + (monitor.phases && monitor.phases.question && monitor.phases.question.prefetched ? ' - worked out before it was asked' : '')
     });
     this.send({ type: 'GITX_MONITOR', event: 'ask', repo: rec.repo, record: rec });
@@ -357,7 +357,8 @@ function stepOf(tool, args, body, error) {
       }
       return { kind: 'open', tool, node: { id: String(args.hash), layer: 'commit', text: body && body.subject ? String(body.subject).slice(0, 160) : undefined } };
     /* A function opened from the map: the code node the map drew for it. */
-    case 'gitx_related': {
+    case 'gitx_related':
+    case 'gitx_search': {
       const t = body && body.expanded && body.expanded[0];
       return t ? { kind: 'open', tool, node: { id: 'code:' + t.ref, layer: 'code', text: t.function } } : null;
     }

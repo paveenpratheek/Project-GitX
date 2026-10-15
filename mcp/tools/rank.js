@@ -511,7 +511,7 @@ export function relatedToDraft(ix, { text, also = '', ids = [], exclude = [], to
   return out.results.filter((r) => r.score >= floor);
 }
 
-/* gitx_related: the pull as an agent asks it. The core comes in full - status
+/* gitx_search: the pull as an agent asks it. The core comes in full - status
  * first, the whole sentence, never cut, since a fragment reads as a finished
  * statement (t-ee4606572d) - with why it is there and the call that reads it.
  * The edge, and what words alone found, are counted by layer and topic and

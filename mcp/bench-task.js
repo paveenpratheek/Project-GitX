@@ -59,7 +59,7 @@ const QPROMPT = (dir, arm) => [
   QUESTION + ' Find out as much as you can about it - what it is, how it works, what was decided and why, what was rejected, what it costs, what is still open - in the project in ' + dir + '.',
   '',
   'Its code is in the working tree, its history is in the git commit messages (git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file per thought; .gitx is git-ignored, so give it as a path when you search it.',
-  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : []),
+  ...(arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_search and others) that search its code, commits and reasoning together.'] : []),
   'Do not write or change anything.',
   '',
   'When you are done, reply with what you found, citing every piece of evidence by id: thought ids (t-...), commit hashes, and file::function names for code.'
@@ -70,7 +70,7 @@ const PROMPT = (dir) => [
   'what it is, how it works, what was decided and why, what was rejected, what it costs, and what is still open.',
   'Feature X is only a placeholder - it is not in the project and not yet specified, so do not search for it; search the 4th Dimension.',
   '',
-  'Use only GitX\'s MCP tools (gitx_related and the others) - you have no other way to read the project. ' +
+  'Use only GitX\'s MCP tools (gitx_search and the others) - you have no other way to read the project. ' +
   'Ask as many questions and follow-up questions as you need, until you know everything you would need to start the work. ' +
   'Do not write or record anything.',
   '',
@@ -80,7 +80,7 @@ const PROMPT = (dir) => [
 ].join('\n');
 
 /* GitX's read tools only. The writing ones and the swarm's are refused. */
-const ALLOW = ['mcp__gitx__gitx_related', 'mcp__gitx__gitx_thought', 'mcp__gitx__gitx_thought_history', 'mcp__gitx__gitx_thought_catch_up',
+const ALLOW = ['mcp__gitx__gitx_search', 'mcp__gitx__gitx_thought', 'mcp__gitx__gitx_thought_history', 'mcp__gitx__gitx_thought_catch_up',
   'mcp__gitx__gitx_find_related', 'mcp__gitx__gitx_graph_map', 'mcp__gitx__gitx_graph_area', 'mcp__gitx__gitx_graph_chain', 'mcp__gitx__gitx_graph_commit'];
 const DENY = ['Read', 'Grep', 'Glob', 'Bash', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch', 'Task', 'Agent', 'TodoWrite',
   'mcp__gitx__gitx_thought_record', 'mcp__gitx__gitx_commit_chronicle', 'mcp__gitx__gitx_create_issue_with_branch',

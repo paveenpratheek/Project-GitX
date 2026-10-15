@@ -305,9 +305,9 @@ export function thoughtsPayload(repoDir) {
 
 /* ─────────────────────────────────────────────── what became of a thought */
 
-/* One rule for every reader - gitx_related, gitx_thought and catch-up - so two
+/* One rule for every reader - gitx_search, gitx_thought and catch-up - so two
  * tools never tell an agent different things about the same thought. They did:
- * gitx_thought called t-99e44e7b95 answered while gitx_related, the tool agents
+ * gitx_thought called t-99e44e7b95 answered while gitx_search, the tool agents
  * are sent to first, still said OPEN QUESTION.
  *
  * A thought is never rewritten; what comes after it says what became of it.

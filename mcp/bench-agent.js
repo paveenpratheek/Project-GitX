@@ -82,7 +82,7 @@ const SEARCH_LINE = ONLY
     '(git log, git show), and its recorded design reasoning is in .gitx/thoughts/ and .gitx/context/thoughts/ - one JSON file ' +
     'per thought; .gitx is git-ignored, so give it as a path when you search it.';
 const MCP_NOTE = (arm) => arm === 'bm25' ? ['This project also has a search MCP tool (search) that searches its code, commits and reasoning by keywords.']
-  : arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_related and others) that search its code, commits and reasoning together.'] : [];
+  : arm !== 'hand' ? ['This project also has GitX MCP tools (gitx_search and others) that search its code, commits and reasoning together.'] : [];
 
 const PROMPT = (q, arm) => [
   'Answer this question about the project in the current folder:',
@@ -150,7 +150,7 @@ function runOne(c, arm, at) {
         if (m.type === 'system' && m.subtype === 'init') model = m.model;
         if (m.type === 'assistant') for (const b of (m.message && m.message.content) || []) if (b.type === 'tool_use') {
           calls.push({ tool: b.name, input: b.input });
-          if (b.name === 'mcp__gitx__gitx_related') related.add(b.id);
+          if (b.name === 'mcp__gitx__gitx_search' || b.name === 'mcp__gitx__gitx_related') related.add(b.id);
         }
         /* An answer that carries "learned" is one earlier walks shaped. */
         if (m.type === 'user') for (const b of (m.message && m.message.content) || []) {
