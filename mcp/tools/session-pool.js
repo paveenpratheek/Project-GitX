@@ -1,6 +1,6 @@
 /*
  * A question's pool (t-2c70a44885): GitX keeps the agent's stack between
- * calls, so a follow-up is one more ordinary gitx_related call that updates
+ * calls, so a follow-up is one more ordinary gitx_search call that updates
  * the same stack instead of starting over.
  *
  *   new or follow-up   a question is a follow-up when its rare words were in
@@ -202,7 +202,7 @@ export function prefetch(sessions, repoDir, { words = AHEAD_WORDS, onDone = null
   setImmediate(next);
 }
 
-/* One gitx_related call through the session's pool. */
+/* One gitx_search call through the session's pool. */
 const LEARNED = 0.5;         // a learned word's weight: it widens the search, never decides it
 
 /* Thermal vision (4th Dimension v2) is on with GITX_THERMAL=1, or `thermal`. */

@@ -1,5 +1,5 @@
 /*
- * The test bench for gitx_related's answer - the System-1 layer: what an agent
+ * The test bench for gitx_search's answer - the System-1 layer: what an agent
  * receives in one call, judged on fixed questions against a frozen copy of the
  * repository, every run compared with the last.
  *
@@ -25,7 +25,7 @@
  *            answers matches; "(?i)" at the start of re ignores case
  *
  * Variants:
- *   full         gitx_related through the session pool, as the MCP server
+ *   full         gitx_search through the session pool, as the MCP server
  *                answers a new question - with no walks to learn from
  *   stack        the 4-hop stack it replaced (rank.js) - the baseline
  *   thermal      full with thermal vision on (4th Dimension v2): learning

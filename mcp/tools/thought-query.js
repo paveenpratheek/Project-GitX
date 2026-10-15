@@ -1,7 +1,7 @@
 /*
  * Reading the thought layer from an agent's side: gitx_thought (one node by
  * id, the thinking behind a commit, lists by outcome, kind or stashes) and
- * gitx_thought_catch_up. Searching by words is gitx_related's (tools/rank.js);
+ * gitx_thought_catch_up. Searching by words is gitx_search's (tools/rank.js);
  * searchThoughts and searchContext below still run for rank-eval.js, which
  * measures the engine against them.
  *
@@ -132,7 +132,7 @@ function reopenable(t) {
 }
 
 /* What became of a thought later, by the rule every reader shares (laterOf in
- * thoughts.js) over links from both graphs - gitx_related says the same of it.
+ * thoughts.js) over links from both graphs - gitx_search says the same of it.
  * A thought is never rewritten - a later one supersedes it, or one refining it
  * is built - so a question answered either way must stop counting as open, or
  * the open list fills with decisions that were settled long ago. */
@@ -444,7 +444,7 @@ export function searchContext(repoDir, args = {}) {
     if (!qTokens.length) return { ...head, error: 'The query has no searchable words (3+ letters, not stopwords).' };
     scope.query = q;
     ranked = ranked.map((r) => ({ t: r.t, s: score(qTokens, r.t) })).filter((r) => r.s > 0);
-    if (!ranked.length) absence = `Nothing waiting in the context graph mentions "${q}". It may have been settled already - gitx_related searches both graphs.`;
+    if (!ranked.length) absence = `Nothing waiting in the context graph mentions "${q}". It may have been settled already - gitx_search searches both graphs.`;
   }
   if (absence) return { ...head, ...scope, results: [], nothing_on_record: absence };
 
@@ -465,7 +465,7 @@ export function searchContext(repoDir, args = {}) {
 
 /* ─────────────────────────────────────────────── gitx_thought */
 
-/* Reading and listing, never searching by words - that is gitx_related's
+/* Reading and listing, never searching by words - that is gitx_search's
  * (t-d69e5f5910: five search tools become two, the engine and a reader by id).
  * One thought by id from whichever graph holds it; the thinking behind one
  * commit; every thought of some outcome or kind, or held back by something
@@ -474,7 +474,7 @@ export function searchContext(repoDir, args = {}) {
  * reached. */
 export function readThought(repoDir, args = {}) {
   if (args.query) {
-    return { error: 'gitx_thought reads by id, commit, outcome, kind, reopenable or stashes - to find thinking by words, use gitx_related.' };
+    return { error: 'gitx_thought reads by id, commit, outcome, kind, reopenable or stashes - to find thinking by words, use gitx_search.' };
   }
   if (args.id) {
     const settled = searchThoughts(repoDir, { id: args.id });
@@ -495,7 +495,7 @@ export function readThought(repoDir, args = {}) {
       how_to_use: 'settled is the thought graph - reasoning a commit carried out; waiting is the context graph - thinking no commit has settled yet, where an accepted decision is decided but not built. Read one in full with gitx_thought and its id.'
     };
   }
-  return { error: 'Give id (one thought), commit (the thinking behind it), topic (its summary), outcome, kind or reopenable (a list from both graphs), or stashes. To search by words, use gitx_related.' };
+  return { error: 'Give id (one thought), commit (the thinking behind it), topic (its summary), outcome, kind or reopenable (a list from both graphs), or stashes. To search by words, use gitx_search.' };
 }
 
 /* ─────────────────────────────────────────────── catch up */
@@ -520,7 +520,7 @@ function contextSummary(repoDir, headHash, ctx) {
   if (stashes.length) parts.push(n(stashes.length, 'stash', 'stashes'));
   if (answered) parts.push(answered + ' marked open but answered by a settled thought');
   if (stats.skipped) parts.push(n(stats.skipped, 'file not readable', 'files not readable'));
-  return n(thoughts.length, 'thought', 'thoughts') + ' waiting for a commit (' + parts.join(', ') + ') - search them with gitx_related';
+  return n(thoughts.length, 'thought', 'thoughts') + ' waiting for a commit (' + parts.join(', ') + ') - search them with gitx_search';
 }
 
 /* A commit that names no thoughts moves none - promotion never guesses. But
@@ -648,6 +648,6 @@ export function catchUp(repoDir, args = {}) {
     can_come_back: back.length ? { count: back.length, newest: back.slice(0, 8).map((t) => ({ id: t.id, text: t.text, if: t.forces.filter((f) => f.revisit_if && !f.superseded_by).map((f) => lowerFirst(f.revisit_if)).join(' · ') })) } : undefined,
     stashed_for_later: stashedOut,
     rules_learned: learned.length ? learned.slice(0, 20).map((t) => ({ id: t.id, rule: t.text })) : undefined,
-    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, find it with gitx_related before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled, and proposals nobody has said yes to; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_related it: it may already have been turned down, and why. Cite thought ids. Record new thinking with gitx_thought_record as it is decided - a decision with the alternatives it beat - and name it in the commit that carries it out.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought with id says which.' : '')
+    how_to_use: 'Read in_progress first - it is what was being worked out when the last session stopped. context_graph counts the thinking no commit has settled yet - discussion, ideas, open questions, stashes - which is not shown here: when the task touches something that may already have been discussed, find it with gitx_search before working it out again. rules_learned are corrections that became general rules: follow them. still_open are questions nobody has settled, and proposals nobody has said yes to; do not settle one silently. stashed_for_later holds ideas set aside on purpose - the references in a stash are notes about other thoughts and commits, possibly in other repositories, not links to follow. Before proposing something, gitx_search it: it may already have been turned down, and why. Cite thought ids. Record new thinking with gitx_thought_record as it is decided - a decision with the alternatives it beat - and name it in the commit that carries it out.' + (ctx.stats.inferred ? ' ' + ctx.stats.inferred + ' thought(s) in this repository were inferred from a transcript rather than stated outright; gitx_thought with id says which.' : '')
   });
 }

@@ -1148,7 +1148,7 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
       wiring: map.wiringText.length ? map.wiringText : undefined,
       surface: map.surface.length ? map.surface : undefined,
       words: map.words.length ? map.words : undefined,
-      open_any: 'gitx_related { expand: "<a name from the map>" } gives that function as a tree; a word from words as your next query narrows this one'
+      open_any: 'gitx_search { expand: "<a name from the map>" } gives that function as a tree; a word from words as your next query narrows this one'
     } : undefined,
     trees: trees.length ? trees : undefined,
     thinking: docs.length ? docs.map(({ r, score }) => ({ doc: r.file + ' :: ' + cap(r.name, 70), lines: r.from + '-' + r.to, matched: Math.round(score * 100) + '%', text: linesFor(r, terms) })) : undefined,

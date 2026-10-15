@@ -139,7 +139,7 @@ for (const c of cases) {
   rows.push({ c, eng: engineRank(out.results, c.expect), base: baseline(c), ms, out, stack: stackRank(c) });
 }
 
-/* The stack gitx_related answers with (t-8e3f4c2aa9): where the expected node
+/* The stack gitx_search answers with (t-8e3f4c2aa9): where the expected node
  * sits in its order - the core, then the edge, then what words alone found -
  * and in which of them. A question only: a draft being recorded is asked of
  * rank() through relatedToDraft. */

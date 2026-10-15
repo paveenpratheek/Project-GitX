@@ -1,5 +1,5 @@
 /*
- * One gitx_related call by subject (lens/subjects.js): each named subject
+ * One gitx_search call by subject (lens/subjects.js): each named subject
  * resolved, its record asked for through the session's pool with the subject
  * fixed - not read again out of words - and, for several, where they meet.
  *

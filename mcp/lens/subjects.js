@@ -218,7 +218,7 @@ export function instructionsFor(model) {
   return [
     'GitX returns this project\'s RECORD - code, the commits that wrote it, and the reasoning behind them: decisions, rejected ideas with what held them back, constraints, rules, open questions. It does not answer questions or make decisions: you reason and decide; GitX gives you the record to decide on.',
     '',
-    'Ask gitx_related by SUBJECT, not by question: name one or several subjects from this list, the lens you need, and the kinds of record.',
+    'Ask gitx_search by SUBJECT, not by question: name one or several subjects from this list, the lens you need, and the kinds of record.',
     'Subjects - the project: ' + menu.filter((e) => e.kind === 'project').map(line).join(', '),
     'Topics: ' + menu.filter((e) => e.kind === 'topic').map(line).join('; '),
     'Concepts: ' + menu.filter((e) => e.kind === 'concept').map(line).join('; '),
