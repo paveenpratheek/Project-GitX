@@ -44,6 +44,7 @@ import { buildCodeIndex, rankIndexFor, shortName } from '../tools/code-find.js';
 import { stem, statusOf, summaryOf } from '../tools/rank.js';
 import { ASKING } from '../tools/learn.js';
 import { loadThoughts } from '../tools/thoughts.js';
+import { staleOf } from '../tools/stale.js';
 
 const git = (cwd, args) => execFileSync('git', args, { windowsHide: NO_CONSOLE, cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
 const cap = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
@@ -378,7 +379,10 @@ export function rankWith(model, seed, ctxIds = new Set()) {
   return (a, b) => s(a) - s(b) || (ctxIds.has(b.id) - ctxIds.has(a.id)) || (b.n.decided_by === 'user') - (a.n.decided_by === 'user') ||
     degree(model, b.id) - degree(model, a.id) || String(b.created).localeCompare(String(a.created));
 }
-export const item = (model, r, n = 140) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, n) });
+/* A thought is recorded as one sentence; cut to 140 characters it ended in '…' and every
+ * agent debriefed on 15 October spent calls reading it again by id. TEXT is a safety cap. */
+export const TEXT = 600;
+export const item = (model, r, n = TEXT) => ({ id: r.id, status: statusOf(model.rx, r.n), text: cap(r.n.text, Math.max(n, TEXT)), ...staleOf(model.repoDir, statusOf(model.rx, r.n), r.n.text) });
 
 /* The one line every lens may carry: what the subject is, and its other names. */
 export function briefOf(model, found) {
@@ -459,7 +463,7 @@ export function timelineOf(model, found, { max = 14 } = {}) {
   const reasonOf = (h) => { const c = model.cx.commits.get(h.slice(0, 12)); const body = c && c.body ? c.body.split(/\n\s*\n/).find((p) => !/^[\w-]+:\s/.test(p.trim())) : ''; return body ? firstSentence(body.replace(/\s+/g, ' '), 150) : undefined; };
   const steps = pick.map((r) => ({ date: r.created.slice(0, 10), commit: r.id.slice(0, 7), subject: cap(r.n.text, 90), reason: reasonOf(r.id), settled: settledBy.get(r.id) }));
   const opened = thoughtsIn(S.records).filter((r) => kindOf(r.n) === 'open').sort((a, b) => a.created.localeCompare(b.created)).slice(-3);
-  for (const r of opened) steps.push({ date: String(r.created).slice(0, 10), open: r.id, text: cap(r.n.text, 120) });
+  for (const r of opened) steps.push({ date: String(r.created).slice(0, 10), open: r.id, text: cap(r.n.text, TEXT) });
   steps.sort((a, b) => a.date.localeCompare(b.date));
   return {
     names: [S.phrase, ...S.names.keys()].map((p) => { const h = hitsOf(model, p); return p + ': ' + firstOf(h).slice(0, 10) + ' to ' + (h.map((r) => r.created).filter(Boolean).sort().pop() || '').slice(0, 10); }),

@@ -55,6 +55,23 @@ function getRepoRoot() {
 
 const ROOT_DIR = getRepoRoot();
 
+/* The build this server runs, against the repository asked about. An agent
+ * reading an older checkout of GitX met tools and behaviour its record said
+ * did not exist - instructions, subjects, gitx_find - and spent its effort
+ * reconciling them (debriefs, 15 October). When the two are the same project
+ * at different commits, the first answer says so. */
+const gitIn = (dir, args) => { try { return execFileSync('git', args, { cwd: dir, windowsHide: NO_CONSOLE, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch (_) { return ''; } };
+const buildOf = (dir) => ({ head: gitIn(dir, ['rev-parse', 'HEAD']), date: gitIn(dir, ['log', '-1', '--format=%cs']), root: gitIn(dir, ['rev-list', '--max-parents=0', 'HEAD']).split('\n').pop() });
+const SERVER_BUILD = buildOf(path.join(path.dirname(__filename), '..'));
+const buildNoted = new Set();
+function serverNote(targetDir) {
+  if (buildNoted.has(targetDir) || !SERVER_BUILD.head) return {};
+  buildNoted.add(targetDir);
+  const t = buildOf(targetDir);
+  if (!t.head || t.root !== SERVER_BUILD.root || t.head === SERVER_BUILD.head) return {};
+  return { server_build: 'This GitX server runs GitX at ' + SERVER_BUILD.head.slice(0, 7) + ' (' + SERVER_BUILD.date + '); the repository you are asking about is GitX at ' + t.head.slice(0, 7) + ' (' + t.date + '). Tools and behaviour you see may be newer than this repository\'s code and record - answer about the repository from its record, not from how this server behaves.' };
+}
+
 /* Where the broker's watcher writes its log. GITX_DATA_DIR wins, as it does
  * in the broker; otherwise the folder ter-manager gave the broker, which it
  * remembers in its local.json. Read on every call, because the broker may
@@ -1274,7 +1291,7 @@ async function handleToolCall(name, args) {
         args.query = named.join(', ');
         const r = askSubjects(sessions, target.dir, { subjects: named, lens: args.lens || null, include: args.include || null, effort: args.effort || null, dataDir: paths.base || logDataDir() });
         lastMonitor = r.monitor;
-        return reply({ repo: target.dir, ...r.answer, how_to_use: SUBJECTS_HOW });
+        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, how_to_use: SUBJECTS_HOW });
       }
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
@@ -1291,7 +1308,7 @@ async function handleToolCall(name, args) {
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
-        return reply({ repo: target.dir, ...r.answer, how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
+        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */
