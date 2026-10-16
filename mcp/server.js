@@ -30,6 +30,7 @@ import { commitCode } from './tools/commit-code.js';
  * broker for GitX Monitor. Its own module and folder; the only coupling is the
  * calls below. It replaced the trail recorder, which kept every call. */
 import { PathRecorder } from './tools/path-recorder.js';
+import { markTargets } from './tools/mark.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
 /* What gitx_search did, for the path recorder; never part of the agent's answer. */
@@ -343,6 +344,21 @@ const TOOLS = [
         cwd: { type: 'string', description: 'Absolute path of the repository whose worktrees to list. Defaults to the repo this MCP server was started in.' }
       },
       required: []
+    }
+  },
+  /* Where the answer was, after a search (tools/mark.js): the next agent
+   * asking something like it is shown it first. */
+  {
+    name: 'gitx_mark',
+    description: 'After a gitx_search, say where the answer was - most of all when you found it yourself (Grep, a file) and the search did not show it: { "to": "server.js:321" }. One call, a line back; the next agent asking something like your last search is shown it first. to: file:line, a function (app.js::fontChoice), a thought id (t-...) or a commit hash, or a list of them. note: one optional sentence for the next agent, kept beside it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'Where the answer was: file:line, a function, a thought id or a commit hash - or several.' },
+        note: { type: 'string', description: 'Optional: one sentence the next agent should know about it.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
+      required: ['to']
     }
   },
   {
@@ -1132,6 +1148,24 @@ async function handleToolCall(name, args) {
           }, null, 2)
         }]
       };
+    }
+
+    /* Where the answer was (tools/mark.js). The question it answers is the
+     * agent's last search here, which the recorder is walking; the step
+     * itself is written by paths.onCall after this reply, like every call. */
+    case 'gitx_mark': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was marked.' });
+      const m = markTargets(target.dir, args.to, args.note);
+      const walking = paths.current.get(target.dir);
+      const asked = walking && !walking.started_by && !walking.ended_at && walking.question ? walking.question.query : null;
+      return reply({
+        ...(m.marked.length ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
+        marked: m.marked.length ? m.marked.map((x) => ({ key: x.key, layer: x.layer, name: x.name, also: x.also })) : undefined,
+        note: m.note,
+        rejected: m.rejected.length ? m.rejected : undefined
+      });
     }
 
     case 'gitx_find_related': {

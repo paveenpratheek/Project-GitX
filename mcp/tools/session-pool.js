@@ -327,7 +327,7 @@ export function askPooled(sessions, repoDir, { query = '', add = null, drop = nu
       learned: pool.round === 1 && pool.learned ? {
         from: pool.learned.paths + ' earlier walk' + (pool.learned.paths === 1 ? '' : 's') + ' of questions like this, the newest ' + String(pool.learned.newest).slice(0, 10),
         words_added: pool.learned.words.length ? pool.learned.words : undefined,
-        they_read: pool.learned.read.length ? pool.learned.read.map((x) => x.what + ' - ' + x.opened) : undefined,
+        they_read: pool.learned.read.length ? pool.learned.read.map((x) => x.what + ' - ' + (x.marked ? 'marked as the answer by ' + x.marked + ' agent' + (x.marked === 1 ? '' : 's') : x.opened) + (x.note ? ' - their note: ' + x.note : '')) : undefined,
         note: 'a hint from earlier agents, never the whole answer: the map above is searched fresh'
       } : undefined
     },

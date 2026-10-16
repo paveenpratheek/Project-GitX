@@ -365,6 +365,11 @@ function stepOf(tool, args, body, error) {
     case 'gitx_graph_area':
     case 'gitx_graph_map':
       return { kind: 'overview', tool, what: args.name || 'map' };
+    /* Where the answer was (tools/mark.js): the targets as learning keys
+     * them, on the walk of the question they answer. */
+    case 'gitx_mark':
+      if (!body || !(body.marked || []).length) return null;
+      return { kind: 'mark', tool, marks: body.marked.map((m) => ({ key: m.key, layer: m.layer, name: m.name })), note: body.note || undefined };
     case 'gitx_thought_record': {
       if (!body || !body.ok) return null;
       const recorded = (body.thoughts || []).map((t) => t.id);

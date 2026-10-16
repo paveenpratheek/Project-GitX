@@ -1030,9 +1030,14 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     for (const [k, v] of use) {
       const r = learnedUse(v) && byKey.get(k);
       if (!r) continue;
+      /* Marked as the answer (gitx_mark) joins level with the best match,
+       * so it reaches the core and the trees: at 0.6 of it, a function an
+       * agent found by Grep and marked stayed below a busy answer's cut. It
+       * orders, it hides nothing (t-11190c437f). Opened or read only: 0.6. */
+      const score = Math.max(NO_CODE, wordBest * (v.marked ? 1 : 0.6));
       const have = found.find((x) => x.r === r);
-      if (have) have.hit.push('learned');
-      else learnedHere.push({ r, score: Math.max(NO_CODE, wordBest * 0.6), hit: ['learned'] });
+      if (have) { have.hit.push('learned'); if (v.marked) have.score = Math.max(have.score, score); }
+      else learnedHere.push({ r, score, hit: ['learned'] });
     }
     found.push(...learnedHere);
     found.sort((a, b) => b.score - a.score);
