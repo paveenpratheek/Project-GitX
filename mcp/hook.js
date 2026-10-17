@@ -139,6 +139,11 @@ async function main() {
     if (!p) return;
     const refs = citations(e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path));
     if (refs.length) append(data, 'thermal', p.root, { at, session, kind: 'cite', repo: p.root, head: p.head, refs });
+    /* Cited code the agent's last GitX search had not shown becomes a mark
+     * on that code (tools/marks.js). */
+    if (refs.length) {
+      try { const { marksFromCitations } = await import('./tools/marks.js'); await marksFromCitations(p.root, data, refs, { by: session }); } catch (_) { /* never stops the agent */ }
+    }
     return;
   }
 

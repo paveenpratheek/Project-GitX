@@ -69,7 +69,10 @@ function resolve(repoDir, cx, raw) {
   }
   if (!hits.length) return { to, error: 'nothing at HEAD by that name or line - give file:line, or a function as find or the map writes it' };
   const r = hits[0];
-  return { to, key: r.file + '::' + shortName(r), layer: 'code', name: entry(r), also: hits.length > 1 ? hits.slice(1, 4).map(entry) : undefined };
+  const out = { to, key: r.file + '::' + shortName(r), layer: 'code', name: entry(r), also: hits.length > 1 ? hits.slice(1, 4).map(entry) : undefined };
+  /* The region itself, for a stored mark (marks.js) - not sent in a reply. */
+  Object.defineProperty(out, 'region', { value: r, enumerable: false });
+  return out;
 }
 
 export function markTargets(repoDir, to, note) {

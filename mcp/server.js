@@ -31,6 +31,7 @@ import { commitCode } from './tools/commit-code.js';
  * calls below. It replaced the trail recorder, which kept every call. */
 import { PathRecorder } from './tools/path-recorder.js';
 import { markTargets } from './tools/mark.js';
+import { loadMarks, createMark, judgeMark, linkMark, marksOn, viewOf, publicView, seedFromAgentFiles, marksForAnswer, walkHint, recordOf, INVESTIGATE_HOW } from './tools/marks.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
 /* What gitx_search did, for the path recorder; never part of the agent's answer. */
@@ -350,15 +351,31 @@ const TOOLS = [
    * asking something like it is shown it first. */
   {
     name: 'gitx_mark',
-    description: 'After a gitx_search, say where the answer was - most of all when you found it yourself (Grep, a file) and the search did not show it: { "to": "server.js:321" }. One call, a line back; the next agent asking something like your last search is shown it first. to: file:line, a function (app.js::fontChoice), a thought id (t-...) or a commit hash, or a list of them. note: one optional sentence for the next agent, kept beside it.',
+    description: 'Leave what you learned on the code you learned it from, so the next agent starts there: { "to": "server.js:321", "note": "the shell list is built once at startup" }. Mark when you worked something out that took reading several places or that the code does not say plainly - never what a name already says. Without a note it says where the answer to your last gitx_search was. The marks already on that code come back first: confirm one ({ "confirm": "m-..." }) or contradict it with your evidence ({ "contradict": "m-...", "note": "..." }) rather than writing a second. link joins marks across files ({ "to": "m-...", "link": ["app.css:40"], "as": "styles" }). A mark is shown as inferred, never as a decision.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'Where the answer was: file:line, a function, a thought id or a commit hash - or several.' },
-        note: { type: 'string', description: 'Optional: one sentence the next agent should know about it.' },
+        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'The code you learned about: file:line, a function (app.js::fontChoice), a thought id, a commit hash, or a mark id (m-...) to link from - or several.' },
+        note: { type: 'string', description: 'What you learned there, in one or two sentences, for the next agent.' },
+        confirm: { type: 'string', description: 'A mark id (m-...) you checked and found holds.' },
+        contradict: { type: 'string', description: 'A mark id (m-...) you found wrong - say why in note.' },
+        link: { type: 'array', items: { type: 'string' }, description: 'Other code or marks this belongs with: file:line, a function, a mark id.' },
+        as: { type: 'string', enum: ['same-feature', 'calls', 'styles', 'explains'], description: 'How the link relates. Default same-feature.' },
+        new: { type: 'boolean', description: 'Write your mark even though marks are already on that code.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
-      required: ['to']
+      required: []
+    }
+  },
+  /* The entry point on a repository: what GitX holds about it, the agent
+   * files read into marks, and how to work (tools/marks.js). */
+  {
+    name: 'gitx_investigate',
+    description: 'Start here on a repository: what GitX holds about it (commits with reasoning, thoughts, topics, marks earlier agents left), and the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code, turned into marks on that code. Says when GitX is the faster way to an answer and when your own tools are.',
+    inputSchema: {
+      type: 'object',
+      properties: { cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' } },
+      required: []
     }
   },
   {
@@ -1157,15 +1174,62 @@ async function handleToolCall(name, args) {
       const target = resolveTargetRepo(args.cwd);
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was marked.' });
-      const m = markTargets(target.dir, args.to, args.note);
+      const data = paths.base || logDataDir();
+      const by = AGENT_NAME || AGENT_ID || null;
+      /* Judging a mark someone left. */
+      if (args.confirm || args.contradict) {
+        const r = judgeMark(target.dir, data, String(args.confirm || args.contradict), args.contradict ? 'contradict' : 'confirm', { by, note: args.note });
+        if (r.error) return reply({ error: r.error });
+        return reply({ [args.contradict ? 'contradicted' : 'confirmed']: publicView(viewOf(target.dir, r.mark)) });
+      }
+      const list = [].concat(args.to || []).map(String);
+      if (!list.length) return reply({ error: 'gitx_mark takes to - the code you learned about - or confirm / contradict with a mark id.' });
+      const as = ['same-feature', 'calls', 'styles', 'explains'].includes(args.as) ? args.as : 'same-feature';
+      const known = new Set(loadMarks(target.dir, data).map((x) => x.id));
+      const linkTo = [];
+      for (const l of [].concat(args.link || []).map(String)) {
+        if (known.has(l)) { linkTo.push({ to: l, as }); continue; }
+        const t = markTargets(target.dir, [l]).marked[0];
+        if (t) linkTo.push({ to: t.key, as });
+      }
+      /* Linking from marks already written. */
+      const fromMarks = list.filter((x) => known.has(x));
+      const linkedMarks = fromMarks.map((id) => linkMark(target.dir, data, id, linkTo)).filter((x) => x.mark).map((x) => publicView(viewOf(target.dir, x.mark)));
+      const m = markTargets(target.dir, list.filter((x) => !known.has(x)), args.note);
       const walking = paths.current.get(target.dir);
       const asked = walking && !walking.started_by && !walking.ended_at && walking.question ? walking.question.query : null;
+      /* With a note, a stored mark - unless marks are already on that code
+       * and the agent did not ask for a second (docs/agent-marks-plan.md). */
+      const made = [], here = [];
+      if (m.note) {
+        for (const x of m.marked) {
+          if (x.layer === 'code') {
+            const already = marksOn(target.dir, data, { regions: [x.key] });
+            if (already.length && !args.new) { here.push(...already.map(publicView)); continue; }
+          }
+          const res = createMark(target.dir, data, { r: x.region || null, ref: x.region ? null : x.key, note: m.note, by, question: asked, evidence: { read: x.name }, links: linkTo });
+          made.push(publicView(viewOf(target.dir, res.mark)));
+        }
+      }
       return reply({
-        ...(m.marked.length ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
+        ...(m.marked.length && !m.note ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
         marked: m.marked.length ? m.marked.map((x) => ({ key: x.key, layer: x.layer, name: x.name, also: x.also })) : undefined,
-        note: m.note,
+        made: made.length ? made : undefined,
+        already_here: here.length ? here : undefined,
+        ...(here.length ? { how: 'marks are already on that code: confirm one ({ "confirm": "m-..." }), contradict it ({ "contradict": "m-...", "note": "why" }), or add yours with new: true' } : {}),
+        linked_marks: linkedMarks.length ? linkedMarks : undefined,
         rejected: m.rejected.length ? m.rejected : undefined
       });
+    }
+
+    /* The entry point on a repository (tools/marks.js). */
+    case 'gitx_investigate': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
+      const data = paths.base || logDataDir();
+      const seeded = seedFromAgentFiles(target.dir, data, { by: AGENT_NAME || AGENT_ID || null });
+      return reply({ repo: target.dir, ...recordOf(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code, left_to_you: seeded.no_code }, how: INVESTIGATE_HOW });
     }
 
     case 'gitx_find_related': {
@@ -1193,6 +1257,12 @@ async function handleToolCall(name, args) {
       });
 
       const regionList = Object.keys(qRegions);
+      /* What agents and the agent files say about the code being changed. */
+      let marksHere = [];
+      try {
+        const files = [...regionList.map((k) => k.split('::')[0]), ...[].concat(args.paths || []).map((x) => String(x).split('::')[0])];
+        marksHere = marksOn(target.dir, paths.base || logDataDir(), { files }).slice(0, 8).map(publicView);
+      } catch (_) { /* commits alone */ }
       const notes = [];
       if (regionSource === 'none') {
         notes.push('Ranked on your description ALONE - nothing staged and no paths given, so the code half of the search contributed nothing. Pass paths: ["the/file.js"] for the area you are working in; it is normally the stronger of the two signals.');
@@ -1223,6 +1293,7 @@ async function handleToolCall(name, args) {
             description_terms_used: qWords,
             matches_count: results.length,
             results,
+            ...(marksHere.length ? { marks_here: marksHere } : {}),
             /* Two sub-scores are returned per result on purpose: a high
              * region_score with a low text_score means "same code, described
              * differently", the reverse means "same topic, code has moved".
@@ -1330,7 +1401,10 @@ async function handleToolCall(name, args) {
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
-        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
+        const opened = expandRegion(target.dir, String(args.expand), { query: words });
+        let onIt = [];
+        try { onIt = marksForAnswer(target.dir, paths.base || logDataDir(), { trees: opened.expanded || [] }, ''); } catch (_) { /* the tree alone */ }
+        return reply({ repo: target.dir, ...opened, ...(onIt.length ? { marks: onIt } : {}) });
       }
       /* Through the session's pool (t-2c70a44885): a question new or a
        * follow-up, decided and said; a follow-up, add or drop answered with
@@ -1342,7 +1416,11 @@ async function handleToolCall(name, args) {
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
-        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
+        /* Marks on the code the answer landed on, and when to walk instead
+         * (tools/marks.js). Each only when there is one. */
+        let marks, walk;
+        try { marks = marksForAnswer(target.dir, paths.base || logDataDir(), r.answer, words); walk = walkHint(target.dir, words, args.lens, r.answer); } catch (_) { /* the answer alone */ }
+        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, ...(marks && marks.length ? { marks } : {}), ...(walk ? { walk } : {}), how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */
@@ -1360,7 +1438,10 @@ async function handleToolCall(name, args) {
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
-        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
+        const opened = expandRegion(target.dir, String(args.expand), { query: words });
+        let onIt = [];
+        try { onIt = marksForAnswer(target.dir, paths.base || logDataDir(), { trees: opened.expanded || [] }, ''); } catch (_) { /* the tree alone */ }
+        return reply({ repo: target.dir, ...opened, ...(onIt.length ? { marks: onIt } : {}) });
       }
       return reply({ repo: target.dir, error: 'gitx_find takes find (text or /regex/) or expand (a function from an answer).' });
     }
