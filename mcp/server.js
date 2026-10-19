@@ -31,7 +31,7 @@ import { commitCode } from './tools/commit-code.js';
  * calls below. It replaced the trail recorder, which kept every call. */
 import { PathRecorder } from './tools/path-recorder.js';
 import { markTargets } from './tools/mark.js';
-import { loadMarks, createMark, judgeMark, linkMark, marksOn, viewOf, publicView, seedFromAgentFiles, marksForAnswer, walkHint, recordOf, INVESTIGATE_HOW } from './tools/marks.js';
+import { loadMarks, createMark, judgeMark, linkMark, joinMark, relatedMarks, marksOn, viewOf, publicView, seedFromAgentFiles, marksForAnswer, walkHint, recordOf, startScan, markedSoFar, isReady, READY_HOW, INVESTIGATE_HOW, featureKey, featureMarks, setupMap, startSetup, readSpans, partsOpened, SETUP_HOW } from './tools/marks.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
 /* What gitx_search did, for the path recorder; never part of the agent's answer. */
@@ -351,16 +351,20 @@ const TOOLS = [
    * asking something like it is shown it first. */
   {
     name: 'gitx_mark',
-    description: 'Leave what you learned on the code you learned it from, so the next agent starts there: { "to": "server.js:321", "note": "the shell list is built once at startup" }. Mark when you worked something out that took reading several places or that the code does not say plainly - never what a name already says. Without a note it says where the answer to your last gitx_search was. The marks already on that code come back first: confirm one ({ "confirm": "m-..." }) or contradict it with your evidence ({ "contradict": "m-...", "note": "..." }) rather than writing a second. link joins marks across files ({ "to": "m-...", "link": ["app.css:40"], "as": "styles" }). A mark is shown as inferred, never as a decision.',
+    description: 'Leave what you learned on the code you learned it from, so the next agent starts there: { "to": "server.js:321", "note": "the shell list is built once at startup" }. Mark when you worked something out that took reading several places or that the code does not say plainly - never what a name already says. Without a note it says where the answer to your last gitx_search was. The marks already on that code come back first: confirm one ({ "confirm": "m-..." }) or contradict it with your evidence ({ "contradict": "m-...", "note": "..." }) rather than writing a second. A feature in several places is ONE mark: name them all in to ({ "to": ["app.js::applyWallpaper", "app.css:40"], "note": "..." }); found the same thing a mark already says in other code? add your code to it ({ "join": "m-...", "to": ["notes.js::render"] }). A mark is shown as inferred, never as a decision.',
     inputSchema: {
       type: 'object',
       properties: {
-        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'The code you learned about: file:line, a function (app.js::fontChoice), a thought id, a commit hash, or a mark id (m-...) to link from - or several.' },
+        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'The code you learned about: file:line, a range (file:from-to), a function (app.js::fontChoice), a thought id, a commit hash, or a mark id (m-...) to link from - or several.' },
         note: { type: 'string', description: 'What you learned there, in one or two sentences, for the next agent.' },
         confirm: { type: 'string', description: 'A mark id (m-...) you checked and found holds.' },
         contradict: { type: 'string', description: 'A mark id (m-...) you found wrong - say why in note.' },
         link: { type: 'array', items: { type: 'string' }, description: 'Other code or marks this belongs with: file:line, a function, a mark id.' },
         as: { type: 'string', enum: ['same-feature', 'calls', 'styles', 'explains'], description: 'How the link relates. Default same-feature.' },
+        join: { type: 'string', description: 'A mark id (m-...): add the code in to as more places that mark is about.' },
+        marks: { type: 'array', items: { type: 'object', properties: { to: { type: ['string', 'array'], items: { type: 'string' } }, note: { type: 'string' }, feature: { type: 'string' } } }, description: 'Several marks in one call: [{ "to": [...the places], "feature": "...", "note": "what they do" }, ...].' },
+        feature: { type: 'string', description: 'The feature this code is part of, a short name (totem-indicators). The mark follows the last mark of that feature. Alone, without to: that feature\'s marks.' },
+        about: { type: 'string', description: 'What the project is, in a few sentences, from your scan.' },
         new: { type: 'boolean', description: 'Write your mark even though marks are already on that code.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
@@ -371,10 +375,13 @@ const TOOLS = [
    * files read into marks, and how to work (tools/marks.js). */
   {
     name: 'gitx_investigate',
-    description: 'Start here on a repository: what GitX holds about it (commits with reasoning, thoughts, topics, marks earlier agents left), and the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code, turned into marks on that code. Says when GitX is the faster way to an answer and when your own tools are.',
+    description: 'Start here on a repository: says whether it is GitX-ready (commits with reasoning, linked thoughts and topics - then use gitx_search, nothing to mark). If it is not, you build its record as you work: the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code become marks on that code, your next answer is read as your notes, and marked_so_far says what earlier agents marked and what nobody has. Read with gitx_search either way.',
     inputSchema: {
       type: 'object',
-      properties: { cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' } },
+      properties: {
+        mode: { type: 'string', enum: ['setup'], description: 'setup: you are assigned to set this repository up for GitX - go through it feature by feature and mark each feature\'s code with a note. The reply is the brief and a map of what is marked.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
       required: []
     }
   },
@@ -1182,6 +1189,39 @@ async function handleToolCall(name, args) {
         if (r.error) return reply({ error: r.error });
         return reply({ [args.contradict ? 'contradicted' : 'confirmed']: publicView(viewOf(target.dir, r.mark)) });
       }
+      /* A scan's notes in one call - { marks: [{ to, note }], about } - kept
+       * as lite as a call can be: one reply line of counts. Near-copies are
+       * not refused here; reading stacks them. */
+      /* A feature's marks, for a setup agent about to mark another part of it. */
+      if (args.feature && !args.to && !args.marks) {
+        const fm = featureMarks(target.dir, data, args.feature);
+        return reply({ feature: featureKey(args.feature), marks: fm.slice(0, 12).map(publicView), how: fm.length ? 'mark another part with the same feature and it follows ' + fm[0].id : 'no marks for this feature yet' });
+      }
+      /* The mark a new part of a feature follows: the feature's last. */
+      const followOf = (feature) => { const fm = featureMarks(target.dir, data, feature); return fm.length ? fm[0].id : null; };
+      /* Whether the agent opened every part of the code it marks (the hook's
+       * read record): a feature mark on code it never read says so. */
+      const spans = readSpans(target.dir, data, 0);
+      const opened = (onCode) => partsOpened(spans, onCode.map((x) => x.region));
+      const readOf = (feature, onCode) => { if (!feature) return {}; const o = opened(onCode); return o.none ? { unread: true } : o.missing.length ? { unread_parts: o.missing } : {}; };
+      if (Array.isArray(args.marks) || args.about) {
+        let made = 0, places = 0, already = 0, about;
+        const rejected = [], features = [];
+        for (const it of [].concat(args.marks || [])) {
+          const t = markTargets(target.dir, [].concat((it && it.to) || []).map(String), it && it.note);
+          rejected.push(...t.rejected);
+          if (!t.note || !t.marked.length) continue;
+          const onCode = t.marked.filter((x) => x.layer === 'code' && x.region);
+          const feature = it.feature ? featureKey(it.feature) : null;
+          const follows = feature ? followOf(feature) : null;
+          const res = createMark(target.dir, data, { rs: onCode.map((x) => x.region), refs: t.marked.filter((x) => !(x.layer === 'code' && x.region)).map((x) => x.key), note: t.note, by, feature,
+            question: feature ? null : 'a scan of the project', evidence: { read: feature ? 'its setup of the repository' : 'its notes from a scan', ...readOf(feature, onCode) }, links: follows ? [{ to: follows, as: 'same-feature' }] : [] });
+          if (res.existed) already++; else { made++; places += onCode.length; }
+          if (feature) features.push({ id: res.mark.id, feature, follows: follows && follows !== res.mark.id ? follows : undefined });
+        }
+        if (args.about) about = publicView(viewOf(target.dir, createMark(target.dir, data, { refs: ['project'], note: String(args.about), by, evidence: { read: 'its notes from a scan' } }).mark));
+        return reply({ made, on_places: places, already: already || undefined, marks: features.length ? features : undefined, about, rejected: rejected.length ? rejected : undefined });
+      }
       const list = [].concat(args.to || []).map(String);
       if (!list.length) return reply({ error: 'gitx_mark takes to - the code you learned about - or confirm / contradict with a mark id.' });
       const as = ['same-feature', 'calls', 'styles', 'explains'].includes(args.as) ? args.as : 'same-feature';
@@ -1200,23 +1240,39 @@ async function handleToolCall(name, args) {
       const asked = walking && !walking.started_by && !walking.ended_at && walking.question ? walking.question.query : null;
       /* With a note, a stored mark - unless marks are already on that code
        * and the agent did not ask for a second (docs/agent-marks-plan.md). */
-      const made = [], here = [];
-      if (m.note) {
-        for (const x of m.marked) {
-          if (x.layer === 'code') {
-            const already = marksOn(target.dir, data, { regions: [x.key] });
-            if (already.length && !args.new) { here.push(...already.map(publicView)); continue; }
-          }
-          const res = createMark(target.dir, data, { r: x.region || null, ref: x.region ? null : x.key, note: m.note, by, question: asked, evidence: { read: x.name }, links: linkTo });
-          made.push(publicView(viewOf(target.dir, res.mark)));
+      /* With a note, ONE mark on every place named - a feature in several
+       * functions or files is one thing learned - unless marks are already on
+       * that code, or say the same elsewhere, and the agent did not ask for a
+       * second (docs/agent-marks-plan.md). */
+      const made = [], here = [], like = [];
+      const onCode = m.marked.filter((x) => x.layer === 'code' && x.region);
+      const elsewhere = m.marked.filter((x) => !(x.layer === 'code' && x.region)).map((x) => x.key);
+      let joined;
+      if (args.join) {
+        const r = joinMark(target.dir, data, String(args.join), onCode.map((x) => x.region));
+        if (r.error) return reply({ error: r.error });
+        joined = { places_added: r.added, mark: publicView(viewOf(target.dir, r.mark)) };
+      } else if (m.note && m.marked.length) {
+        /* A feature's part is deliberate: it is written, and follows the
+         * feature's last mark; any other note waits on marks already there. */
+        const feature = args.feature ? featureKey(args.feature) : null;
+        const rel = feature ? { on: [], like: [] } : relatedMarks(target.dir, data, { regions: onCode.map((x) => x.key), note: m.note });
+        if ((rel.on.length || rel.like.length) && !args.new) { here.push(...rel.on.map(publicView)); like.push(...rel.like.map(publicView)); }
+        else {
+          const follows = feature ? followOf(feature) : null;
+          const res = createMark(target.dir, data, { rs: onCode.map((x) => x.region), refs: elsewhere, note: m.note, by, question: asked, feature,
+            evidence: { read: feature ? 'its setup of the repository' : m.marked.length > 1 ? m.marked.length + ' places read together' : m.marked[0].name, ...readOf(feature, onCode) }, links: [...linkTo, ...(follows ? [{ to: follows, as: 'same-feature' }] : [])] });
+          made.push({ ...publicView(viewOf(target.dir, res.mark)), follows: follows && follows !== res.mark.id ? follows : undefined });
         }
       }
       return reply({
-        ...(m.marked.length && !m.note ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
+        ...(m.marked.length && !m.note && !args.join ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
         marked: m.marked.length ? m.marked.map((x) => ({ key: x.key, layer: x.layer, name: x.name, also: x.also })) : undefined,
         made: made.length ? made : undefined,
+        joined,
         already_here: here.length ? here : undefined,
-        ...(here.length ? { how: 'marks are already on that code: confirm one ({ "confirm": "m-..." }), contradict it ({ "contradict": "m-...", "note": "why" }), or add yours with new: true' } : {}),
+        says_the_same: like.length ? like : undefined,
+        ...(here.length || like.length ? { how: 'marks are already on that code or say the same elsewhere: confirm one ({ "confirm": "m-..." }), contradict it ({ "contradict": "m-...", "note": "why" }), add your code to it ({ "join": "m-...", "to": [...] }), or write yours with new: true' } : {}),
         linked_marks: linkedMarks.length ? linkedMarks : undefined,
         rejected: m.rejected.length ? m.rejected : undefined
       });
@@ -1228,8 +1284,19 @@ async function handleToolCall(name, args) {
       const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
       const data = paths.base || logDataDir();
+      /* GitX-ready: the record is there and gitx_search reads it - nothing
+       * to seed, nothing to mark. */
+      const rec = recordOf(target.dir, data);
+      if (isReady(rec)) return reply({ repo: target.dir, state: rec.state, record: rec.record, ready: true, how: READY_HOW });
       const seeded = seedFromAgentFiles(target.dir, data, { by: AGENT_NAME || AGENT_ID || null });
-      return reply({ repo: target.dir, ...recordOf(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code, left_to_you: seeded.no_code }, how: INVESTIGATE_HOW });
+      /* Setup mode: this agent is assigned to set the repository up - mark
+       * every feature's code with a note. Its marks are explicit, so its
+       * answer is not also read as notes. */
+      if (args.mode === 'setup') try { startSetup(target.dir, data, AGENT_NAME || AGENT_ID || null); } catch (_) { /* the brief alone */ }
+      if (args.mode === 'setup') return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup', ...setupMap(target.dir, data), agent_files: seeded.files, how: SETUP_HOW });
+      /* Marking starts here: this agent's next final answer is read as its notes. */
+      try { startScan(target.dir, data, AGENT_NAME || AGENT_ID || null); } catch (_) { /* the reply alone */ }
+      return reply({ repo: target.dir, ...recordOf(target.dir, data), ready: false, marked_so_far: markedSoFar(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, on_places: seeded.places, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code - seeded.lists, lists_skipped: seeded.lists, left_to_you: seeded.no_code }, how: INVESTIGATE_HOW });
     }
 
     case 'gitx_find_related': {

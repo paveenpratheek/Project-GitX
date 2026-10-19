@@ -22,10 +22,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildCodeIndex, shortName } from './code-find.js';
+import { codeNow } from './marks.js';
 import { NO_CONSOLE } from './no-console.js';
 
 export const MARK_MAX = 8;          // targets in one mark
-export const NOTE_MAX = 300;        // characters of a note
+export const NOTE_MAX = 3000;       // characters of a note at most - marks.js cuts a plain note to 400, a feature's to 3000
 
 const entry = (r) => r.file + ' · ' + shortName(r) + ' ' + r.from + '-' + r.to;
 
@@ -68,7 +69,11 @@ function resolve(repoDir, cx, raw) {
     hits = code.filter((r) => shortName(r) === name.trim() && (!file || ends(r.file, file.trim().replace(/\\/g, '/'))));
   }
   if (!hits.length) return { to, error: 'nothing at HEAD by that name or line - give file:line, or a function as find or the map writes it' };
-  const r = hits[0];
+  let r = hits[0];
+  /* file:from-to marks those lines exactly (setup mode marks a feature's
+   * code range), filed under the function holding its first line. */
+  const span = to.match(/^(.+?):(\d+)-(\d+)$/);
+  if (span && !span[1].includes('::') && Number(span[3]) > Number(span[2])) r = { ...r, from: Number(span[2]), to: Number(span[3]), range: true };
   const out = { to, key: r.file + '::' + shortName(r), layer: 'code', name: entry(r), also: hits.length > 1 ? hits.slice(1, 4).map(entry) : undefined };
   /* The region itself, for a stored mark (marks.js) - not sent in a reply. */
   Object.defineProperty(out, 'region', { value: r, enumerable: false });
@@ -77,7 +82,8 @@ function resolve(repoDir, cx, raw) {
 
 export function markTargets(repoDir, to, note) {
   const list = [].concat(to || []).slice(0, MARK_MAX);
-  const cx = buildCodeIndex(repoDir);
+  /* The code as it is now - a mark is often made on edits not committed yet (marks.js codeNow). */
+  const cx = codeNow(repoDir);
   const out = list.map((x) => resolve(repoDir, cx, x));
   return {
     marked: out.filter((x) => x.key),

@@ -134,6 +134,26 @@ called from add() - each naming code and saying why it is so. Read once and
 marked, they reach every later agent through GitX at the code they concern,
 instead of only an agent that reads the whole file.
 
+### 2c. A scan: one agent, the way it already works
+
+In practice one agent works (owner, 18 October). Investigating is what an
+agent already does when asked "tell me about this project": read the agent
+files and README, look at the structure, open the main pieces, write an
+overview. The scan is that, leaving its notes on the code as it goes.
+
+- `gitx_investigate` stamps a scan and returns `understood_before` - what
+  earlier scans said the project is, and where agents marked most.
+- The **first final answer after it** is read as the agent's notes (hook.js
+  at Stop): every statement naming code becomes one mark on all the code it
+  names, its heading kept as context; the first paragraph naming none
+  becomes the project's note (a mark on `project`). The stamp is spent on
+  that answer, so the same session's later "I fixed X" reports are not notes.
+- Or in one call: `gitx_mark { "about": "...", "marks": [{ "to": [...], "note": "..." }] }`.
+
+Agents did not mark when a tool reply asked them to (0 of 30); an overview
+already says, place by place, what each part does, so the answer is the
+notes and no extra call is needed.
+
 ### 3. Finding marks
 
 *Built:* marks are found by `tools/marks.js` beside each answer - on the code
@@ -169,13 +189,37 @@ lines were rewritten is retired with what replaced them. The owner can turn
 a mark into a thought (a finding or a learned rule) by recording one that
 cites it - the only way inferred knowledge becomes part of the decided record.
 
-### 5. Links across files
+### 5. A feature in several places, and stacks
 
-Agents link marks they find belong together: a CSS rule to the script using
-its class, a script to the API handler it calls. v4.0's cross-file links
-(the star links in `features.js`, on `4th_Dimension_v4.0`) can propose
-candidates, and a mark confirms one instead of inventing it. A chain of links
-is how the next agent asking about a feature gets all of it.
+A feature often lives in several functions and files - file-fabric writes its
+`#` heading sizes four times over (`getLineFontSize`, `syncNotesDOM`,
+`renderNotesWidgetDisplay`, `openCodePreview`); ter-manager stamps
+`data-wallpaper` in `index.html` and `applyWallpaper()` and reads it in
+`app.css`. What holds them together is one thing learned, so **a mark has
+anchors, not an anchor** (`gitx.mark/1`): one note, every place, each place
+following its own lines. Reading any place shows the mark. When one place is
+rewritten the mark lives on the rest and says which changed - "these are the
+same" goes wrong exactly when one of them changes.
+
+Two ways related marks come together (owner, 18 October):
+
+- **The agent.** `gitx_mark` with several `to` writes one mark. Before writing,
+  the reply shows marks already on that code (`already_here`) and marks
+  elsewhere whose note holds most of the agent's (`says_the_same`, overlap
+  >= 0.6 of the shorter note); the agent confirms one, or `join`s it - its
+  code becomes more places of that mark.
+- **GitX, when the agent did not.** On reading, marks are stacked and shown as
+  one: written from the same statement, cited by one answer, linked by an
+  agent, or nearly the same note on other code (jaccard >= 0.8). A stack is
+  worked out and never written, so a wrong one costs nothing to undo. Words
+  two *different* notes share are not a reason - that is what put
+  service-worker notes on file-fabric's render loop.
+
+Seeding writes one mark per statement on every piece of code it names, and a
+final answer's citations become one cited mark on all of them. Explicit
+`link` stays for code that relates but is not the same thing (`calls`,
+`styles`, `explains`). Co-change from commits (files changed together) is the
+next source of stacks, after a non-git folder has a history to read it from.
 
 ### 6. When to use GitX and when to walk
 
@@ -259,3 +303,42 @@ the question asked; rewriting a function's lines retired its mark, and
 removing a gotcha from CLAUDE.md retired that statement's mark while 60 others
 stayed. The agent test under Test is not run yet.
 
+
+### Setup mode, and what the benches showed (17-19 October)
+
+| Part | Where |
+|---|---|
+| `gitx_investigate { mode: "setup" }`: the setup map (coverage, files, what is not marked yet, features so far) | `mcp/server.js`, `marks.js` setupMap |
+| feature marks: each part of a feature follows the feature's last mark; ranges `file:from-to` | `gitx_mark`, `marks.js` featureMarks |
+| coverage counts only code the setup agent read, by at least half (the reads log) | `marks.js` setupCoverage, wasRead |
+| the Stop hook sends the setup agent back until 60% is covered, four rounds at most; a finished setup never blocks a later agent | `mcp/hook.js`, `marks.js` setupNext |
+| notes from an answer: a scan's first answer, and change notes for code the session edited | `mcp/hook.js`, `marks.js` marksFromAnswer |
+| marks off entirely | `GITX_MARKS=0` |
+
+- **Agents never mark unless assigned to:** 0 of 64 reader runs called
+  `gitx_mark`. Setup agents called it 2 to 24 times.
+- **Setup notes got more correct as the rules changed:**
+
+  | Version | What changed | Correct |
+  |---|---|---|
+  | v1 | | 11 of 18 |
+  | v2 | coverage target added; the agent gamed it | 21 of 39 (17 partly) |
+  | v3 | reads counted only when the code was opened; notes written freely, with no rule to be brief | 25 of 33 |
+  | bare copy of GitX | | 83 of 90, none wrong |
+
+- **The notes did not make readers better.**
+  - On the bare copy of GitX:
+
+    | Readers | Accuracy | Coverage | Wrong claims |
+    |---|---|---|---|
+    | with setup marks | 7.8 | 7.2 | 11 |
+    | with GitX's own record | 8.3 | 7.8 | 8 |
+    | by hand | **8.8** | **8.7** | **4** |
+
+  - Readers with notes answered from them and read about one file.
+  - The file-fabric win for setup marks (8.8 / 8.7 / 6 wrong against hand's
+    8.0 / 8.2 / 12) came on the questions the retrieval fixes were tuned on.
+
+The next step drops notes as answers: GitX hands out the code's words as
+clues, and the setup agent writes a map that states only what it read. That
+is `docs/word-graph-plan.md`. On fresh questions it beat reading by hand 4 to 2.

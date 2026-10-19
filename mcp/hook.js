@@ -134,16 +134,43 @@ async function main() {
 
   /* The answer the agent gave, by what it cited. */
   if (e.hook_event_name === 'Stop') {
-    if (!e.transcript_path) return;
+    /* Claude Code hands the answer over as last_assistant_message; the
+     * transcript is the fallback, and with --no-session-persistence it is
+     * never written - every headless run's answer was lost (scan bench,
+     * 18 October). */
+    const given = typeof raw.last_assistant_message === 'string' ? raw.last_assistant_message : '';
+    if (!given.trim() && !e.transcript_path) return;
     const p = place(e.cwd, null);
     if (!p) return;
-    const refs = citations(e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path));
-    if (refs.length) append(data, 'thermal', p.root, { at, session, kind: 'cite', repo: p.root, head: p.head, refs });
-    /* Cited code the agent's last GitX search had not shown becomes a mark
-     * on that code (tools/marks.js). */
-    if (refs.length) {
-      try { const { marksFromCitations } = await import('./tools/marks.js'); await marksFromCitations(p.root, data, refs, { by: session }); } catch (_) { /* never stops the agent */ }
+    /* Setup mode: not done until the repository is covered - the agent is
+     * sent back with the next biggest unmarked functions (tools/marks.js
+     * setupNext), for a bounded number of rounds. Claude Code only. */
+    if (!e.agy) {
+      try {
+        const { setupNext } = await import('./tools/marks.js');
+        const reason = setupNext(p.root, data);
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
     }
+    let answer = given;
+    if (!answer.trim()) { try { answer = e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path); } catch (_) { return; } }
+    const refs = citations(answer);
+    if (refs.length) append(data, 'thermal', p.root, { at, session, kind: 'cite', repo: p.root, head: p.head, refs });
+    /* A scan's answer is the agent's notes, each on the code it names; so is
+     * what an answer says about code this session changed, in a repository
+     * not yet GitX-ready; any other answer's citations the last GitX search
+     * had not shown become cited marks on that code (tools/marks.js). */
+    try {
+      const { marksFromAnswer, marksFromCitations } = await import('./tools/marks.js');
+      let edits = [];
+      try {
+        edits = fs.readFileSync(path.join(data, 'thermal', repoKey(p.root) + '.jsonl'), 'utf8').split('\n')
+          .map((l) => { try { return JSON.parse(l); } catch (_) { return null; } })
+          .filter((x) => x && x.kind === 'edit' && session && x.session === session);
+      } catch (_) { /* no edits recorded */ }
+      const noted = marksFromAnswer(p.root, data, answer, { by: session, edits });
+      if (!noted.made && refs.length) await marksFromCitations(p.root, data, refs, { by: session });
+    } catch (_) { /* never stops the agent */ }
     return;
   }
 
@@ -155,8 +182,13 @@ async function main() {
   /* What the agent changed, by the lines its new text now sits on. */
   if (['Edit', 'Write', 'MultiEdit'].includes(e.tool_name)) {
     let text = '';
-    try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return; }
-    const pieces = e.tool_name === 'Write' ? [text] : e.tool_name === 'MultiEdit' ? (e.tool_input.edits || []).map((x) => x.new_string) : [e.tool_input.new_string];
+    /* Line endings as one: an Edit's new text comes in LF, and a file checked
+     * out with CRLF on Windows never contained it - every edit to file-
+     * fabric's script.js went unrecorded (code bench, 18 October). Lines are
+     * counted the same either way. */
+    const lf = (s) => String(s || '').replace(/\r\n/g, '\n');
+    try { text = lf(fs.readFileSync(file, 'utf8')); } catch (_) { return; }
+    const pieces = (e.tool_name === 'Write' ? [text] : e.tool_name === 'MultiEdit' ? (e.tool_input.edits || []).map((x) => x.new_string) : [e.tool_input.new_string]).map(lf);
     for (const piece of pieces) {
       if (!piece) continue;
       const i = text.indexOf(piece);
@@ -179,5 +211,7 @@ async function main() {
   });
 }
 
-/* agy runs hooks in line and wants JSON back; Claude Code ignores it. */
-main().catch(() => {}).finally(() => { process.stdout.write('{}\n'); process.exit(0); });
+/* agy runs hooks in line and wants JSON back; Claude Code reads it only for
+ * a decision - setup mode's "block" at Stop, which sends the agent back. */
+let said = null;
+main().then((r) => { said = r || null; }).catch(() => {}).finally(() => { process.stdout.write(JSON.stringify(said || {}) + '\n'); process.exit(0); });
