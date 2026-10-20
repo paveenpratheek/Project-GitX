@@ -192,16 +192,102 @@ export async function topBlock(dir, file = mapPath(dir)) {
   return out;
 }
 
+/* Strict mode, for weaker models. Haiku answering with the map stack cited a
+ * third of its functions without opening them - more than with CLAUDE.md or
+ * by hand - and made the most wrong claims (map bench 5). Strict GitX holds
+ * the agent to what it opened: in setup a higher read target, and every
+ * function the map states as found must be one it read; in answers every
+ * function cited must be one it opened this session. Claude Code does not
+ * tell hooks the model, so strict is asked for (GITX_STRICT=1, --strict,
+ * strict: true) or read from the session's transcript. */
+export const MAP_TARGET_STRICT = 0.95, MAP_ROUNDS_STRICT = 12, CITE_ROUNDS = 2;
+const STRICT_MODELS = () => new RegExp(process.env.GITX_STRICT_MODELS || 'haiku', 'i');
+export function modelOf(transcript) {
+  if (!transcript) return null;
+  let model = null;
+  try { for (const l of fs.readFileSync(transcript, 'utf8').split('\n')) { const m = /"model":"([^"]+)"/.exec(l); if (m && /^claude-/.test(m[1])) model = m[1]; } } catch (_) { /* no transcript */ }
+  return model;
+}
+export const strictFor = ({ flag = false, transcript = null } = {}) =>
+  flag || process.env.GITX_STRICT === '1' || STRICT_MODELS().test(modelOf(transcript) || '');
+
+/* The functions the code defines, by name, and where. */
+const definesOf = (dir) => {
+  const defs = new Map();
+  for (const r of regionsFor(dir)) if (r.kind === 'code') { const n = shortNameOf(r); if (n && !defs.has(n)) defs.set(n, r); }
+  return defs;
+};
+const shortNameOf = (r) => (/(?:function\s+|(?:const|let|var)\s+|class\s+)([A-Za-z_$][\w$]*)/.exec(r.name) || /^([A-Za-z_$][\w$]*)\s*\(/.exec(r.name) || [])[1] || null;
+const opened = (spans, r) => (spans.get(r.file) || []).some(([a, b]) => a <= r.to && b >= r.from);
+
+/* Setup, strict: functions the map states as found that the agent never
+ * opened. Grep: lines are vocabulary, and a line that says it is a lead or
+ * unread is a lead - neither is a claim of having read. */
+export function unopenedFound(dir, data, file = mapPath(dir), since = (loadState(dir, data) || {}).at) {
+  if (!file) return [];
+  const body = bodyOf(fs.readFileSync(file, 'utf8'));
+  const defs = definesOf(dir);
+  const spans = readSpans(dir, data, since ? Date.parse(since) : 0);
+  const lines = body.split('\n');
+  const leads = new Set();
+  for (const s of sectionsOf(body)) if (/open leads?|unread|not read/i.test(s.title)) for (let i = s.from; i <= s.to; i++) leads.add(i);
+  const out = new Set();
+  lines.forEach((l, i) => {
+    if (leads.has(i + 1) || /^\s*Grep:/.test(l) || /open lead|unread|not read|unconfirmed|lead:/i.test(l)) return;
+    for (const m of l.matchAll(/`([^`\n]+)`/g)) for (const n of m[1].matchAll(/[A-Za-z_$][\w$]*/g)) {
+      const r = defs.get(n[0]);
+      if (r && !opened(spans, r)) out.add(n[0]);
+    }
+  });
+  return [...out];
+}
+
+/* Answers, strict: functions an answer cites that this session never opened. */
+export function unopenedCited(dir, data, answer, session) {
+  const defs = definesOf(dir);
+  const spans = new Map();
+  try {
+    for (const l of fs.readFileSync(path.join(data, 'reads', repoKey(dir) + '.jsonl'), 'utf8').split('\n')) {
+      let x; try { x = JSON.parse(l); } catch (_) { continue; }
+      if (!x || x.session !== session || !x.file) continue;
+      const from = x.from || 1, to = x.to || from + 1999;
+      if (!spans.has(x.file)) spans.set(x.file, []);
+      spans.get(x.file).push([from, to]);
+    }
+  } catch (_) { /* nothing read */ }
+  const out = new Set();
+  for (const m of String(answer).matchAll(/`([^`\n]+)`/g)) for (const n of m[1].matchAll(/[A-Za-z_$][\w$]*/g)) {
+    const r = defs.get(n[0]);
+    if (r && !opened(spans, r)) out.add(n[0]);
+  }
+  return [...out];
+}
+
+/* At Stop, outside setup: the answer goes back once or twice while it cites
+ * functions it never opened. Counted per session, so it never loops. */
+export function citeNext(dir, data, answer, session) {
+  if (!session) return null;
+  const f = path.join(data, 'strict', session + '.json');
+  let s = { rounds: 0 }; try { s = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (_) {}
+  if (s.rounds >= CITE_ROUNDS) return null;
+  const missing = unopenedCited(dir, data, answer, session);
+  if (!missing.length) return null;
+  s.rounds++;
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify(s) + '\n');
+  return 'GitX (strict): your answer names code you never opened in this session: ' + missing.slice(0, 15).join(', ') + '. Open each with Read and check what you say about it - keep the claim, correct it, or drop it - then give your answer again. Round ' + s.rounds + ' of ' + CITE_ROUNDS + '.';
+}
+
 /* gitx_investigate { mode: "setup" }: the word graph written for the agent,
  * the setup stamped, and where things stand. */
-export function startMapSetup(dir, data, { where = 'root', by = null } = {}) {
+export function startMapSetup(dir, data, { where = 'root', by = null, strict = false } = {}) {
   const graph = wordGraph(dir, { regions: regionsFor(dir) });
   const words = path.join(dir, WORDS_FILE);
   fs.mkdirSync(path.dirname(words), { recursive: true });
   fs.writeFileSync(words, wordGraphText(dir, graph) + '\n');
   let s = loadState(dir, data);
   if (!s || s.done || Date.now() - Date.parse(s.at) > MAP_FOR) {
-    s = { at: new Date().toISOString(), by, where: where === 'gitx' ? 'gitx' : 'root', rounds: 0 };
+    s = { at: new Date().toISOString(), by, where: where === 'gitx' ? 'gitx' : 'root', rounds: 0, strict: !!strict };
     saveState(dir, data, s);
   }
   const map = mapPath(dir) || pathFor(dir, s.where);
@@ -214,9 +300,10 @@ export function startMapSetup(dir, data, { where = 'root', by = null } = {}) {
 
 /* At Stop (hook.js): the reason to keep going, or null when setup is done -
  * the code read, out of rounds, or no setup running. */
-export function mapNext(dir, data) {
+export function mapNext(dir, data, { strict = false } = {}) {
   const s = loadState(dir, data);
   if (!s || s.done) return null;
+  const hard = strict || s.strict, TARGET = hard ? MAP_TARGET_STRICT : MAP_TARGET, ROUNDS = hard ? MAP_ROUNDS_STRICT : MAP_ROUNDS;
   if (Date.now() - Date.parse(s.at) > MAP_FOR) { try { fs.unlinkSync(stateFile(dir, data)); } catch (_) {} return null; }
   const file = mapPath(dir);
   const target = file || pathFor(dir, s.where);
@@ -230,8 +317,10 @@ export function mapNext(dir, data) {
   const unshaped = shape && (shape.missing.length || !shape.features || shape.top_chars > TOP_MAX);
   /* By what the agent wrote, not the file's time - GitX's own stamp changes that. */
   const body = file ? hashOf(text) : null;
-  const covered = c.share >= MAP_TARGET;
-  if ((file && covered && !stale.length && !unshaped) || s.rounds >= MAP_ROUNDS) {
+  const covered = c.share >= TARGET;
+  /* Strict: a function stated as found must be one the agent opened. */
+  const unopened = hard && file ? unopenedFound(dir, data, file, s.at) : [];
+  if ((file && covered && !stale.length && !unshaped && !unopened.length) || s.rounds >= ROUNDS) {
     s.done = { at: new Date().toISOString(), read: c.read + '/' + c.of, rounds: s.rounds, map: file ? rel : null };
     saveState(dir, data, s);
     return null;
@@ -246,8 +335,9 @@ export function mapNext(dir, data) {
   if (shape && shape.missing.length) why.push('The map needs its four top sections, which every agent gets first - missing: ' + shape.missing.map((k) => '## ' + k).join(', ') + '.');
   if (shape && !shape.features) why.push('Put each feature under its own ### heading inside ## Features, so a reader can load one feature alone.');
   if (shape && shape.top_chars > TOP_MAX) why.push('The four top sections are ' + shape.top_chars + ' characters - keep them under ' + TOP_MAX + ' together (every session loads them); move detail into the feature sections.');
-  if (!covered) why.push('You have read ' + c.read + ' of ' + c.of + ' code lines (' + Math.round(c.share * 100) + '%; setup is done at ' + Math.round(MAP_TARGET * 100) + '%). Read with Read - only what you open counts. The biggest parts still unread: ' + c.next.join(', ') + '. Then update the map with what you found.');
-  return 'GitX setup is not done. ' + why.join(' ') + ' Round ' + s.rounds + ' of ' + MAP_ROUNDS + '.';
+  if (unopened.length) why.push('(Strict) These functions are stated as found, but you never opened their code: ' + unopened.slice(0, 20).join(', ') + '. Read each one and keep, correct or remove what the map says - or mark it as an unread open lead.');
+  if (!covered) why.push('You have read ' + c.read + ' of ' + c.of + ' code lines (' + Math.round(c.share * 100) + '%; setup is done at ' + Math.round(TARGET * 100) + '%). Read with Read - only what you open counts. The biggest parts still unread: ' + c.next.join(', ') + '. Then update the map with what you found.');
+  return 'GitX setup is not done. ' + why.join(' ') + ' Round ' + s.rounds + ' of ' + ROUNDS + '.';
 }
 
 export const MAP_SETUP_HOW = (rel) => [

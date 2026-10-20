@@ -382,6 +382,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['setup', 'setup-marks'], description: 'setup: you are assigned to set this repository up for GitX - GitX writes the code\'s own words to .gitx/words.md as clues, and you read the code and write GitX.md, a map of what you found and the leads you did not reach. Works on a folder with no git. setup-marks: the older setup, marking each feature\'s code with a note.' },
+        strict: { type: 'boolean', description: 'setup: strict, for weaker models - a higher read target, and every function the map states as found must be one you opened.' },
         where: { type: 'string', enum: ['root', 'gitx'], description: 'setup: where the map goes - root (GitX.md beside the code, to commit or not) or gitx (.gitx/GitX.md, private). The user\'s choice; root by default.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
@@ -1301,7 +1302,7 @@ async function handleToolCall(name, args) {
        * hook sends it back until the code is read. Agent files are left to
        * the agents who read them (t-eae87feddc). */
       if (args.mode === 'setup') {
-        const s = startMapSetup(target.dir, data, { where: args.where, by });
+        const s = startMapSetup(target.dir, data, { where: args.where, by, strict: args.strict === true || process.env.GITX_STRICT === '1' });
         return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup', ...s, how: MAP_SETUP_HOW(s.map) });
       }
       if (!rec.marks) return reply({ repo: target.dir, state: rec.state, ready: false, ...(map ? { map: mapRel, map_check: checkMap(target.dir, map), map_top: await topBlock(target.dir, map) } : {}),

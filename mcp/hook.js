@@ -193,11 +193,23 @@ async function main() {
     if (!e.agy) {
       /* The map setup: not done until the code is read and the map says so
        * (tools/gitx-map.js mapNext); the map's header is kept up to date. */
+      /* Strict for weaker models - asked for, or read from the transcript's model. */
+      let strict = false;
       try {
-        const { mapNext } = await import('./tools/gitx-map.js');
-        const reason = mapNext(p.root, data);
+        const { mapNext, strictFor } = await import('./tools/gitx-map.js');
+        strict = strictFor({ flag: process.argv.includes('--strict'), transcript: e.transcript_path });
+        const reason = mapNext(p.root, data, { strict });
         if (reason) return { decision: 'block', reason };
       } catch (_) { /* never stops the agent from stopping */ }
+      /* Strict, outside a setup: an answer that cites code it never opened
+       * goes back to open it (t-38a352d0c5), at most twice a session. */
+      if (strict) {
+        try {
+          const { citeNext } = await import('./tools/gitx-map.js');
+          const reason = citeNext(p.root, data, given, session);
+          if (reason) return { decision: 'block', reason };
+        } catch (_) { /* never stops the agent from stopping */ }
+      }
       try {
         const { setupNext } = await import('./tools/marks.js');
         const reason = setupNext(p.root, data);
