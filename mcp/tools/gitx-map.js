@@ -35,7 +35,17 @@ const NEXT = 15;           // unread parts named when the agent is sent back
 /* The code as it is now: git's index with uncommitted files split again,
  * or, with no git, the files on disk. */
 export function regionsFor(dir) {
-  try { return codeNow(dir).regions; } catch (_) { return diskRegions(dir); }
+  let regions;
+  try { regions = codeNow(dir).regions; } catch (_) { return diskRegions(dir); }
+  /* A file with uncommitted changes is split again from disk without its
+   * text, which the map needs - to check names and to fingerprint functions:
+   * without it every function in an edited file read as changed. */
+  const lines = new Map();
+  return regions.map((r) => {
+    if (r.text != null) return r;
+    if (!lines.has(r.file)) { try { lines.set(r.file, fs.readFileSync(path.join(dir, r.file), 'utf8').replace(/\r\n/g, '\n').split('\n')); } catch (_) { lines.set(r.file, []); } }
+    return { ...r, text: lines.get(r.file).slice(r.from - 1, r.to).join('\n') };
+  });
 }
 const codeOf = (dir) => regionsFor(dir).filter((r) => r.kind !== 'doc');
 

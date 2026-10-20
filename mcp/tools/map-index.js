@@ -40,7 +40,10 @@ export function functionsOf(dir) {
   const out = new Map();
   for (const [n, rs] of byName) {
     rs.sort((a, b) => (a.file + a.from).localeCompare(b.file + b.from));
-    out.set(n, { name: n, file: rs[0].file, from: rs[0].from, to: rs[rs.length - 1].to, regions: rs, hash: hash(rs.map((r) => r.file + '\n' + r.text).join('\n')) });
+    /* Line endings out of the fingerprint: an unchanged file is read from git
+     * (CRLF where the repository stores it), an edited one from disk with LF -
+     * so one edit marked every function in its file changed. */
+    out.set(n, { name: n, file: rs[0].file, from: rs[0].from, to: rs[rs.length - 1].to, regions: rs, hash: hash(rs.map((r) => r.file + '\n' + String(r.text).replace(/\r/g, '').replace(/[ \t]+$/gm, '')).join('\n')) });
   }
   return out;
 }

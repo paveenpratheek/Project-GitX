@@ -23,8 +23,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { termsOf, questionTerms, shortName } from './code-find.js';
+import { termsOf, questionTerms, shortName, buildCodeIndex } from './code-find.js';
 import { mapPath, regionsFor, sectionsOf, bodyOf } from './gitx-map.js';
+import { ensureIndex, staleness, functionsOf } from './map-index.js';
 
 const NAME = /[A-Za-z_$][\w$-]*[\w$]/g;
 const namesIn = (text) => {
@@ -122,6 +123,33 @@ export function mapGraph(dir, file = mapPath(dir)) {
   return graph;
 }
 
+/* A section's history: the commits git blame names for the functions it
+ * describes, weighed by how many of their lines each wrote, with each
+ * commit's subject and the thoughts it settled - and waiting thoughts that
+ * name those functions (plans and open questions on this code). Short:
+ * the stack carries several sections. */
+const HIST_COMMITS = 3, HIST_THOUGHTS = 2, HIST_WAITING = 2;
+export function historyOf(cx, fns) {
+  const want = new Set(fns);
+  const weight = new Map();
+  for (const r of cx.regions) {
+    if (r.kind !== 'code' || !want.has(shortName(r))) continue;
+    for (const [c, k] of Object.entries(r.commits || {})) weight.set(c, (weight.get(c) || 0) + k);
+  }
+  const out = [];
+  const top = [...weight].filter(([, k]) => k >= 3).sort((a, b) => b[1] - a[1]).slice(0, HIST_COMMITS);
+  for (const [c] of top) {
+    const cm = cx.commits.get(c);
+    if (!cm) continue;
+    out.push('- commit ' + c.slice(0, 7) + ' (' + cm.date + '): ' + cm.subject.slice(0, 110));
+    for (const t of cm.thoughts.filter((t) => t.kind === 'decision' || t.kind === 'learned').slice(0, HIST_THOUGHTS)) out.push('  - settled ' + t.id + ': ' + String(t.text).slice(0, 170));
+  }
+  const named = [...want].filter((f) => f.length >= 6);
+  const waiting = named.length ? cx.waiting.filter((t) => (t.outcome === 'open' || t.outcome === 'accepted') && named.some((f) => String(t.text).includes(f))).slice(0, HIST_WAITING) : [];
+  for (const t of waiting) out.push('- waiting (' + (t.outcome === 'open' ? 'open question' : 'decided, not built') + ') ' + t.id + ': ' + String(t.text).slice(0, 170));
+  return out.length ? ['History - the commits that wrote this code, and what they settled:', ...out] : [];
+}
+
 /* The stack for a question: the sections its words land on (by how rare
  * each word is across the sections), then the sections linked to those,
  * strongest first, until the budget. */
@@ -153,8 +181,24 @@ export function mapStack(dir, query, { budget = STACK_BUDGET, file = mapPath(dir
   const rel = path.relative(dir, g.file).replace(/\\/g, '/');
   const parts = [];
   let used = 0;
+  /* Below each section, the rest of the stack (t-fa7e9ceba9): what changed
+   * since the map was stamped, then the commits that wrote its code and
+   * what they settled, then plans still waiting on it. */
+  let cx = null; try { cx = buildCodeIndex(dir); } catch (_) { /* no git: the map alone */ }
+  let stale = null; try { ensureIndex(dir, g.file); stale = staleness(dir, g.file); } catch (_) { /* no index */ }
+  let fnsNow = null;
+  const below = (n) => {
+    const out = [];
+    const st = stale && stale.stale.find((x) => x.title === n.title);
+    if (st) {
+      fnsNow = fnsNow || functionsOf(dir);
+      out.push('STALE - changed since the map was stamped: ' + [...st.changed.map((f) => { const x = fnsNow.get(f); return f + (x ? ' (now ' + x.file + ':' + x.from + '-' + x.to + ')' : ''); }), ...st.missing.map((f) => f + ' (gone)')].join(', ') + '. Read the code there; this section may be out of date.');
+    }
+    if (cx) out.push(...historyOf(cx, [...n.own, ...n.mentions]));
+    return out.length ? '\n' + out.join('\n') : '';
+  };
   const add = (n, why) => {
-    const block = '### ' + n.title + ' (' + rel + ' lines ' + n.from + '-' + n.to + ') - ' + why + '\n' + n.text.split('\n').slice(1).join('\n').trim();
+    const block = '### ' + n.title + ' (' + rel + ' lines ' + n.from + '-' + n.to + ') - ' + why + '\n' + n.text.split('\n').slice(1).join('\n').trim() + below(n);
     if (used + block.length > budget && parts.length) return false;
     parts.push(block); used += block.length; return true;
   };
