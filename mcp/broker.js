@@ -247,7 +247,28 @@ function refreshFromGit(targetDir = null) {
 
   saveState();
   console.log(`[GitX Broker] Loaded ${state.chronicles.length} commits across ${Object.keys(state.streams).length} streams for '${state.activeRepoName}'.`);
+  boredomSoon(dir);
 }
+
+/* Boredom (tools/boredom.js): after a commit, once the code has been quiet a
+ * while, bring GitX.md's changed sections up to date - and every few minutes
+ * for changes nobody committed. Off unless turned on for the repository; it
+ * decides for itself whether there is anything to do. */
+let boredomTimer = null;
+function boredomSoon(dir, wait = null) {
+  clearTimeout(boredomTimer);
+  import('./tools/boredom.js').then(({ config, tick }) => {
+    const cfg = config(dir);
+    if (!cfg.enabled) return;
+    boredomTimer = setTimeout(() => {
+      tick(dir, { data: watcher.dataDir || undefined }).then((r) => {
+        if (r.did !== 'nothing to do' && r.did !== 'off') console.log('[GitX Broker] Boredom: ' + r.did + (r.sections ? ' - ' + r.sections.join(', ') : '') + (r.cost_usd ? ' ($' + r.cost_usd.toFixed(3) + ')' : ''));
+        if (/^waiting/.test(r.did)) boredomSoon(dir);
+      }).catch((err) => console.warn('[GitX Broker] Boredom failed: ' + err.message));
+    }, wait != null ? wait : cfg.quiet_minutes * 60000);
+  }).catch(() => { /* no Boredom here */ });
+}
+setInterval(() => { if (state.activeRepo) boredomSoon(state.activeRepo, 0); }, 5 * 60000).unref();
 
 /* Two files, split by who they belong to.
  *
@@ -475,6 +496,30 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ ok: false, problems: [err.message] }));
       }
     });
+    return;
+  }
+
+  /* Boredom's switch for the active repository (tools/boredom.js): its
+   * settings, what it spent today and its last runs; POST turns it on or off
+   * or sets the daily cap. */
+  if (req.url === '/api/boredom') {
+    const send = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
+    import('./tools/boredom.js').then((B) => {
+      const dir = state.activeRepo;
+      const view = () => ({ ok: true, repo: dir, config: B.config(dir), spent_today: B.spentToday(dir), last: B.history(dir, 5) });
+      if (req.method !== 'POST') return send(200, view());
+      let raw = '';
+      req.on('data', (c) => { raw += c; if (raw.length > 4096) req.destroy(); });
+      req.on('end', () => {
+        let p; try { p = JSON.parse(raw || '{}'); } catch (_) { return send(400, { ok: false, problems: ['the body is not JSON'] }); }
+        const patch = {};
+        if (typeof p.enabled === 'boolean') patch.enabled = p.enabled;
+        if (Number.isFinite(p.daily_cap_usd) && p.daily_cap_usd >= 0 && p.daily_cap_usd <= 20) patch.daily_cap_usd = p.daily_cap_usd;
+        B.setConfig(dir, patch);
+        if (patch.enabled) boredomSoon(dir, 0);
+        send(200, view());
+      });
+    }).catch((err) => send(500, { ok: false, problems: [err.message] }));
     return;
   }
 

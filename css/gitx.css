@@ -154,6 +154,19 @@ body {
   opacity: 0.9;
 }
 
+/* Boredom's switch: quiet when off, the accent when on. */
+.btn-boredom {
+  background: transparent;
+  color: var(--text-secondary, inherit);
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  margin-right: 8px;
+}
+.btn-boredom[aria-pressed="true"] {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
+}
+
 /* Main Layout Grid */
 .gitx-container {
   flex: 1;

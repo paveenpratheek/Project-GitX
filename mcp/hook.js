@@ -154,7 +154,11 @@ async function main() {
     const { mapPath, stampMap, topBlock } = await import('./tools/gitx-map.js');
     const file = mapPath(p.root);
     if (!file) return;
-    try { stampMap(p.root, file); } catch (_) { /* the map as it is */ }
+    /* What changed since the map was stamped goes into its index, so the
+     * session is told which sections have fallen behind (tools/map-index.js). */
+    let stale = null;
+    try { const { ensureIndex, staleness } = await import('./tools/map-index.js'); ensureIndex(p.root, file); stale = staleness(p.root, file); } catch (_) { /* no index */ }
+    try { stampMap(p.root, file, { stale }); } catch (_) { /* the map as it is */ }
     const top = await topBlock(p.root, file);
     return top ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: top } } : undefined;
   }
@@ -199,6 +203,13 @@ async function main() {
         const { mapNext, strictFor } = await import('./tools/gitx-map.js');
         strict = strictFor({ flag: process.argv.includes('--strict'), transcript: e.transcript_path });
         const reason = mapNext(p.root, data, { strict });
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
+      /* A Boredom update (tools/boredom.js): back to the changed functions it
+       * has not opened, or the names it got wrong. */
+      try {
+        const { boredomNext } = await import('./tools/boredom.js');
+        const reason = boredomNext(p.root, data);
         if (reason) return { decision: 'block', reason };
       } catch (_) { /* never stops the agent from stopping */ }
       /* Strict, outside a setup: an answer that cites code it never opened

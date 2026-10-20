@@ -143,8 +143,10 @@ export function shapeOf(body) {
  * who finds GitX.md on its own is told what it is, what to read first and
  * where each feature is. The index gives exact lines for Read: GitX rewrites
  * it whenever the map changes. readLine is how much of the code was read; out
- * of setup the line already there is kept. */
-export function stampMap(dir, file = mapPath(dir), { readLine = null } = {}) {
+ * of setup the line already there is kept. stale (tools/map-index.js) marks
+ * the sections whose code changed since the map was stamped, and names changed
+ * code no section covers, so a reader knows where the map has fallen behind. */
+export function stampMap(dir, file = mapPath(dir), { readLine = null, stale = null } = {}) {
   if (!file) return;
   let text; try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return; }
   const old = /^> \*\*GitX map\*\*.*$/m.exec(text.split('<!-- /gitx:map -->')[0]);
@@ -153,13 +155,16 @@ export function stampMap(dir, file = mapPath(dir), { readLine = null } = {}) {
   const body = bodyOf(text);
   const secs = sectionsOf(body);
   const kinds = secs.filter((x) => x.kind), rest = secs.filter((x) => !x.kind && (x.level === 3 || !/^features\b/i.test(x.title)));
+  const staleOf = (t) => stale && stale.stale.find((x) => x.title === t);
+  const mark = (t) => { const x = staleOf(t); return x ? ' - STALE, changed since stamped: ' + [...x.changed, ...x.missing.map((n) => n + ' (gone)')].slice(0, 6).join(', ') : ''; };
   const head = (shift) => [
     '<!-- gitx:map -->',
     read,
     '> **Found** = read in the code. **Open lead** = seen only as a name, or not reached. It is where to start, not the answer - the code is. Check what you rely on, and look past its words: they are not all the words there are.',
     ...(chk && chk.missing.length ? ['> GitX checked ' + chk.names + ' names in this map against the code; ' + chk.missing.length + ' are not in it: ' + chk.missing.slice(0, 20).map((n) => '`' + n + '`').join(', ') + '.'] : []),
-    ...(kinds.length ? ['> **Read first:** ' + kinds.map((x) => x.title + ' (lines ' + (x.from + shift) + '-' + (x.to + shift) + ')').join(', ') + '. Then only the section your task touches - Read GitX.md with offset and limit:'] : []),
-    ...rest.map((x) => '> - ' + x.title + ' - lines ' + (x.from + shift) + '-' + (x.to + shift)),
+    ...(stale && (stale.stale.length || stale.uncovered.length) ? ['> GitX: ' + stale.stale.length + ' section(s) describe code that changed since the map was stamped (marked STALE below - trust the code there)' + (stale.uncovered.length ? '; changed code no section covers: ' + stale.uncovered.slice(0, 8).map((u) => '`' + u.name + '`').join(', ') + (stale.uncovered.length > 8 ? ' and ' + (stale.uncovered.length - 8) + ' more' : '') : '') + '.'] : []),
+    ...(kinds.length ? ['> **Read first:** ' + kinds.map((x) => x.title + ' (lines ' + (x.from + shift) + '-' + (x.to + shift) + ')' + mark(x.title)).join(', ') + '. Then only the section your task touches - Read GitX.md with offset and limit:'] : []),
+    ...rest.map((x) => '> - ' + x.title + ' - lines ' + (x.from + shift) + '-' + (x.to + shift) + mark(x.title)),
     '<!-- /gitx:map -->', ''
   ];
   /* Body line k is file line k + (header lines + the blank after it). */
@@ -323,6 +328,9 @@ export function mapNext(dir, data, { strict = false } = {}) {
   if ((file && covered && !stale.length && !unshaped && !unopened.length) || s.rounds >= ROUNDS) {
     s.done = { at: new Date().toISOString(), read: c.read + '/' + c.of, rounds: s.rounds, map: file ? rel : null };
     saveState(dir, data, s);
+    /* A finished setup is the map's new baseline (tools/map-index.js): the old
+     * fingerprints go, and the next look stamps the map as it is now. */
+    try { fs.unlinkSync(path.join(dir, '.gitx', 'map-index.json')); } catch (_) { /* none yet */ }
     return null;
   }
   const quiet = s.rounds > 0 && file && body === s.mapBody;
