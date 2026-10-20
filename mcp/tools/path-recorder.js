@@ -43,7 +43,10 @@ export function repoKey(dir) {
     k = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], { windowsHide: NO_CONSOLE, cwd: dir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       .trim().split('\n').pop().slice(0, 16) || null;
   } catch (_) { /* not a repository, or no commits */ }
-  if (!k) k = crypto.createHash('sha256').update(path.resolve(dir)).digest('hex').slice(0, 16);
+  /* With no commits, by its path - one spelling of it: the hook is handed
+   * e:\x by one harness and the server E:/x by the agent, and two keys for
+   * one folder split its reads from its setup. */
+  if (!k) { const p = path.resolve(dir); k = crypto.createHash('sha256').update(process.platform === 'win32' ? p.toLowerCase() : p).digest('hex').slice(0, 16); }
   keys.set(dir, k);
   return k;
 }

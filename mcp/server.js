@@ -32,6 +32,8 @@ import { commitCode } from './tools/commit-code.js';
 import { PathRecorder } from './tools/path-recorder.js';
 import { markTargets } from './tools/mark.js';
 import { loadMarks, createMark, judgeMark, linkMark, joinMark, relatedMarks, marksOn, viewOf, publicView, seedFromAgentFiles, marksForAnswer, walkHint, recordOf, startScan, markedSoFar, isReady, READY_HOW, INVESTIGATE_HOW, featureKey, featureMarks, setupMap, startSetup, readSpans, partsOpened, SETUP_HOW } from './tools/marks.js';
+import { startMapSetup, mapPath, checkMap, topBlock, MAP_SETUP_HOW, MAP_READ_HOW } from './tools/gitx-map.js';
+import { mapStack } from './tools/map-graph.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
 /* What gitx_search did, for the path recorder; never part of the agent's answer. */
@@ -375,11 +377,12 @@ const TOOLS = [
    * files read into marks, and how to work (tools/marks.js). */
   {
     name: 'gitx_investigate',
-    description: 'Start here on a repository: says whether it is GitX-ready (commits with reasoning, linked thoughts and topics - then use gitx_search, nothing to mark). If it is not, you build its record as you work: the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code become marks on that code, your next answer is read as your notes, and marked_so_far says what earlier agents marked and what nobody has. Read with gitx_search either way.',
+    description: 'Start here on a repository: says whether it is GitX-ready (commits with reasoning, linked thoughts and topics - then use gitx_search, nothing to mark), and whether it has a GitX map (GitX.md: where to start, not the answer). If it is not ready, you build its record as you work: the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code become marks on that code, your next answer is read as your notes, and marked_so_far says what earlier agents marked and what nobody has. Read with gitx_search either way.',
     inputSchema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['setup'], description: 'setup: you are assigned to set this repository up for GitX - go through it feature by feature and mark each feature\'s code with a note. The reply is the brief and a map of what is marked.' },
+        mode: { type: 'string', enum: ['setup', 'setup-marks'], description: 'setup: you are assigned to set this repository up for GitX - GitX writes the code\'s own words to .gitx/words.md as clues, and you read the code and write GitX.md, a map of what you found and the leads you did not reach. Works on a folder with no git. setup-marks: the older setup, marking each feature\'s code with a note.' },
+        where: { type: 'string', enum: ['root', 'gitx'], description: 'setup: where the map goes - root (GitX.md beside the code, to commit or not) or gitx (.gitx/GitX.md, private). The user\'s choice; root by default.' },
         cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
       required: []
@@ -1285,18 +1288,33 @@ async function handleToolCall(name, args) {
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
       const data = paths.base || logDataDir();
       /* GitX-ready: the record is there and gitx_search reads it - nothing
-       * to seed, nothing to mark. */
-      const rec = recordOf(target.dir, data);
+       * to seed, nothing to mark. A folder with no git has no record and no
+       * marks (they are anchored by blame), but it can have a map. */
+      let rec = null;
+      try { rec = recordOf(target.dir, data); } catch (_) { rec = { state: 'bare - not a git repository', record: null, marks: null }; }
       if (isReady(rec)) return reply({ repo: target.dir, state: rec.state, record: rec.record, ready: true, how: READY_HOW });
-      const seeded = seedFromAgentFiles(target.dir, data, { by: AGENT_NAME || AGENT_ID || null });
-      /* Setup mode: this agent is assigned to set the repository up - mark
-       * every feature's code with a note. Its marks are explicit, so its
-       * answer is not also read as notes. */
-      if (args.mode === 'setup') try { startSetup(target.dir, data, AGENT_NAME || AGENT_ID || null); } catch (_) { /* the brief alone */ }
-      if (args.mode === 'setup') return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup', ...setupMap(target.dir, data), agent_files: seeded.files, how: SETUP_HOW });
+      const by = AGENT_NAME || AGENT_ID || null;
+      const map = mapPath(target.dir);
+      const mapRel = map && path.relative(target.dir, map).replace(/\\/g, '/');
+      /* Setup mode (tools/gitx-map.js): GitX hands out the code's words as
+       * clues, the agent reads the code and writes GitX.md, and the Stop
+       * hook sends it back until the code is read. Agent files are left to
+       * the agents who read them (t-eae87feddc). */
+      if (args.mode === 'setup') {
+        const s = startMapSetup(target.dir, data, { where: args.where, by });
+        return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup', ...s, how: MAP_SETUP_HOW(s.map) });
+      }
+      if (!rec.marks) return reply({ repo: target.dir, state: rec.state, ready: false, ...(map ? { map: mapRel, map_check: checkMap(target.dir, map), map_top: await topBlock(target.dir, map) } : {}),
+        how: [map ? MAP_READ_HOW(mapRel) : 'GitX has no record or map of this folder yet. To make one, an agent assigned to it calls gitx_investigate { "mode": "setup" }.', 'With no git, gitx_search and marks have nothing to read: use your own tools (Grep, Read).'] });
+      const seeded = seedFromAgentFiles(target.dir, data, { by });
+      /* Setup with marks: this agent is assigned to mark every feature's code
+       * with a note. Its marks are explicit, so its answer is not also read
+       * as notes. */
+      if (args.mode === 'setup-marks') try { startSetup(target.dir, data, by); } catch (_) { /* the brief alone */ }
+      if (args.mode === 'setup-marks') return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup-marks', ...setupMap(target.dir, data), agent_files: seeded.files, how: SETUP_HOW });
       /* Marking starts here: this agent's next final answer is read as its notes. */
       try { startScan(target.dir, data, AGENT_NAME || AGENT_ID || null); } catch (_) { /* the reply alone */ }
-      return reply({ repo: target.dir, ...recordOf(target.dir, data), ready: false, marked_so_far: markedSoFar(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, on_places: seeded.places, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code - seeded.lists, lists_skipped: seeded.lists, left_to_you: seeded.no_code }, how: INVESTIGATE_HOW });
+      return reply({ repo: target.dir, ...recordOf(target.dir, data), ready: false, ...(map ? { map: mapRel, map_check: checkMap(target.dir, map), map_top: await topBlock(target.dir, map) } : {}), marked_so_far: markedSoFar(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, on_places: seeded.places, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code - seeded.lists, lists_skipped: seeded.lists, left_to_you: seeded.no_code }, how: map ? [MAP_READ_HOW(mapRel), ...INVESTIGATE_HOW] : INVESTIGATE_HOW });
     }
 
     case 'gitx_find_related': {
@@ -1438,8 +1456,21 @@ async function handleToolCall(name, args) {
     case 'gitx_related':
     case 'gitx_search': {
       const target = resolveTargetRepo(args.cwd);
-      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      /* A repository with a GitX map: the map's sections the question lands
+       * on and those linked to them (tools/map-graph.js) ride beside every
+       * answer - and with no git they are the answer. */
+      let mapS = null;
+      try {
+        if (target.ok && args.query && mapPath(target.dir)) {
+          const s = mapStack(target.dir, String(args.query));
+          if (s && s.entries.length) mapS = { entries: s.entries, pulled: s.pulled, sections: s.text };
+        }
+      } catch (_) { /* the answer alone */ }
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(mapS ? { ...obj, map: mapS } : obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+      let gitRepo = true;
+      try { execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: NO_CONSOLE, cwd: target.dir, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (_) { gitRepo = false; }
+      if (!gitRepo) return reply({ repo: target.dir, state: 'bare - not a git repository', how: mapS ? 'With no git there are no commits or thoughts to search; map holds the GitX map sections for this question. Use your own tools (Grep, Read) for the code.' : 'With no git and no GitX map there is nothing to search: use your own tools (Grep, Read).' });
       /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
       /* A question in words enters at the code (t-e688562831): the regions at
        * HEAD it is about, then the commits that wrote them and the thoughts

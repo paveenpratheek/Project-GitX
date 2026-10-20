@@ -10,7 +10,8 @@ description: >-
 
 # Investigating a repository with GitX
 
-Call **`gitx_investigate`** once when you arrive. It says which of two kinds of repository this is.
+Call **`gitx_investigate`** once when you arrive. It says which of two kinds of repository this is, and
+whether it has a GitX map.
 
 ## GitX-ready (`"ready": true`)
 
@@ -58,11 +59,36 @@ To leave notes yourself, in one call:
 A statement that names no code - a rule of work, a convention - is not a mark; record it with
 `gitx_thought_record` (kind `learned`) if it matters.
 
+## A repository with a GitX map (`"map": "GitX.md"`)
+
+`GitX.md` (at the root, or `.gitx/GitX.md`) is a map a setup agent wrote after reading the code. For each
+feature it lists the words to grep, what the agent **found** when it read the code, and the **open leads** it
+saw only as names or did not reach. **It is where to start, not the answer: the code is.** Grep its words,
+read the code they lead to, check what you rely on, and look past its words - they are not all the words
+there are. Where the map is wrong, say so in your answer.
+
 ## Setup mode: assigned to set a repository up
 
-When you are asked to set a repository up for GitX, call `gitx_investigate { "mode": "setup" }`. You go
-through the code feature by feature, and for each one mark the code range it lives in with a note on what it
-does - so any agent after you understands the code from your marks.
+When you are asked to set a repository up for GitX, call `gitx_investigate { "mode": "setup" }` (add
+`"where": "gitx"` if the user wants the map private, in `.gitx/`). It works on a folder with no git.
+
+GitX writes the code's own words to `.gitx/words.md`: the names it defines, grouped by a shared name part, each
+with its near words and the other places it appears. **They are clues, not answers** - a name says what someone
+meant when they wrote it, not what the code does now - and they are not all the words there are.
+
+1. Grep the words and **read the code with Read** - only what you open with Read counts as read.
+2. Write `GitX.md` early and keep it up to date as you go. For each feature: the words to grep, what you found
+   when you read its code, and the open leads. **State as found only what you read.** Anything you saw only as
+   a name, or did not reach, is an open lead and says it is unread. Say how the parts connect, where you read it.
+3. Read all of the code. Setup is done at 90% of the code's lines read; until then, when you stop, GitX sends
+   you back with the biggest parts still unread, and with any name in the map that is not in the code.
+4. GitX writes a few lines on top of the map saying what it is and how much of the code was read. Change no
+   file but the map. `CLAUDE.md`, `AGENTS.md`, READMEs and notes may be out of date: the map is about the code.
+
+### Setup with marks (`"mode": "setup-marks"`)
+
+The older setup, on a git repository: you go through the code feature by feature, and for each one mark the
+code range it lives in with a note on what it does.
 
 1. Find the features: the repository's own notes (`CLAUDE.md`, README, docs) and the structure. Check the notes
    against the code - they can be out of date.
@@ -81,7 +107,7 @@ does - so any agent after you understands the code from your marks.
 3. Another part of a feature already marked: give the same `feature`, and your mark follows the feature's last
    mark (`follows: m-...` in the reply). To see a feature's marks first: `gitx_mark { "feature": "totem-indicators" }`.
 4. Cover the repository: `files` says how much of each file is marked, `not_marked_yet` the biggest unmarked
-   parts. Call `gitx_investigate { "mode": "setup" }` again to see the map as it is now.
+   parts. Call `gitx_investigate { "mode": "setup-marks" }` again to see what is marked now.
 
 ## Walk or take the transport
 

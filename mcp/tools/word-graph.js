@@ -8,14 +8,14 @@
  * related by NAME - recall over precision: the agent judges what they mean.
  * No line numbers: the agent greps.
  *
- * Prototype, not yet wired into gitx_investigate's setup mode. Tested on
- * file-fabric (docs/word-graph-plan.md):
+ * gitx_investigate's setup mode writes it to .gitx/words.md for the setup
+ * agent (tools/gitx-map.js). Tested on file-fabric (docs/word-graph-plan.md):
  *   node mcp/tools/word-graph.js <repo dir> [out file, default <repo>/.gitx/words.md]
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildCodeIndex, shortName } from './code-find.js';
+import { buildCodeIndex, diskRegions, shortName } from './code-find.js';
 
 const NL = '\n';
 /* Words every web app has: they say nothing about this one. */
@@ -28,8 +28,11 @@ const similarity = (a, b) => {
   return n / ((x.size + y.size - n) || 1);
 };
 
-export function wordGraph(repo, { groupsMax = 90 } = {}) {
-  const regions = buildCodeIndex(repo).regions.filter((r) => r.kind !== 'doc');
+/* The code at HEAD, or with no git the files on disk. */
+const codeRegionsOf = (repo) => { try { return buildCodeIndex(repo).regions; } catch (_) { return diskRegions(repo); } };
+
+export function wordGraph(repo, { groupsMax = 90, regions: given = null } = {}) {
+  const regions = (given || codeRegionsOf(repo)).filter((r) => r.kind !== 'doc');
   let html = ''; try { html = fs.readFileSync(path.join(repo, 'index.html'), 'utf8'); } catch (_) {}
   const all = regions.map((r) => r.text).join(NL) + NL + html;
   const grab = (re) => [...all.matchAll(re)].map((m) => m[1]);

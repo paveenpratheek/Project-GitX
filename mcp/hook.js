@@ -20,8 +20,10 @@
  * in ~/.gemini/config/hooks.json on PostToolUse for those four tools and on
  * Stop.
  *
- * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), and
- * as a Stop hook, in .claude/settings.json:
+ * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), as a
+ * Stop hook, as a SessionStart hook - which hands a repository's GitX map (its
+ * top sections and index) to every session - and as a UserPromptSubmit hook,
+ * which adds the map sections each prompt touches, in .claude/settings.json:
  *
  *   { "hooks": { "PostToolUse": [ { "matcher": "Read", "hooks": [ { "type": "command",
  *       "command": "node \"<GitX>/mcp/hook.js\"", "async": true } ] } ] } }
@@ -57,12 +59,25 @@ const gitOut = (cwd, args) => execFileSync('git', args, { windowsHide: NO_CONSOL
 /* The repository a path or folder is in, and the path inside it. */
 function place(cwd, file) {
   let root;
-  try { root = path.resolve(win(gitOut(cwd || path.dirname(file), ['rev-parse', '--show-toplevel']))); } catch (_) { return null; }
+  try { root = path.resolve(win(gitOut(cwd || path.dirname(file), ['rev-parse', '--show-toplevel']))); } catch (_) { root = gitxFolder(cwd, file); }
+  if (!root) return null;
   const rel = file ? path.relative(root, file).replace(/\\/g, '/') : '';
   if (file && (!rel || rel.startsWith('..'))) return null;
   let head = null;
   try { head = gitOut(root, ['rev-parse', 'HEAD']); } catch (_) {}
   return { root, rel, head };
+}
+/* A folder with no git counts once GitX has set it up - it has a .gitx -
+ * so a setup there knows what its agent read (tools/gitx-map.js). Any other
+ * folder with no git is left alone. */
+function gitxFolder(cwd, file) {
+  let d = path.resolve(win(file ? path.dirname(file) : cwd || '.'));
+  for (;;) {
+    if (fs.existsSync(path.join(d, '.gitx'))) return d;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
 }
 function append(data, sub, root, line) {
   const dir = path.join(data, sub);
@@ -128,6 +143,36 @@ async function main() {
   for await (const chunk of process.stdin) input += chunk;
   const raw = JSON.parse(input);
   const e = raw.toolCall || raw.conversationId ? fromAgy(raw) : raw;
+
+  /* A repository with a GitX map: every session starts with its goal, rules,
+   * criteria, known bugs and the index of its sections - CLAUDE.md's one
+   * privilege, at about 2.5k tokens rather than the whole map (t-95806b1f1d).
+   * The index is rewritten first, so its lines match the map as it is now. */
+  if (e.hook_event_name === 'SessionStart') {
+    const p = place(e.cwd, null);
+    if (!p) return;
+    const { mapPath, stampMap, topBlock } = await import('./tools/gitx-map.js');
+    const file = mapPath(p.root);
+    if (!file) return;
+    try { stampMap(p.root, file); } catch (_) { /* the map as it is */ }
+    const top = await topBlock(p.root, file);
+    return top ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: top } } : undefined;
+  }
+
+  /* Each prompt: the map's sections the question's words land on, and the
+   * sections linked to them in the code (tools/map-graph.js) - the whole map
+   * where a question touches it, not one section and not all of it. */
+  if (e.hook_event_name === 'UserPromptSubmit') {
+    const p = place(e.cwd, null);
+    if (!p) return;
+    const { mapPath } = await import('./tools/gitx-map.js');
+    const file = mapPath(p.root);
+    if (!file) return;
+    const { mapStack } = await import('./tools/map-graph.js');
+    const s = mapStack(p.root, String(raw.prompt || ''), { file });
+    return s && s.entries.length ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: s.text } } : undefined;
+  }
+
   const data = dataDir();
   if (!data) return;
   const at = new Date().toISOString(), session = e.session_id || null;
@@ -146,6 +191,13 @@ async function main() {
      * sent back with the next biggest unmarked functions (tools/marks.js
      * setupNext), for a bounded number of rounds. Claude Code only. */
     if (!e.agy) {
+      /* The map setup: not done until the code is read and the map says so
+       * (tools/gitx-map.js mapNext); the map's header is kept up to date. */
+      try {
+        const { mapNext } = await import('./tools/gitx-map.js');
+        const reason = mapNext(p.root, data);
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
       try {
         const { setupNext } = await import('./tools/marks.js');
         const reason = setupNext(p.root, data);
@@ -205,8 +257,10 @@ async function main() {
   const thought = /(?:^|\/)\.gitx\/(?:context\/)?thoughts\/(t-[0-9a-f]+)\.json$/.exec(p.rel);
   append(data, 'reads', p.root, {
     at, session, repo: p.root, head: p.head, file: p.rel,
-    from: offset ? offset : null,
-    to: offset && limit ? offset + limit - 1 : null,
+    /* A limit with no offset reads from line 1 - counted as the whole default
+     * 2,000 it overstated what a setup agent had read. */
+    from: offset || (limit ? 1 : null),
+    to: limit ? (offset || 1) + limit - 1 : null,
     thought: thought ? thought[1] : undefined
   });
 }
