@@ -173,7 +173,7 @@ export function stampMap(dir, file = mapPath(dir), { readLine = null, stale = nu
     '> **Found** = read in the code. **Open lead** = seen only as a name, or not reached. It is where to start, not the answer - the code is. Check what you rely on, and look past its words: they are not all the words there are.',
     ...(chk && chk.missing.length ? ['> GitX checked ' + chk.names + ' names in this map against the code; ' + chk.missing.length + ' are not in it: ' + chk.missing.slice(0, 20).map((n) => '`' + n + '`').join(', ') + '.'] : []),
     ...(stale && (stale.stale.length || stale.uncovered.length) ? ['> GitX: ' + stale.stale.length + ' section(s) describe code that changed since the map was stamped (marked STALE below - trust the code there)' + (stale.uncovered.length ? '; changed code no section covers: ' + stale.uncovered.slice(0, 8).map((u) => '`' + u.name + '`').join(', ') + (stale.uncovered.length > 8 ? ' and ' + (stale.uncovered.length - 8) + ' more' : '') : '') + '.'] : []),
-    ...(kinds.length ? ['> **Read first:** ' + kinds.map((x) => x.title + ' (lines ' + (x.from + shift) + '-' + (x.to + shift) + ')' + mark(x.title)).join(', ') + '. Then only the section your task touches - Read GitX.md with offset and limit:'] : []),
+    ...(kinds.length ? ['> **Read first:** ' + kinds.map((x) => x.title + ' (lines ' + (x.from + shift) + '-' + (x.to + shift) + ')' + mark(x.title)).join(', ') + '. Then ask gitx_search about your task in your own words - it hands out the sections it touches, checked against the code; do not read this file for them. Sections:'] : []),
     ...rest.map((x) => '> - ' + x.title + ' - lines ' + (x.from + shift) + '-' + (x.to + shift) + mark(x.title)),
     '<!-- /gitx:map -->', ''
   ];

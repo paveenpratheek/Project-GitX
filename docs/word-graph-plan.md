@@ -248,9 +248,11 @@ Two kinds of name never make links:
   pulled in by links.
 
 A question's stack is the sections its words land on (at most 4) plus up to 4
-sections strongly linked to them, within about 3.3k tokens. It arrives with
-each prompt (a UserPromptSubmit hook) and in `gitx_search`. On a folder with no
-git, `gitx_search` answers with the stack.
+sections strongly linked to them, within about 3.3k tokens. It comes from
+`gitx_search`, asked by the agent in its own words. It was also added to each
+prompt by a UserPromptSubmit hook, which was removed: GitX never builds from
+the user's raw prompt (t-2784bda7c5, t-6244a4c98f). On a folder with no git,
+`gitx_search` answers with the stack.
 
 The same five questions, with the corrected new map:
 

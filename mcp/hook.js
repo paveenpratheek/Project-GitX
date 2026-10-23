@@ -21,9 +21,9 @@
  * Stop.
  *
  * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), as a
- * Stop hook, as a SessionStart hook - which hands a repository's GitX map (its
- * top sections and index) to every session - and as a UserPromptSubmit hook,
- * which adds the map sections each prompt touches, in .claude/settings.json:
+ * Stop hook, and as a SessionStart hook - which hands a repository's GitX map
+ * (its top sections and index) to every session, with a fixed note on asking
+ * GitX - in .claude/settings.json:
  *
  *   { "hooks": { "PostToolUse": [ { "matcher": "Read", "hooks": [ { "type": "command",
  *       "command": "node \"<GitX>/mcp/hook.js\"", "async": true } ] } ] } }
@@ -43,6 +43,9 @@ import { repoKey } from './tools/path-recorder.js';
 import { NO_CONSOLE } from './tools/no-console.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
+
+/* The same words every session, whatever was asked. */
+const ASK = 'GitX knows this repository: its map (features, the code each one owns, known bugs), the commits that wrote that code and why, and the decisions, rejected ideas and open questions behind them. Ask it with gitx_search, in your own words, for each part of your task - it hands out the map sections the question lands on and the sections linked to them in the code, checked against the code as it is now, with stale sections marked. Open one function with gitx_search expand. Do not read GitX.md or the .gitx folder directly: GitX hands out the parts that matter, current, and the raw files are neither.';
 
 function dataDir() {
   const i = process.argv.indexOf('--data');
@@ -160,22 +163,15 @@ async function main() {
     try { const { ensureIndex, staleness } = await import('./tools/map-index.js'); ensureIndex(p.root, file); stale = staleness(p.root, file); } catch (_) { /* no index */ }
     try { stampMap(p.root, file, { stale }); } catch (_) { /* the map as it is */ }
     const top = await topBlock(p.root, file);
-    return top ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: top } } : undefined;
+    return top ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: top + '\n\n' + ASK } } : undefined;
   }
 
-  /* Each prompt: the map's sections the question's words land on, and the
-   * sections linked to them in the code (tools/map-graph.js) - the whole map
-   * where a question touches it, not one section and not all of it. */
-  if (e.hook_event_name === 'UserPromptSubmit') {
-    const p = place(e.cwd, null);
-    if (!p) return;
-    const { mapPath } = await import('./tools/gitx-map.js');
-    const file = mapPath(p.root);
-    if (!file) return;
-    const { mapStack } = await import('./tools/map-graph.js');
-    const s = mapStack(p.root, String(raw.prompt || ''), { file });
-    return s && s.entries.length ? { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: s.text } } : undefined;
-  }
+  /* Nothing is built from the user's prompt: GitX is asked by the agent, in
+   * its own words, per sub-task (t-2784bda7c5). A stack from the raw prompt
+   * went against that (t-6244a4c98f) - real prompts carry several features and
+   * chat words - so the map stack now comes only from gitx_search, and a
+   * settings file still naming this hook on UserPromptSubmit gets nothing. */
+  if (e.hook_event_name === 'UserPromptSubmit') return;
 
   const data = dataDir();
   if (!data) return;
