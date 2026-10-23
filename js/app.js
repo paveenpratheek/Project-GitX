@@ -591,9 +591,35 @@ function initLiquidLight() {
   }
 }
 
+/* Boredom's switch (mcp/tools/boredom.js through the broker's /api/boredom):
+ * on keeps GitX.md current after commits with a small model, within a daily
+ * cap. The hover says what it spent today and what it did last. */
+function initBoredom() {
+  const btn = document.getElementById('btn-boredom');
+  if (!btn) return;
+  const show = (v) => {
+    if (!v || !v.ok) { btn.textContent = 'Boredom: ?'; return; }
+    const on = !!v.config.enabled;
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    btn.textContent = 'Boredom: ' + (on ? 'on' : 'off');
+    const last = (v.last || []).slice(-1)[0];
+    btn.title = 'Boredom keeps GitX.md up to date after each commit (' + v.config.model + ', cap $' + v.config.daily_cap_usd + '/day).\n' +
+      'Spent today: $' + (v.spent_today || 0).toFixed(3) + (last ? '\nLast: ' + last.did + (last.sections && last.sections.length ? ' - ' + last.sections.join(', ') : '') + ' (' + String(last.at).slice(0, 16).replace('T', ' ') + ')' : '');
+  };
+  const load = () => fetch(BROKER_HTTP + '/api/boredom', { cache: 'no-store' }).then((r) => r.json()).then(show).catch(() => show(null));
+  btn.addEventListener('click', () => {
+    const on = btn.getAttribute('aria-pressed') !== 'true';
+    fetch(BROKER_HTTP + '/api/boredom', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: on }) })
+      .then((r) => r.json()).then(show).catch(() => show(null));
+  });
+  load();
+  setInterval(load, 60000);
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   initThemeSync();
   initViews();
+  initBoredom();
   initSessionSync();
   connectBroker();
   initModal();

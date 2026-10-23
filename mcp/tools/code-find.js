@@ -265,6 +265,38 @@ function thoughtsSig(repoDir) {
 const codeFiles = (repoDir) => git(repoDir, ['ls-tree', '-r', '--name-only', 'HEAD']).split('\n')
   .filter((f) => f && !SKIP.test(f) && (CODE_EXT.test(f) || DOC_EXT.test(f)) && !/\.min\./.test(f));
 
+/* A folder with no git - file-fabric has none - is still code: its files as
+ * they are on disk, split the same way, with no commits behind them. Setup
+ * mode (tools/gitx-map.js) reads a repository GitX has no record of, and
+ * that includes one nobody ever ran git init in. */
+const DISK_SKIP = /(^|\/)(node_modules|vendor|dist|build|__pycache__|\.[^/]+)\/$/;
+const diskCache = new Map();         // dir|file -> { st, regions }
+export function diskRegions(dir) {
+  const files = [];
+  const walk = (rel) => {
+    let ents; try { ents = fs.readdirSync(path.join(dir, rel), { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      const f = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) { if (!DISK_SKIP.test(f + '/')) walk(f); }
+      else if (!SKIP.test(f) && (CODE_EXT.test(f) || DOC_EXT.test(f)) && !/\.min\./.test(f)) files.push(f);
+    }
+  };
+  walk('');
+  const regions = [];
+  for (const f of files) {
+    const k = dir + '|' + f;
+    let st; try { const s = fs.statSync(path.join(dir, f)); st = s.size + ':' + s.mtimeMs; } catch (_) { continue; }
+    let hit = diskCache.get(k);
+    if (!hit || hit.st !== st) {
+      let lines; try { lines = fs.readFileSync(path.join(dir, f), 'utf8').replace(/\r\n/g, '\n').split('\n'); } catch (_) { continue; }
+      hit = { st, regions: lines.length > MAX_FILE_LINES || generated(lines) ? [] : splitFile(f, lines).map((r) => ({ ...r, commits: {}, text: lines.slice(r.from - 1, r.to).join('\n') })) };
+      diskCache.set(k, hit);
+    }
+    regions.push(...hit.regions);
+  }
+  return regions;
+}
+
 function regionsOfFile(repoDir, f) {
   let text;
   try { text = git(repoDir, ['show', 'HEAD:' + f]); } catch (_) { return []; }
@@ -1030,9 +1062,14 @@ export function codeFirst(repoDir, { query, carry = [], previous = [], paths = [
     for (const [k, v] of use) {
       const r = learnedUse(v) && byKey.get(k);
       if (!r) continue;
+      /* Marked as the answer (gitx_mark) joins level with the best match,
+       * so it reaches the core and the trees: at 0.6 of it, a function an
+       * agent found by Grep and marked stayed below a busy answer's cut. It
+       * orders, it hides nothing (t-11190c437f). Opened or read only: 0.6. */
+      const score = Math.max(NO_CODE, wordBest * (v.marked ? 1 : 0.6));
       const have = found.find((x) => x.r === r);
-      if (have) have.hit.push('learned');
-      else learnedHere.push({ r, score: Math.max(NO_CODE, wordBest * 0.6), hit: ['learned'] });
+      if (have) { have.hit.push('learned'); if (v.marked) have.score = Math.max(have.score, score); }
+      else learnedHere.push({ r, score, hit: ['learned'] });
     }
     found.push(...learnedHere);
     found.sort((a, b) => b.score - a.score);

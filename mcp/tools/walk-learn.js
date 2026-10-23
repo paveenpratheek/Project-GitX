@@ -46,6 +46,7 @@ import { searches, walkForEvent } from './search-chain.js';
 const DECAY = 0.98;          // per day of a path's age
 const USED = 1;              // opened or expanded
 const CITED = 2;             // cited from the stack when recording
+const MARKED = 2;            // marked by the agent as where the answer was (gitx_mark) - a citation, not a look
 const LEFT = 0.25;           // shown in the answer and not opened
 const LEARN_MIN = 1.5;       // a word is learned once paths worth this much added it (two recent)
 const KEY_OVERLAP = 0.5;     // keys match when they share this share of the larger one
@@ -83,7 +84,7 @@ function walks(repoDir, dataDir, rx) {
     if (!key.length) continue;
     const weight = DECAY ** Math.max(0, (now - Date.parse(p.at)) / 86400000);
     const asked = new Set(termsOf(p.question.query));
-    const added = new Set(), used = new Map(), names = new Map();
+    const added = new Set(), used = new Map(), names = new Map(), notes = new Map(), marked = new Set();
     for (const s of p.path || []) {
       if (s.kind === 'refine' && s.asked) {
         for (const part of String(s.asked).split(/\s+/)) {
@@ -93,10 +94,17 @@ function walks(repoDir, dataDir, rx) {
       }
       if (s.kind === 'open' && s.node) { const k = nodeKey(s.node); if (k) { used.set(k, Math.max(used.get(k) || 0, USED)); names.set(k, s.node.text || s.node.id); } }
       if (s.kind === 'declare') for (const c of s.cited_in_stack || []) used.set(String(c), CITED);
+      /* A mark counts whether or not the answer showed it: finding it
+       * elsewhere is the point (tools/mark.js). */
+      if (s.kind === 'mark') for (const m of s.marks || []) {
+        used.set(m.key, Math.max(used.get(m.key) || 0, MARKED)); marked.add(m.key);
+        if (!names.has(m.key)) names.set(m.key, m.name || m.key);
+        if (s.note) notes.set(m.key, s.note);
+      }
     }
     const shown = new Map();
     for (const n of (p.stack && p.stack.nodes) || []) if (n.role === 'result') { const k = nodeKey(n); if (k) { shown.set(k, 1); if (!names.has(k)) names.set(k, n.text || n.id); } }
-    out.push({ id: p.id, at: p.at, key, weight, added: [...added], used, shown, names, agent: (p.agent && p.agent.id) || null, repo: p.repo || null, asked });
+    out.push({ id: p.id, at: p.at, key, weight, added: [...added], used, shown, names, notes, marked, agent: (p.agent && p.agent.id) || null, repo: p.repo || null, asked });
   }
   creditReads(repoDir, dataDir, out);
   chain(out);
@@ -119,6 +127,8 @@ function chain(out) {
       for (let j = i + 1; j < ws.length; j++) {
         for (const [k, v] of own[j].used) ws[i].used.set(k, Math.max(ws[i].used.get(k) || 0, v));
         for (const [k, n] of ws[j].names) if (!ws[i].names.has(k)) ws[i].names.set(k, n);
+        for (const [k, n] of ws[j].notes) if (!ws[i].notes.has(k)) ws[i].notes.set(k, n);
+        for (const k of ws[j].marked) ws[i].marked.add(k);
         for (const t of [...own[j].words, ...ws[j].added]) if (!ws[i].asked.has(t) && !ASKING.has(t) && !ws[i].added.includes(t)) ws[i].added.push(t);
       }
     }
@@ -183,16 +193,19 @@ export function learnFor(repoDir, dataDir, rx, query) {
   if (!key.length) return null;
   const like = walks(repoDir, dataDir, rx).filter((w) => overlap(key, w.key) >= KEY_OVERLAP);
   if (!like.length) return null;
-  const words = new Map(), nodes = new Map(), names = new Map();
+  const words = new Map(), nodes = new Map(), names = new Map(), notes = new Map(), marks = new Map();
   for (const w of like) {
     for (const t of w.added) words.set(t, (words.get(t) || 0) + w.weight);
+    for (const k of w.marked || []) marks.set(k, (marks.get(k) || 0) + 1);
+    for (const [k, n] of w.notes || []) notes.set(k, n);
     for (const [k, v] of w.used) { const e = nodes.get(k) || { a: 0, b: 0 }; e.a += v * w.weight; nodes.set(k, e); }
     for (const k of w.shown.keys()) if (!w.used.has(k)) { const e = nodes.get(k) || { a: 0, b: 0 }; e.b += LEFT * w.weight; nodes.set(k, e); }
     for (const [k, n] of w.names) names.set(k, n);
   }
   const mean = (e) => (e.a + 1) / (e.a + e.b + 2);
-  const use = new Map([...nodes].map(([k, e]) => [k, { mean: mean(e), a: e.a, b: e.b }]));
-  const used = [...nodes].filter(([, e]) => e.a > 0).sort((x, y) => mean(y[1]) - mean(x[1]) || y[1].a - x[1].a);
+  const use = new Map([...nodes].map(([k, e]) => [k, { mean: mean(e), a: e.a, b: e.b, marked: marks.get(k) || 0 }]));
+  /* What agents marked as the answer comes before what they only opened or read. */
+  const used = [...nodes].filter(([, e]) => e.a > 0).sort((x, y) => (marks.get(y[0]) || 0) - (marks.get(x[0]) || 0) || mean(y[1]) - mean(x[1]) || y[1].a - x[1].a);
   return {
     paths: like.length,
     newest: like.map((w) => w.at).sort().pop(),
@@ -202,7 +215,7 @@ export function learnFor(repoDir, dataDir, rx, query) {
       /* A thought or a commit by its id first, so it can be opened. */
       const name = String(names.get(k) || k).replace(/\s+/g, ' ').slice(0, 120);
       const what = k.includes('::') ? name : (name.startsWith(k) ? name : k + ' ' + name);
-      return { what, key: k, opened: Math.round(e.a * 10) / 10 + ' of ' + like.length + ' walks' };
+      return { what, key: k, opened: Math.round(e.a * 10) / 10 + ' of ' + like.length + ' walks', marked: marks.get(k) || undefined, note: notes.get(k) || undefined };
     })
   };
 }

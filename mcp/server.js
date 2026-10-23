@@ -30,6 +30,10 @@ import { commitCode } from './tools/commit-code.js';
  * broker for GitX Monitor. Its own module and folder; the only coupling is the
  * calls below. It replaced the trail recorder, which kept every call. */
 import { PathRecorder } from './tools/path-recorder.js';
+import { markTargets } from './tools/mark.js';
+import { loadMarks, createMark, judgeMark, linkMark, joinMark, relatedMarks, marksOn, viewOf, publicView, seedFromAgentFiles, marksForAnswer, walkHint, recordOf, startScan, markedSoFar, isReady, READY_HOW, INVESTIGATE_HOW, featureKey, featureMarks, setupMap, startSetup, readSpans, partsOpened, SETUP_HOW } from './tools/marks.js';
+import { startMapSetup, mapPath, checkMap, topBlock, MAP_SETUP_HOW, MAP_READ_HOW } from './tools/gitx-map.js';
+import { mapStack } from './tools/map-graph.js';
 const paths = new PathRecorder({ send: (msg) => sendToBroker(msg), dataDir: () => logDataDir() });
 process.on('exit', () => paths.end());
 /* What gitx_search did, for the path recorder; never part of the agent's answer. */
@@ -341,6 +345,46 @@ const TOOLS = [
       type: 'object',
       properties: {
         cwd: { type: 'string', description: 'Absolute path of the repository whose worktrees to list. Defaults to the repo this MCP server was started in.' }
+      },
+      required: []
+    }
+  },
+  /* Where the answer was, after a search (tools/mark.js): the next agent
+   * asking something like it is shown it first. */
+  {
+    name: 'gitx_mark',
+    description: 'Leave what you learned on the code you learned it from, so the next agent starts there: { "to": "server.js:321", "note": "the shell list is built once at startup" }. Mark when you worked something out that took reading several places or that the code does not say plainly - never what a name already says. Without a note it says where the answer to your last gitx_search was. The marks already on that code come back first: confirm one ({ "confirm": "m-..." }) or contradict it with your evidence ({ "contradict": "m-...", "note": "..." }) rather than writing a second. A feature in several places is ONE mark: name them all in to ({ "to": ["app.js::applyWallpaper", "app.css:40"], "note": "..." }); found the same thing a mark already says in other code? add your code to it ({ "join": "m-...", "to": ["notes.js::render"] }). A mark is shown as inferred, never as a decision.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        to: { type: ['string', 'array'], items: { type: 'string' }, description: 'The code you learned about: file:line, a range (file:from-to), a function (app.js::fontChoice), a thought id, a commit hash, or a mark id (m-...) to link from - or several.' },
+        note: { type: 'string', description: 'What you learned there, in one or two sentences, for the next agent.' },
+        confirm: { type: 'string', description: 'A mark id (m-...) you checked and found holds.' },
+        contradict: { type: 'string', description: 'A mark id (m-...) you found wrong - say why in note.' },
+        link: { type: 'array', items: { type: 'string' }, description: 'Other code or marks this belongs with: file:line, a function, a mark id.' },
+        as: { type: 'string', enum: ['same-feature', 'calls', 'styles', 'explains'], description: 'How the link relates. Default same-feature.' },
+        join: { type: 'string', description: 'A mark id (m-...): add the code in to as more places that mark is about.' },
+        marks: { type: 'array', items: { type: 'object', properties: { to: { type: ['string', 'array'], items: { type: 'string' } }, note: { type: 'string' }, feature: { type: 'string' } } }, description: 'Several marks in one call: [{ "to": [...the places], "feature": "...", "note": "what they do" }, ...].' },
+        feature: { type: 'string', description: 'The feature this code is part of, a short name (totem-indicators). The mark follows the last mark of that feature. Alone, without to: that feature\'s marks.' },
+        about: { type: 'string', description: 'What the project is, in a few sentences, from your scan.' },
+        new: { type: 'boolean', description: 'Write your mark even though marks are already on that code.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
+      },
+      required: []
+    }
+  },
+  /* The entry point on a repository: what GitX holds about it, the agent
+   * files read into marks, and how to work (tools/marks.js). */
+  {
+    name: 'gitx_investigate',
+    description: 'Start here on a repository: says whether it is GitX-ready (commits with reasoning, linked thoughts and topics - then use gitx_search, nothing to mark), and whether it has a GitX map (GitX.md: where to start, not the answer). If it is not ready, you build its record as you work: the statements its CLAUDE.md, .claude/, AGENTS.md, .agent/ and README make about specific code become marks on that code, your next answer is read as your notes, and marked_so_far says what earlier agents marked and what nobody has. Read with gitx_search either way.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['setup', 'setup-marks'], description: 'setup: you are assigned to set this repository up for GitX - GitX writes the code\'s own words to .gitx/words.md as clues, and you read the code and write GitX.md, a map of what you found and the leads you did not reach. Works on a folder with no git. setup-marks: the older setup, marking each feature\'s code with a note.' },
+        strict: { type: 'boolean', description: 'setup: strict, for weaker models - a higher read target, and every function the map states as found must be one you opened.' },
+        where: { type: 'string', enum: ['root', 'gitx'], description: 'setup: where the map goes - root (GitX.md beside the code, to commit or not) or gitx (.gitx/GitX.md, private). The user\'s choice; root by default.' },
+        cwd: { type: 'string', description: 'Absolute path of the repository. Defaults to the repo this MCP server was started in.' }
       },
       required: []
     }
@@ -1134,6 +1178,146 @@ async function handleToolCall(name, args) {
       };
     }
 
+    /* Where the answer was (tools/mark.js). The question it answers is the
+     * agent's last search here, which the recorder is walking; the step
+     * itself is written by paths.onCall after this reply, like every call. */
+    case 'gitx_mark': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was marked.' });
+      const data = paths.base || logDataDir();
+      const by = AGENT_NAME || AGENT_ID || null;
+      /* Judging a mark someone left. */
+      if (args.confirm || args.contradict) {
+        const r = judgeMark(target.dir, data, String(args.confirm || args.contradict), args.contradict ? 'contradict' : 'confirm', { by, note: args.note });
+        if (r.error) return reply({ error: r.error });
+        return reply({ [args.contradict ? 'contradicted' : 'confirmed']: publicView(viewOf(target.dir, r.mark)) });
+      }
+      /* A scan's notes in one call - { marks: [{ to, note }], about } - kept
+       * as lite as a call can be: one reply line of counts. Near-copies are
+       * not refused here; reading stacks them. */
+      /* A feature's marks, for a setup agent about to mark another part of it. */
+      if (args.feature && !args.to && !args.marks) {
+        const fm = featureMarks(target.dir, data, args.feature);
+        return reply({ feature: featureKey(args.feature), marks: fm.slice(0, 12).map(publicView), how: fm.length ? 'mark another part with the same feature and it follows ' + fm[0].id : 'no marks for this feature yet' });
+      }
+      /* The mark a new part of a feature follows: the feature's last. */
+      const followOf = (feature) => { const fm = featureMarks(target.dir, data, feature); return fm.length ? fm[0].id : null; };
+      /* Whether the agent opened every part of the code it marks (the hook's
+       * read record): a feature mark on code it never read says so. */
+      const spans = readSpans(target.dir, data, 0);
+      const opened = (onCode) => partsOpened(spans, onCode.map((x) => x.region));
+      const readOf = (feature, onCode) => { if (!feature) return {}; const o = opened(onCode); return o.none ? { unread: true } : o.missing.length ? { unread_parts: o.missing } : {}; };
+      if (Array.isArray(args.marks) || args.about) {
+        let made = 0, places = 0, already = 0, about;
+        const rejected = [], features = [];
+        for (const it of [].concat(args.marks || [])) {
+          const t = markTargets(target.dir, [].concat((it && it.to) || []).map(String), it && it.note);
+          rejected.push(...t.rejected);
+          if (!t.note || !t.marked.length) continue;
+          const onCode = t.marked.filter((x) => x.layer === 'code' && x.region);
+          const feature = it.feature ? featureKey(it.feature) : null;
+          const follows = feature ? followOf(feature) : null;
+          const res = createMark(target.dir, data, { rs: onCode.map((x) => x.region), refs: t.marked.filter((x) => !(x.layer === 'code' && x.region)).map((x) => x.key), note: t.note, by, feature,
+            question: feature ? null : 'a scan of the project', evidence: { read: feature ? 'its setup of the repository' : 'its notes from a scan', ...readOf(feature, onCode) }, links: follows ? [{ to: follows, as: 'same-feature' }] : [] });
+          if (res.existed) already++; else { made++; places += onCode.length; }
+          if (feature) features.push({ id: res.mark.id, feature, follows: follows && follows !== res.mark.id ? follows : undefined });
+        }
+        if (args.about) about = publicView(viewOf(target.dir, createMark(target.dir, data, { refs: ['project'], note: String(args.about), by, evidence: { read: 'its notes from a scan' } }).mark));
+        return reply({ made, on_places: places, already: already || undefined, marks: features.length ? features : undefined, about, rejected: rejected.length ? rejected : undefined });
+      }
+      const list = [].concat(args.to || []).map(String);
+      if (!list.length) return reply({ error: 'gitx_mark takes to - the code you learned about - or confirm / contradict with a mark id.' });
+      const as = ['same-feature', 'calls', 'styles', 'explains'].includes(args.as) ? args.as : 'same-feature';
+      const known = new Set(loadMarks(target.dir, data).map((x) => x.id));
+      const linkTo = [];
+      for (const l of [].concat(args.link || []).map(String)) {
+        if (known.has(l)) { linkTo.push({ to: l, as }); continue; }
+        const t = markTargets(target.dir, [l]).marked[0];
+        if (t) linkTo.push({ to: t.key, as });
+      }
+      /* Linking from marks already written. */
+      const fromMarks = list.filter((x) => known.has(x));
+      const linkedMarks = fromMarks.map((id) => linkMark(target.dir, data, id, linkTo)).filter((x) => x.mark).map((x) => publicView(viewOf(target.dir, x.mark)));
+      const m = markTargets(target.dir, list.filter((x) => !known.has(x)), args.note);
+      const walking = paths.current.get(target.dir);
+      const asked = walking && !walking.started_by && !walking.ended_at && walking.question ? walking.question.query : null;
+      /* With a note, a stored mark - unless marks are already on that code
+       * and the agent did not ask for a second (docs/agent-marks-plan.md). */
+      /* With a note, ONE mark on every place named - a feature in several
+       * functions or files is one thing learned - unless marks are already on
+       * that code, or say the same elsewhere, and the agent did not ask for a
+       * second (docs/agent-marks-plan.md). */
+      const made = [], here = [], like = [];
+      const onCode = m.marked.filter((x) => x.layer === 'code' && x.region);
+      const elsewhere = m.marked.filter((x) => !(x.layer === 'code' && x.region)).map((x) => x.key);
+      let joined;
+      if (args.join) {
+        const r = joinMark(target.dir, data, String(args.join), onCode.map((x) => x.region));
+        if (r.error) return reply({ error: r.error });
+        joined = { places_added: r.added, mark: publicView(viewOf(target.dir, r.mark)) };
+      } else if (m.note && m.marked.length) {
+        /* A feature's part is deliberate: it is written, and follows the
+         * feature's last mark; any other note waits on marks already there. */
+        const feature = args.feature ? featureKey(args.feature) : null;
+        const rel = feature ? { on: [], like: [] } : relatedMarks(target.dir, data, { regions: onCode.map((x) => x.key), note: m.note });
+        if ((rel.on.length || rel.like.length) && !args.new) { here.push(...rel.on.map(publicView)); like.push(...rel.like.map(publicView)); }
+        else {
+          const follows = feature ? followOf(feature) : null;
+          const res = createMark(target.dir, data, { rs: onCode.map((x) => x.region), refs: elsewhere, note: m.note, by, question: asked, feature,
+            evidence: { read: feature ? 'its setup of the repository' : m.marked.length > 1 ? m.marked.length + ' places read together' : m.marked[0].name, ...readOf(feature, onCode) }, links: [...linkTo, ...(follows ? [{ to: follows, as: 'same-feature' }] : [])] });
+          made.push({ ...publicView(viewOf(target.dir, res.mark)), follows: follows && follows !== res.mark.id ? follows : undefined });
+        }
+      }
+      return reply({
+        ...(m.marked.length && !m.note && !args.join ? { linked: (asked ? '"' + String(asked).slice(0, 80) + '"' : 'no gitx_search before this - marks teach only the search they follow') + ' -> ' + m.marked.map((x) => x.name).join('; ') } : {}),
+        marked: m.marked.length ? m.marked.map((x) => ({ key: x.key, layer: x.layer, name: x.name, also: x.also })) : undefined,
+        made: made.length ? made : undefined,
+        joined,
+        already_here: here.length ? here : undefined,
+        says_the_same: like.length ? like : undefined,
+        ...(here.length || like.length ? { how: 'marks are already on that code or say the same elsewhere: confirm one ({ "confirm": "m-..." }), contradict it ({ "contradict": "m-...", "note": "why" }), add your code to it ({ "join": "m-...", "to": [...] }), or write yours with new: true' } : {}),
+        linked_marks: linkedMarks.length ? linkedMarks : undefined,
+        rejected: m.rejected.length ? m.rejected : undefined
+      });
+    }
+
+    /* The entry point on a repository (tools/marks.js). */
+    case 'gitx_investigate': {
+      const target = resolveTargetRepo(args.cwd);
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj) }] });
+      if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.' });
+      const data = paths.base || logDataDir();
+      /* GitX-ready: the record is there and gitx_search reads it - nothing
+       * to seed, nothing to mark. A folder with no git has no record and no
+       * marks (they are anchored by blame), but it can have a map. */
+      let rec = null;
+      try { rec = recordOf(target.dir, data); } catch (_) { rec = { state: 'bare - not a git repository', record: null, marks: null }; }
+      if (isReady(rec)) return reply({ repo: target.dir, state: rec.state, record: rec.record, ready: true, how: READY_HOW });
+      const by = AGENT_NAME || AGENT_ID || null;
+      const map = mapPath(target.dir);
+      const mapRel = map && path.relative(target.dir, map).replace(/\\/g, '/');
+      /* Setup mode (tools/gitx-map.js): GitX hands out the code's words as
+       * clues, the agent reads the code and writes GitX.md, and the Stop
+       * hook sends it back until the code is read. Agent files are left to
+       * the agents who read them (t-eae87feddc). */
+      if (args.mode === 'setup') {
+        const s = startMapSetup(target.dir, data, { where: args.where, by, strict: args.strict === true || process.env.GITX_STRICT === '1' });
+        return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup', ...s, how: MAP_SETUP_HOW(s.map) });
+      }
+      if (!rec.marks) return reply({ repo: target.dir, state: rec.state, ready: false, ...(map ? { map: mapRel, map_check: checkMap(target.dir, map), map_top: await topBlock(target.dir, map) } : {}),
+        how: [map ? MAP_READ_HOW(mapRel) : 'GitX has no record or map of this folder yet. To make one, an agent assigned to it calls gitx_investigate { "mode": "setup" }.', 'With no git, gitx_search and marks have nothing to read: use your own tools (Grep, Read).'] });
+      const seeded = seedFromAgentFiles(target.dir, data, { by });
+      /* Setup with marks: this agent is assigned to mark every feature's code
+       * with a note. Its marks are explicit, so its answer is not also read
+       * as notes. */
+      if (args.mode === 'setup-marks') try { startSetup(target.dir, data, by); } catch (_) { /* the brief alone */ }
+      if (args.mode === 'setup-marks') return reply({ repo: target.dir, state: rec.state, ready: false, mode: 'setup-marks', ...setupMap(target.dir, data), agent_files: seeded.files, how: SETUP_HOW });
+      /* Marking starts here: this agent's next final answer is read as its notes. */
+      try { startScan(target.dir, data, AGENT_NAME || AGENT_ID || null); } catch (_) { /* the reply alone */ }
+      return reply({ repo: target.dir, ...recordOf(target.dir, data), ready: false, ...(map ? { map: mapRel, map_check: checkMap(target.dir, map), map_top: await topBlock(target.dir, map) } : {}), marked_so_far: markedSoFar(target.dir, data), agent_files: seeded.files, seeded: { new_marks: seeded.made, on_places: seeded.places, statements: seeded.statements, naming_code: seeded.statements - seeded.no_code - seeded.lists, lists_skipped: seeded.lists, left_to_you: seeded.no_code }, how: map ? [MAP_READ_HOW(mapRel), ...INVESTIGATE_HOW] : INVESTIGATE_HOW });
+    }
+
     case 'gitx_find_related': {
       const target = resolveTargetRepo(args.cwd);
       if (!target.ok) {
@@ -1159,6 +1343,12 @@ async function handleToolCall(name, args) {
       });
 
       const regionList = Object.keys(qRegions);
+      /* What agents and the agent files say about the code being changed. */
+      let marksHere = [];
+      try {
+        const files = [...regionList.map((k) => k.split('::')[0]), ...[].concat(args.paths || []).map((x) => String(x).split('::')[0])];
+        marksHere = marksOn(target.dir, paths.base || logDataDir(), { files }).slice(0, 8).map(publicView);
+      } catch (_) { /* commits alone */ }
       const notes = [];
       if (regionSource === 'none') {
         notes.push('Ranked on your description ALONE - nothing staged and no paths given, so the code half of the search contributed nothing. Pass paths: ["the/file.js"] for the area you are working in; it is normally the stronger of the two signals.');
@@ -1189,6 +1379,7 @@ async function handleToolCall(name, args) {
             description_terms_used: qWords,
             matches_count: results.length,
             results,
+            ...(marksHere.length ? { marks_here: marksHere } : {}),
             /* Two sub-scores are returned per result on purpose: a high
              * region_score with a low text_score means "same code, described
              * differently", the reverse means "same topic, code has moved".
@@ -1266,8 +1457,21 @@ async function handleToolCall(name, args) {
     case 'gitx_related':
     case 'gitx_search': {
       const target = resolveTargetRepo(args.cwd);
-      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] });
+      /* A repository with a GitX map: the map's sections the question lands
+       * on and those linked to them (tools/map-graph.js) ride beside every
+       * answer - and with no git they are the answer. */
+      let mapS = null;
+      try {
+        if (target.ok && args.query && mapPath(target.dir)) {
+          const s = mapStack(target.dir, String(args.query));
+          if (s && s.entries.length) mapS = { entries: s.entries, pulled: s.pulled, sections: s.text };
+        }
+      } catch (_) { /* the answer alone */ }
+      const reply = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(mapS ? { ...obj, map: mapS } : obj, null, 2) }] });
       if (!target.ok) return reply({ error: 'No such folder: ' + target.requested + ' - nothing was read.', repo: null });
+      let gitRepo = true;
+      try { execFileSync('git', ['rev-parse', '--show-toplevel'], { windowsHide: NO_CONSOLE, cwd: target.dir, stdio: ['ignore', 'pipe', 'ignore'] }); } catch (_) { gitRepo = false; }
+      if (!gitRepo) return reply({ repo: target.dir, state: 'bare - not a git repository', how: mapS ? 'With no git there are no commits or thoughts to search; map holds the GitX map sections for this question. Use your own tools (Grep, Read) for the code.' : 'With no git and no GitX map there is nothing to search: use your own tools (Grep, Read).' });
       /* Read-only: the commit index is the temp-dir cache, thoughts are only read. */
       /* A question in words enters at the code (t-e688562831): the regions at
        * HEAD it is about, then the commits that wrote them and the thoughts
@@ -1296,7 +1500,10 @@ async function handleToolCall(name, args) {
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
-        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
+        const opened = expandRegion(target.dir, String(args.expand), { query: words });
+        let onIt = [];
+        try { onIt = marksForAnswer(target.dir, paths.base || logDataDir(), { trees: opened.expanded || [] }, ''); } catch (_) { /* the tree alone */ }
+        return reply({ repo: target.dir, ...opened, ...(onIt.length ? { marks: onIt } : {}) });
       }
       /* Through the session's pool (t-2c70a44885): a question new or a
        * follow-up, decided and said; a follow-up, add or drop answered with
@@ -1308,7 +1515,11 @@ async function handleToolCall(name, args) {
         lastMonitor = r.monitor;
         /* The suggested words' follow-ups, worked out while the agent reads. */
         prefetch(sessions, target.dir);
-        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
+        /* Marks on the code the answer landed on, and when to walk instead
+         * (tools/marks.js). Each only when there is one. */
+        let marks, walk;
+        try { marks = marksForAnswer(target.dir, paths.base || logDataDir(), r.answer, words); walk = walkHint(target.dir, words, args.lens, r.answer); } catch (_) { /* the answer alone */ }
+        return reply({ repo: target.dir, ...serverNote(target.dir), ...r.answer, ...(marks && marks.length ? { marks } : {}), ...(walk ? { walk } : {}), how_to_use: V31 ? CODE_FIRST_HOW_V31 : CODE_FIRST_HOW });
       }
       /* Learned keys come from the path files this server's recorder writes,
        * so they are read from the folder it resolved (t-4f44aa05bb). */
@@ -1326,7 +1537,10 @@ async function handleToolCall(name, args) {
       if (args.expand) {
         const pool = (sessions.get(target.dir) || {}).pool;
         const words = pool ? [...pool.weights].filter(([, m]) => m >= 0.5).map(([w]) => w).join(' ') : '';
-        return reply({ repo: target.dir, ...expandRegion(target.dir, String(args.expand), { query: words }) });
+        const opened = expandRegion(target.dir, String(args.expand), { query: words });
+        let onIt = [];
+        try { onIt = marksForAnswer(target.dir, paths.base || logDataDir(), { trees: opened.expanded || [] }, ''); } catch (_) { /* the tree alone */ }
+        return reply({ repo: target.dir, ...opened, ...(onIt.length ? { marks: onIt } : {}) });
       }
       return reply({ repo: target.dir, error: 'gitx_find takes find (text or /regex/) or expand (a function from an answer).' });
     }

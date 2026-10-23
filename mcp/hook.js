@@ -20,8 +20,10 @@
  * in ~/.gemini/config/hooks.json on PostToolUse for those four tools and on
  * Stop.
  *
- * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), and
- * as a Stop hook, in .claude/settings.json:
+ * Set it up as a PostToolUse hook on Read (and Edit, Write, MultiEdit), as a
+ * Stop hook, and as a SessionStart hook - which hands a repository's GitX map
+ * (its top sections and index) to every session, with a fixed note on asking
+ * GitX - in .claude/settings.json:
  *
  *   { "hooks": { "PostToolUse": [ { "matcher": "Read", "hooks": [ { "type": "command",
  *       "command": "node \"<GitX>/mcp/hook.js\"", "async": true } ] } ] } }
@@ -42,6 +44,9 @@ import { NO_CONSOLE } from './tools/no-console.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
+/* The same words every session, whatever was asked. */
+const ASK = 'GitX knows this repository: its map (features, the code each one owns, known bugs), the commits that wrote that code and why, and the decisions, rejected ideas and open questions behind them. Ask it with gitx_search, in your own words, for each part of your task - it hands out the map sections the question lands on and the sections linked to them in the code, checked against the code as it is now, with stale sections marked. Open one function with gitx_search expand. Do not read GitX.md or the .gitx folder directly: GitX hands out the parts that matter, current, and the raw files are neither.';
+
 function dataDir() {
   const i = process.argv.indexOf('--data');
   if (i >= 0 && process.argv[i + 1]) return process.argv[i + 1];
@@ -57,12 +62,25 @@ const gitOut = (cwd, args) => execFileSync('git', args, { windowsHide: NO_CONSOL
 /* The repository a path or folder is in, and the path inside it. */
 function place(cwd, file) {
   let root;
-  try { root = path.resolve(win(gitOut(cwd || path.dirname(file), ['rev-parse', '--show-toplevel']))); } catch (_) { return null; }
+  try { root = path.resolve(win(gitOut(cwd || path.dirname(file), ['rev-parse', '--show-toplevel']))); } catch (_) { root = gitxFolder(cwd, file); }
+  if (!root) return null;
   const rel = file ? path.relative(root, file).replace(/\\/g, '/') : '';
   if (file && (!rel || rel.startsWith('..'))) return null;
   let head = null;
   try { head = gitOut(root, ['rev-parse', 'HEAD']); } catch (_) {}
   return { root, rel, head };
+}
+/* A folder with no git counts once GitX has set it up - it has a .gitx -
+ * so a setup there knows what its agent read (tools/gitx-map.js). Any other
+ * folder with no git is left alone. */
+function gitxFolder(cwd, file) {
+  let d = path.resolve(win(file ? path.dirname(file) : cwd || '.'));
+  for (;;) {
+    if (fs.existsSync(path.join(d, '.gitx'))) return d;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
 }
 function append(data, sub, root, line) {
   const dir = path.join(data, sub);
@@ -128,17 +146,102 @@ async function main() {
   for await (const chunk of process.stdin) input += chunk;
   const raw = JSON.parse(input);
   const e = raw.toolCall || raw.conversationId ? fromAgy(raw) : raw;
+
+  /* A repository with a GitX map: every session starts with its goal, rules,
+   * criteria, known bugs and the index of its sections - CLAUDE.md's one
+   * privilege, at about 2.5k tokens rather than the whole map (t-95806b1f1d).
+   * The index is rewritten first, so its lines match the map as it is now. */
+  if (e.hook_event_name === 'SessionStart') {
+    const p = place(e.cwd, null);
+    if (!p) return;
+    const { mapPath, stampMap, topBlock } = await import('./tools/gitx-map.js');
+    const file = mapPath(p.root);
+    if (!file) return;
+    /* What changed since the map was stamped goes into its index, so the
+     * session is told which sections have fallen behind (tools/map-index.js). */
+    let stale = null;
+    try { const { ensureIndex, staleness } = await import('./tools/map-index.js'); ensureIndex(p.root, file); stale = staleness(p.root, file); } catch (_) { /* no index */ }
+    try { stampMap(p.root, file, { stale }); } catch (_) { /* the map as it is */ }
+    const top = await topBlock(p.root, file);
+    return top ? { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: top + '\n\n' + ASK } } : undefined;
+  }
+
+  /* Nothing is built from the user's prompt: GitX is asked by the agent, in
+   * its own words, per sub-task (t-2784bda7c5). A stack from the raw prompt
+   * went against that (t-6244a4c98f) - real prompts carry several features and
+   * chat words - so the map stack now comes only from gitx_search, and a
+   * settings file still naming this hook on UserPromptSubmit gets nothing. */
+  if (e.hook_event_name === 'UserPromptSubmit') return;
+
   const data = dataDir();
   if (!data) return;
   const at = new Date().toISOString(), session = e.session_id || null;
 
   /* The answer the agent gave, by what it cited. */
   if (e.hook_event_name === 'Stop') {
-    if (!e.transcript_path) return;
+    /* Claude Code hands the answer over as last_assistant_message; the
+     * transcript is the fallback, and with --no-session-persistence it is
+     * never written - every headless run's answer was lost (scan bench,
+     * 18 October). */
+    const given = typeof raw.last_assistant_message === 'string' ? raw.last_assistant_message : '';
+    if (!given.trim() && !e.transcript_path) return;
     const p = place(e.cwd, null);
     if (!p) return;
-    const refs = citations(e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path));
+    /* Setup mode: not done until the repository is covered - the agent is
+     * sent back with the next biggest unmarked functions (tools/marks.js
+     * setupNext), for a bounded number of rounds. Claude Code only. */
+    if (!e.agy) {
+      /* The map setup: not done until the code is read and the map says so
+       * (tools/gitx-map.js mapNext); the map's header is kept up to date. */
+      /* Strict for weaker models - asked for, or read from the transcript's model. */
+      let strict = false;
+      try {
+        const { mapNext, strictFor } = await import('./tools/gitx-map.js');
+        strict = strictFor({ flag: process.argv.includes('--strict'), transcript: e.transcript_path });
+        const reason = mapNext(p.root, data, { strict });
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
+      /* A Boredom update (tools/boredom.js): back to the changed functions it
+       * has not opened, or the names it got wrong. */
+      try {
+        const { boredomNext } = await import('./tools/boredom.js');
+        const reason = boredomNext(p.root, data);
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
+      /* Strict, outside a setup: an answer that cites code it never opened
+       * goes back to open it (t-38a352d0c5), at most twice a session. */
+      if (strict) {
+        try {
+          const { citeNext } = await import('./tools/gitx-map.js');
+          const reason = citeNext(p.root, data, given, session);
+          if (reason) return { decision: 'block', reason };
+        } catch (_) { /* never stops the agent from stopping */ }
+      }
+      try {
+        const { setupNext } = await import('./tools/marks.js');
+        const reason = setupNext(p.root, data);
+        if (reason) return { decision: 'block', reason };
+      } catch (_) { /* never stops the agent from stopping */ }
+    }
+    let answer = given;
+    if (!answer.trim()) { try { answer = e.agy ? lastAgyAnswer(e.transcript_path) : lastAnswer(e.transcript_path); } catch (_) { return; } }
+    const refs = citations(answer);
     if (refs.length) append(data, 'thermal', p.root, { at, session, kind: 'cite', repo: p.root, head: p.head, refs });
+    /* A scan's answer is the agent's notes, each on the code it names; so is
+     * what an answer says about code this session changed, in a repository
+     * not yet GitX-ready; any other answer's citations the last GitX search
+     * had not shown become cited marks on that code (tools/marks.js). */
+    try {
+      const { marksFromAnswer, marksFromCitations } = await import('./tools/marks.js');
+      let edits = [];
+      try {
+        edits = fs.readFileSync(path.join(data, 'thermal', repoKey(p.root) + '.jsonl'), 'utf8').split('\n')
+          .map((l) => { try { return JSON.parse(l); } catch (_) { return null; } })
+          .filter((x) => x && x.kind === 'edit' && session && x.session === session);
+      } catch (_) { /* no edits recorded */ }
+      const noted = marksFromAnswer(p.root, data, answer, { by: session, edits });
+      if (!noted.made && refs.length) await marksFromCitations(p.root, data, refs, { by: session });
+    } catch (_) { /* never stops the agent */ }
     return;
   }
 
@@ -150,8 +253,13 @@ async function main() {
   /* What the agent changed, by the lines its new text now sits on. */
   if (['Edit', 'Write', 'MultiEdit'].includes(e.tool_name)) {
     let text = '';
-    try { text = fs.readFileSync(file, 'utf8'); } catch (_) { return; }
-    const pieces = e.tool_name === 'Write' ? [text] : e.tool_name === 'MultiEdit' ? (e.tool_input.edits || []).map((x) => x.new_string) : [e.tool_input.new_string];
+    /* Line endings as one: an Edit's new text comes in LF, and a file checked
+     * out with CRLF on Windows never contained it - every edit to file-
+     * fabric's script.js went unrecorded (code bench, 18 October). Lines are
+     * counted the same either way. */
+    const lf = (s) => String(s || '').replace(/\r\n/g, '\n');
+    try { text = lf(fs.readFileSync(file, 'utf8')); } catch (_) { return; }
+    const pieces = (e.tool_name === 'Write' ? [text] : e.tool_name === 'MultiEdit' ? (e.tool_input.edits || []).map((x) => x.new_string) : [e.tool_input.new_string]).map(lf);
     for (const piece of pieces) {
       if (!piece) continue;
       const i = text.indexOf(piece);
@@ -168,11 +276,15 @@ async function main() {
   const thought = /(?:^|\/)\.gitx\/(?:context\/)?thoughts\/(t-[0-9a-f]+)\.json$/.exec(p.rel);
   append(data, 'reads', p.root, {
     at, session, repo: p.root, head: p.head, file: p.rel,
-    from: offset ? offset : null,
-    to: offset && limit ? offset + limit - 1 : null,
+    /* A limit with no offset reads from line 1 - counted as the whole default
+     * 2,000 it overstated what a setup agent had read. */
+    from: offset || (limit ? 1 : null),
+    to: limit ? (offset || 1) + limit - 1 : null,
     thought: thought ? thought[1] : undefined
   });
 }
 
-/* agy runs hooks in line and wants JSON back; Claude Code ignores it. */
-main().catch(() => {}).finally(() => { process.stdout.write('{}\n'); process.exit(0); });
+/* agy runs hooks in line and wants JSON back; Claude Code reads it only for
+ * a decision - setup mode's "block" at Stop, which sends the agent back. */
+let said = null;
+main().then((r) => { said = r || null; }).catch(() => {}).finally(() => { process.stdout.write(JSON.stringify(said || {}) + '\n'); process.exit(0); });
