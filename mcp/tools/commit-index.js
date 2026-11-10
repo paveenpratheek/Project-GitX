@@ -30,7 +30,7 @@ export const COMMON_WORD_CUTOFF = 0.25;   // a word in >25% of commits carries n
  * HEAD, and HEAD says nothing about which version of this code built the file:
  * without this, an index written before `root` existed would keep being served
  * for the same HEAD with every root silently missing. */
-export const INDEX_VERSION = 2;
+export const INDEX_VERSION = 3;
 
 export function buildIndex(repoDir) {
   const gitArgs = { windowsHide: NO_CONSOLE, cwd: repoDir, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 };

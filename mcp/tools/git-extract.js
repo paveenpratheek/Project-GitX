@@ -177,6 +177,23 @@ export function parseMessage(subject, rawBody) {
     start--;
   }
 
+  /* The paragraphs just above it count too, but only when EVERY line of them is
+   * a GitX- trailer. Some commits put GitX-Builds-On in a paragraph of its own
+   * above the GitX-Thoughts block; read from the last paragraph alone, their
+   * links were lost and they stood unconnected (t-d90f45c2b2). History is not
+   * rewritten to fix them - they are read as written (t-c0f4fdfbe9). A paragraph
+   * holding any other line, such as "Note: ...", stays body. */
+  if (start < end) {
+    for (;;) {
+      let above = start;
+      while (above > 0 && !lines[above - 1].trim()) above--;
+      let top = above;
+      while (top > 0 && /^GitX-[A-Za-z-]+:\s*\S/i.test(lines[top - 1].trim())) top--;
+      if (top === above || (top > 0 && lines[top - 1].trim())) break;
+      start = top;
+    }
+  }
+
   for (let i = start; i < end; i++) {
     const m = lines[i].trim().match(/^([A-Za-z][A-Za-z-]*):\s*(.+)$/);
     if (!m) continue;
