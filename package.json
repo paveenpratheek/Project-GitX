@@ -15,8 +15,8 @@
     "ter-manager",
     "lakehouse"
   ],
-  "author": "",
-  "license": "MIT",
+  "author": "Paveen Pratheek",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "ws": "^8.18.0"
   }
