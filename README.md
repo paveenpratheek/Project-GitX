@@ -59,15 +59,18 @@ The index is rebuilt only for files that changed.
 
 ## Tools
 
-GitX is one MCP server (`mcp/server.js`, Node) with 17 tools:
+GitX is one MCP server (`mcp/server.js`, Node) with 16 tools:
 
 | For | Tools |
 |---|---|
 | Starting a session | `gitx_thought_catch_up` (what changed since the last session), `gitx_graph_map` (every line of work), `gitx_investigate` (is this repository GitX-ready, or does it need a map) |
-| Asking | `gitx_search` (a question in words), `gitx_find` (an exact name or value), `gitx_find_related` (earlier commits like the work at hand), `gitx_thought` (one thought by id), `gitx_thought_history` (what a thought used to say) |
+| Asking | `gitx_search` (a question in words), `gitx_find_related` (earlier commits like the work at hand), `gitx_thought` (one thought by id), `gitx_thought_history` (what a thought used to say) |
 | Following history | `gitx_graph_area` (one line of work in depth), `gitx_graph_chain` (a commit's reasoning back to its root), `gitx_graph_commit` (one commit in full) |
 | Recording | `gitx_thought_record`, `gitx_commit_chronicle` (a commit with its links), `gitx_mark` |
 | Several agents at once | `gitx_create_issue_with_branch` (a task with its own branch and worktree), `gitx_get_assigned_task`, `gitx_get_swarm_status` |
+
+With `GITX_SUBJECTS=1`, `gitx_search` takes subjects instead of a question and a 17th tool, `gitx_find`, does exact
+lookups of a name or a value.
 
 ## Results
 
@@ -110,6 +113,23 @@ the reasoning it holds; on a repository without it, `gitx_investigate` and `GitX
 Every run is listed in [docs/benchmarks.md](docs/benchmarks.md) - 190 runs, made from the run files by
 `mcp/bench-export.js`, one row per run and arm. The held-out Sonnet result above is three of its rounds
 added up.
+
+## Tests
+
+`npm test` runs the tests in `test/` with Node's own test runner, and GitHub Actions runs them on every push to
+`master` and every pull request (`.github/workflows/ci.yml`):
+
+- **Reading commits** - the GitX trailers become links, thoughts and a root; a paragraph of GitX lines above the
+  trailer block is read too; other trailers and the subject leave the commit's words (`parse-message`)
+- **The code layer** - a file splits at its declarations, each with the comment above it, and each region is
+  attributed by git blame to the commits whose lines it still holds, on a throwaway repository (`code-regions`)
+- **The server** - started over stdio as an agent starts it, it answers and serves its 16 tools, each with a
+  schema, and `gitx_find` with `GITX_SUBJECTS=1` (`server`)
+- **The guardrails** - secrets in what is committed and files that hold them are caught (`guardrails`)
+- **The benchmark page** - every run and arm summed as the run files hold them (`bench-export`)
+
+Each test makes its own repository and data folder and points the server at no broker, so nothing of yours is
+read or written. GitX's search quality is measured by its benchmarks, not by these tests: see Results.
 
 ## Setup
 
