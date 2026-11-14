@@ -6,7 +6,7 @@
   "main": "index.html",
   "scripts": {
     "broker": "node mcp/broker.js",
-    "test": "node --test"
+    "test": "node --test \"test/*.test.js\""
   },
   "keywords": [
     "git",
