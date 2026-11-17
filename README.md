@@ -1,9 +1,17 @@
 # GitX
 
-**A memory and retrieval layer for AI coding agents.** GitX links a codebase,
-its git history and a graph of the design decisions behind it, and serves all
-three to agents over MCP - so an agent asks *why the code is the way it is*
-instead of re-reading whole files to guess.
+**Git Xtra: git keeps what changed; GitX also keeps why.** GitX links a
+codebase, its git history and a graph of the design decisions behind it: who
+made each decision, the alternatives that were rejected, and what later
+supported or contradicted it. It serves all three to AI coding agents over
+MCP, so an agent asks *why the code is the way it is* instead of re-reading
+whole files to guess.
+
+**A record other tools build on.** Like git, GitX is a foundation rather than
+an application. Any MCP-compatible agent can use it on any git repository,
+with no change to the agent or the code, and other tools can read the same
+record. [AutomatU](https://github.com/paveenpratheek/AutomatU) is built on it:
+it places a project's code under its plan using GitX's commits and decisions.
 
 ## The problem
 
